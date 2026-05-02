@@ -1,0 +1,242 @@
+"""FastAPI transport shell for the core app runtime."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
+from typing import AsyncIterator, Callable
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+
+from spellbook.app.protocol import (
+    AwarenessResponse,
+    CatchupResponse,
+    ConduitBody,
+    ConduitResponse,
+    HealthResponse,
+    InterruptResponse,
+    SubmitMessageBody,
+    SubmitMessageResponse,
+)
+from spellbook.app.runtime import CoreAppRuntime
+from spellbook.config import SpellbookConfig
+from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
+
+RuntimeFactory = Callable[[Path, SpellbookConfig | None], CoreAppRuntime]
+logger = logging.getLogger(__name__)
+
+
+def _default_runtime_factory(
+    transcript_path: Path,
+    config: SpellbookConfig | None,
+) -> CoreAppRuntime:
+    return CoreAppRuntime(transcript_path=transcript_path, config=config)
+
+
+def create_app(
+    *,
+    transcript_path: Path,
+    config: SpellbookConfig | None = None,
+    runtime_factory: RuntimeFactory = _default_runtime_factory,
+) -> FastAPI:
+    """Create a FastAPI app around one `CoreAppRuntime`."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        runtime = runtime_factory(transcript_path, config)
+        app.state.runtime = runtime
+        logger.info("app.startup transcript=%s", transcript_path)
+        await runtime.startup()
+        logger.info("app.started transcript=%s", transcript_path)
+        try:
+            yield
+        finally:
+            logger.info("app.shutdown_start transcript=%s", transcript_path)
+            await runtime.shutdown()
+            logger.info("app.shutdown_complete transcript=%s", transcript_path)
+
+    app = FastAPI(lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?",
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/health")
+    async def handle_health(request: Request) -> HealthResponse:
+        return _runtime_from_request(request).build_health()
+
+    @app.get("/catchup")
+    async def handle_catchup(request: Request) -> CatchupResponse:
+        return _runtime_from_request(request).build_catchup()
+
+    @app.get("/awareness")
+    async def handle_awareness(request: Request) -> AwarenessResponse:
+        return _runtime_from_request(request).build_awareness()
+
+    @app.post("/message")
+    async def handle_submit(
+        request: Request,
+        body: SubmitMessageBody,
+    ) -> SubmitMessageResponse:
+        if not body.text.strip():
+            raise HTTPException(status_code=400, detail="empty message")
+        delivery = "inject" if body.inject else "turn"
+        logger.info(
+            "message.received delivery=%s text_chars=%s metadata_keys=%s",
+            delivery,
+            len(body.text),
+            sorted(body.metadata.keys()),
+        )
+        response = await _runtime_from_request(request).submit_message(
+            IRInboundMessage(
+                blocks=[IRUserTextBlock(text=body.text, origin="human")],
+                source_metadata=body.metadata,
+                delivery=delivery,
+            )
+        )
+        logger.info(
+            "message.routed delivery=%s started=%s queued=%s",
+            delivery,
+            response.started,
+            response.queued,
+        )
+        return response
+
+    @app.post("/conduit")
+    async def handle_conduit(
+        request: Request,
+        body: ConduitBody,
+    ) -> ConduitResponse:
+        conduit_type = body.type.strip()
+        if conduit_type not in {"context", "message", "notification"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid conduit type: {conduit_type!r}",
+            )
+        content = body.content.strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="empty content")
+        source = body.source.strip() or "unknown"
+        metadata = body.metadata if isinstance(body.metadata, dict) else None
+        logger.info(
+            "conduit.received type=%s source=%s content_chars=%s metadata_keys=%s",
+            conduit_type,
+            source,
+            len(content),
+            sorted(metadata.keys()) if metadata is not None else None,
+        )
+        response = await _runtime_from_request(request).handle_conduit(
+            conduit_type=conduit_type,
+            source=source,
+            content=content,
+            metadata=metadata,
+        )
+        logger.info(
+            "conduit.routed type=%s source=%s action=%s delivered=%s",
+            conduit_type,
+            source,
+            response.action,
+            response.delivered,
+        )
+        return response
+
+    @app.post("/interrupt")
+    async def handle_interrupt(request: Request) -> InterruptResponse:
+        logger.info("interrupt.received")
+        interrupted = await _runtime_from_request(request).interrupt()
+        logger.info("interrupt.routed interrupted=%s", interrupted)
+        return InterruptResponse(interrupted=interrupted)
+
+    @app.websocket("/ws")
+    async def handle_ws(websocket: WebSocket) -> None:
+        ws_id = f"ws_{uuid4().hex[:8]}"
+        client_label = _ws_client_label(websocket)
+        peer = _ws_peer(websocket)
+        user_agent = websocket.headers.get("user-agent", "")
+        logger.info(
+            "ws.connecting id=%s client=%s peer=%s ua=%r",
+            ws_id,
+            client_label,
+            peer,
+            user_agent[:120],
+        )
+        runtime = _runtime_from_app(websocket.app)
+        subscription = None
+        try:
+            await websocket.accept()
+            logger.info("ws.accepted id=%s client=%s", ws_id, client_label)
+            subscription = runtime.bus.subscribe()
+            catchup = runtime.build_catchup()
+            await websocket.send_json(catchup.model_dump(mode="json"))
+            logger.info(
+                "ws.catchup_sent id=%s client=%s records=%s blocks=%s",
+                ws_id,
+                client_label,
+                len(catchup.rehydrated.records),
+                len(catchup.rehydrated.blocks),
+            )
+            async for event in subscription:
+                await websocket.send_json(event.model_dump(mode="json"))
+                logger.debug(
+                    "ws.event_sent id=%s client=%s kind=%s",
+                    ws_id,
+                    client_label,
+                    event.kind,
+                )
+        except WebSocketDisconnect as exc:
+            logger.info(
+                "ws.disconnected id=%s client=%s code=%s",
+                ws_id,
+                client_label,
+                exc.code,
+            )
+        except Exception:
+            logger.exception("ws.crashed id=%s client=%s", ws_id, client_label)
+            raise
+        finally:
+            if subscription is not None:
+                subscription.close()
+                logger.info(
+                    "ws.subscription_closed id=%s client=%s sub=%s",
+                    ws_id,
+                    client_label,
+                    subscription.id,
+                )
+            with suppress(RuntimeError):
+                await websocket.close()
+            logger.info("ws.closed id=%s client=%s", ws_id, client_label)
+
+    return app
+
+
+def _runtime_from_request(request: Request) -> CoreAppRuntime:
+    return _runtime_from_app(request.app)
+
+
+def _runtime_from_app(app: FastAPI) -> CoreAppRuntime:
+    runtime = getattr(app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime is not started")
+    return runtime
+
+
+def _ws_client_label(websocket: WebSocket) -> str:
+    raw = websocket.query_params.get("client")
+    if not raw:
+        return "unknown"
+    label = raw.strip()
+    if not label:
+        return "unknown"
+    return label[:80]
+
+
+def _ws_peer(websocket: WebSocket) -> str:
+    client = websocket.client
+    if client is None:
+        return "unknown"
+    return f"{client.host}:{client.port}"

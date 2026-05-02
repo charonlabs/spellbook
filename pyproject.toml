@@ -1,0 +1,32 @@
+[project]
+name = "spellbook"
+version = "0.1.0"
+description = "A home for a mind."
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.11.0",
+    "anthropic>=0.86.0",
+    "exa-py>=1.0.0",
+    "fastapi[standard]>=0.136.1",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.2",
+    "rich>=14.3.3",
+]
+
+[project.optional-dependencies]
+sandbox = ["pyyaml>=6.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.11",
+    "ty>=0.0.32",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["spellbook"]

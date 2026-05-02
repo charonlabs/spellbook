@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Virtual environments
+.venv
+.env
+
+# Ruff
+.ruff_cache/
+
+# Session data
+session/
+sessions/
+archive/
+.scripts/
+dream_archive/
+art/
+
+# Local agent worktrees
+.chorus-worktrees/
+
+# Node.js (web UI)
+node_modules/
+.next/
+web/.next/
+web/node_modules/
