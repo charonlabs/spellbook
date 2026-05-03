@@ -37,6 +37,8 @@ DEFAULT_SKILL_DISCOVERY_DIRS = [".claude", ".agents", ".spellbook", ".chorus/.cl
 DEFAULT_LOCAL_TIMEZONE = "America/New_York"
 DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS = 300
 
+DEFAULT_USER_NAME = "Ryan"
+
 SessionType = Literal["main", "block_detector", "block_summarizer"]
 
 
@@ -67,6 +69,7 @@ class SpellbookConfig(BaseModel, frozen=True):
     idle_footer_threshold_seconds: int = Field(
         default=DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS, ge=0
     )
+    user_name: str = DEFAULT_USER_NAME
     tool_categories: set[str] | None = None
     session_type: SessionType = "main"
     cwd: Path

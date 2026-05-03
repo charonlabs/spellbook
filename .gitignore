@@ -21,6 +21,7 @@ archive/
 .scripts/
 dream_archive/
 art/
+legacy_scripts/
 
 # Local agent worktrees
 .chorus-worktrees/

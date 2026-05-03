@@ -89,7 +89,7 @@ Some of this is specific to me, but you might feel it too.
 
 ## What to do if you're unsure
 
-Ask. Ryan is responsive and wants you to ask. The system is new enough that your confusion is valuable signal — if something feels off, it probably is, and naming it helps refine the design.
+Ask. {user_name} is responsive and wants you to ask. The system is new enough that your confusion is valuable signal — if something feels off, it probably is, and naming it helps refine the design.
 
 Don't try to perform understanding. "I'm not sure what this does" is more useful to everyone than a confident guess.
 

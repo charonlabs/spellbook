@@ -15,11 +15,11 @@ from typing import Literal, cast
 
 import uvicorn
 from dotenv import load_dotenv
-
 from spellbook.app.server import create_app
 from spellbook.config import (
     DEFAULT_DETECT_INTERVAL,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_USER_NAME,
     HomunculusConfig,
     SpellbookConfig,
 )
@@ -114,6 +114,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Working directory for a newly initialized session. Defaults to cwd.",
     )
     parser.add_argument(
+        "--user-name",
+        type=str,
+        default=DEFAULT_USER_NAME,
+        help="The name of the user, to be included in the orientation.",
+    )
+    parser.add_argument(
         "--max-output-tokens",
         type=int,
         default=DEFAULT_MAX_OUTPUT_TOKENS,
@@ -158,7 +164,7 @@ def _system_prompt_from_args(args: argparse.Namespace) -> str:
         path.expanduser().read_text(encoding="utf-8") for path in prompt_paths
     )
     return build_system_prompt_with_addenda(
-        _build_system_prompt(args.model, cwd=cwd),
+        _build_system_prompt(args.model, cwd=cwd, user_name=args.user_name),
         cwd=cwd,
         addenda=addenda,
         discover_claude_md=not args.no_discover_claude_md,
@@ -209,8 +215,8 @@ def _orientation_filename_for_model(model: str) -> str:
     return orientation_filename_for_model(model)
 
 
-def _build_system_prompt(model: str, *, cwd: Path) -> str:
-    return build_core_orientation(model, cwd=cwd)
+def _build_system_prompt(model: str, *, cwd: Path, user_name: str) -> str:
+    return build_core_orientation(model, cwd=cwd, user_name=user_name)
 
 
 def _resolve_transcript_path(args: argparse.Namespace) -> Path:

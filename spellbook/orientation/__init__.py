@@ -50,7 +50,7 @@ def orientation_filename_for_model(model: str) -> str:
     raise ValueError(f"No core orientation found for model slug: {model}")
 
 
-def build_core_orientation(model: str, *, cwd: Path) -> str:
+def build_core_orientation(model: str, *, cwd: Path, user_name: str) -> str:
     orientation_path = ORIENTATION_DIR / orientation_filename_for_model(model)
     template = orientation_path.read_text(encoding="utf-8")
     model_name = model_slug_to_name(model)
@@ -60,6 +60,7 @@ def build_core_orientation(model: str, *, cwd: Path) -> str:
         "{cwd}": str(cwd),
         "{is_git_repo}": str((cwd / ".git").exists()).lower(),
         "{platform}": platform.system().lower(),
+        "{user_name}": user_name,
     }
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
