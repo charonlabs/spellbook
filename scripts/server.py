@@ -23,11 +23,13 @@ from spellbook.config import (
     HomunculusConfig,
     SpellbookConfig,
 )
-from spellbook.frame_lite import build_system_prompt_with_addenda
 from spellbook.orientation import (
-    build_core_orientation,
     model_slug_to_name,
     orientation_filename_for_model,
+)
+from spellbook.system_prompt import (
+    build_runtime_orientation,
+    build_runtime_system_prompt,
 )
 
 DEFAULT_HOST = "127.0.0.1"
@@ -152,21 +154,18 @@ def _config_from_args(args: argparse.Namespace) -> SpellbookConfig:
         model=args.model,
         max_output_tokens=args.max_output_tokens,
         cwd=args.cwd.expanduser().resolve(),
+        user_name=args.user_name,
         hom_config=HomunculusConfig(detect_interval=args.detect_interval),
     )
 
 
 def _system_prompt_from_args(args: argparse.Namespace) -> str:
-    cwd = args.cwd.expanduser().resolve()
-    addenda = list(args.system_prompt_text or [])
-    prompt_paths = args.system_prompt_files or []
-    addenda.extend(
-        path.expanduser().read_text(encoding="utf-8") for path in prompt_paths
-    )
-    return build_system_prompt_with_addenda(
-        _build_system_prompt(args.model, cwd=cwd, user_name=args.user_name),
-        cwd=cwd,
-        addenda=addenda,
+    return build_runtime_system_prompt(
+        model=args.model,
+        cwd=args.cwd,
+        user_name=args.user_name,
+        system_prompt_text=tuple(args.system_prompt_text or ()),
+        system_prompt_files=tuple(args.system_prompt_files or ()),
         discover_claude_md=not args.no_discover_claude_md,
     )
 
@@ -216,7 +215,7 @@ def _orientation_filename_for_model(model: str) -> str:
 
 
 def _build_system_prompt(model: str, *, cwd: Path, user_name: str) -> str:
-    return build_core_orientation(model, cwd=cwd, user_name=user_name)
+    return build_runtime_orientation(model, cwd=cwd, user_name=user_name)
 
 
 def _resolve_transcript_path(args: argparse.Namespace) -> Path:
