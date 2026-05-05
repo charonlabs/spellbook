@@ -25,6 +25,7 @@ from spellbook.app.lifecycle import AppRoundLifecycle, AppSessionLifecycle
 from spellbook.app.protocol import (
     AwarenessResponse,
     AwarenessSnapshot,
+    CatchupLiteResponse,
     CatchupResponse,
     ConduitResponse,
     HealthResponse,
@@ -293,6 +294,13 @@ class CoreAppRuntime:
             rehydrated=Rehydrator(self.transcript_path).run(),
             surface=self._last_active_surface,
             surface_time=self._last_surface_time,
+        )
+
+    def build_catchup_lite(self) -> CatchupLiteResponse:
+        """Build a lightweight websocket catchup snapshot."""
+        return CatchupLiteResponse(
+            health=self.build_health(),
+            awareness=self.build_awareness(),
         )
 
     def build_health(self) -> HealthResponse:

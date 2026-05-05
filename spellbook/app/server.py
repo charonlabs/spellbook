@@ -20,6 +20,7 @@ from spellbook.app.protocol import (
     InterruptResponse,
     SubmitMessageBody,
     SubmitMessageResponse,
+    WebSocketCatchupMode,
 )
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.config import SpellbookConfig
@@ -156,12 +157,14 @@ def create_app(
     async def handle_ws(websocket: WebSocket) -> None:
         ws_id = f"ws_{uuid4().hex[:8]}"
         client_label = _ws_client_label(websocket)
+        catchup_mode = _ws_catchup_mode(websocket)
         peer = _ws_peer(websocket)
         user_agent = websocket.headers.get("user-agent", "")
         logger.info(
-            "ws.connecting id=%s client=%s peer=%s ua=%r",
+            "ws.connecting id=%s client=%s catchup=%s peer=%s ua=%r",
             ws_id,
             client_label,
+            catchup_mode,
             peer,
             user_agent[:120],
         )
@@ -169,16 +172,19 @@ def create_app(
         subscription = None
         try:
             await websocket.accept()
-            logger.info("ws.accepted id=%s client=%s", ws_id, client_label)
-            subscription = runtime.bus.subscribe()
-            catchup = runtime.build_catchup()
-            await websocket.send_json(catchup.model_dump(mode="json"))
             logger.info(
-                "ws.catchup_sent id=%s client=%s records=%s blocks=%s",
+                "ws.accepted id=%s client=%s catchup=%s",
                 ws_id,
                 client_label,
-                len(catchup.rehydrated.records),
-                len(catchup.rehydrated.blocks),
+                catchup_mode,
+            )
+            subscription = runtime.bus.subscribe()
+            await _send_ws_catchup(
+                websocket=websocket,
+                runtime=runtime,
+                mode=catchup_mode,
+                ws_id=ws_id,
+                client_label=client_label,
             )
             async for event in subscription:
                 await websocket.send_json(event.model_dump(mode="json"))
@@ -233,6 +239,58 @@ def _ws_client_label(websocket: WebSocket) -> str:
     if not label:
         return "unknown"
     return label[:80]
+
+
+def _ws_catchup_mode(websocket: WebSocket) -> WebSocketCatchupMode:
+    raw = websocket.query_params.get("catchup")
+    if raw is None or raw == "":
+        return "lite"
+    normalized = raw.strip().lower()
+    if normalized == "none":
+        return "none"
+    if normalized == "lite":
+        return "lite"
+    if normalized == "full":
+        return "full"
+    logger.warning(
+        "ws.invalid_catchup_mode raw=%r fallback=%s",
+        raw,
+        "lite",
+    )
+    return "lite"
+
+
+async def _send_ws_catchup(
+    *,
+    websocket: WebSocket,
+    runtime: CoreAppRuntime,
+    mode: WebSocketCatchupMode,
+    ws_id: str,
+    client_label: str,
+) -> None:
+    match mode:
+        case "none":
+            logger.info("ws.catchup_skipped id=%s client=%s", ws_id, client_label)
+        case "lite":
+            catchup = runtime.build_catchup_lite()
+            await websocket.send_json(catchup.model_dump(mode="json"))
+            logger.info(
+                "ws.catchup_lite_sent id=%s client=%s state=%s semantic_blocks=%s",
+                ws_id,
+                client_label,
+                catchup.health.state,
+                len(catchup.awareness.snapshot.homunculus.semantic_blocks),
+            )
+        case "full":
+            catchup = runtime.build_catchup()
+            await websocket.send_json(catchup.model_dump(mode="json"))
+            logger.info(
+                "ws.catchup_sent id=%s client=%s records=%s blocks=%s",
+                ws_id,
+                client_label,
+                len(catchup.rehydrated.records),
+                len(catchup.rehydrated.blocks),
+            )
 
 
 def _ws_peer(websocket: WebSocket) -> str:

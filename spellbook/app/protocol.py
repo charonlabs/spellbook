@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 RuntimeState = Literal["idle", "running", "dreaming", "suspended"]
 ConduitType = Literal["context", "message", "notification"]
 ConduitAction = Literal["started_turn", "queued_as_message", "queued_as_context"]
+WebSocketCatchupMode = Literal["none", "lite", "full"]
 
 
 def session_to_runtime_state(state: SessionState) -> RuntimeState:
@@ -207,3 +208,11 @@ class AwarenessResponse(BaseModel, frozen=True):
     kind: Literal["awareness"] = "awareness"
     time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     snapshot: AwarenessSnapshot
+
+
+class CatchupLiteResponse(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["catchup_lite"] = "catchup_lite"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    health: HealthResponse
+    awareness: AwarenessResponse

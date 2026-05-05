@@ -875,6 +875,7 @@ function withWsClientLabel(rawUrl: string, client: string): string {
   const base = typeof window === 'undefined' ? undefined : window.location.href
   const url = new URL(rawUrl, base)
   url.searchParams.set('client', client)
+  url.searchParams.set('catchup', 'full')
   return url.toString()
 }
 

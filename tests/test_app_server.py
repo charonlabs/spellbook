@@ -9,6 +9,7 @@ from spellbook.app.event_bus import AppEventBus
 from spellbook.app.protocol import (
     AwarenessResponse,
     AwarenessSnapshot,
+    CatchupLiteResponse,
     CatchupResponse,
     ConduitResponse,
     HealthResponse,
@@ -57,6 +58,8 @@ class _FakeRuntime:
         self.interrupt_called = False
         self.submitted: list[IRInboundMessage] = []
         self.conduits: list[dict] = []
+        self.full_catchup_calls = 0
+        self.lite_catchup_calls = 0
         self._tmp_path = tmp_path
 
     async def startup(self) -> None:
@@ -75,7 +78,15 @@ class _FakeRuntime:
         )
 
     def build_catchup(self) -> CatchupResponse:
+        self.full_catchup_calls += 1
         return CatchupResponse(rehydrated=_rehydrated(self._tmp_path))
+
+    def build_catchup_lite(self) -> CatchupLiteResponse:
+        self.lite_catchup_calls += 1
+        return CatchupLiteResponse(
+            health=self.build_health(),
+            awareness=self.build_awareness(),
+        )
 
     def build_awareness(self) -> AwarenessResponse:
         return AwarenessResponse(
@@ -257,11 +268,11 @@ def test_conduit_route_validates_and_normalizes_metadata(tmp_path: Path) -> None
     ]
 
 
-def test_websocket_sends_catchup_then_live_events(tmp_path: Path) -> None:
+def test_websocket_full_catchup_then_live_events(tmp_path: Path) -> None:
     client, runtime = _make_app(tmp_path)
 
     with client:
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/ws?catchup=full") as ws:
             catchup = ws.receive_json()
             assert catchup["kind"] == "catchup"
             assert catchup["rehydrated"]["session_id"] == "session_fake"
@@ -274,4 +285,36 @@ def test_websocket_sends_catchup_then_live_events(tmp_path: Path) -> None:
             assert event["message"]["blocks"][0]["text"] == "hello websocket"
 
     assert runtime.shutdown_called is True
+    assert runtime.full_catchup_calls == 1
+    assert runtime.lite_catchup_calls == 0
     assert runtime.submitted[-1].delivery == "turn"
+
+
+def test_websocket_defaults_to_lite_catchup(tmp_path: Path) -> None:
+    client, runtime = _make_app(tmp_path)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            catchup = ws.receive_json()
+            assert catchup["kind"] == "catchup_lite"
+            assert catchup["health"]["model"] == "claude-sonnet-4-6"
+            assert catchup["awareness"]["snapshot"]["surface"] == "Telegram"
+
+    assert runtime.full_catchup_calls == 0
+    assert runtime.lite_catchup_calls == 1
+
+
+def test_websocket_can_skip_catchup(tmp_path: Path) -> None:
+    client, runtime = _make_app(tmp_path)
+
+    with client:
+        with client.websocket_connect("/ws?catchup=none") as ws:
+            response = client.post("/message", json={"text": "hello websocket"})
+            assert response.status_code == 200
+
+            event = ws.receive_json()
+            assert event["kind"] == "message_queued"
+            assert event["message"]["blocks"][0]["text"] == "hello websocket"
+
+    assert runtime.full_catchup_calls == 0
+    assert runtime.lite_catchup_calls == 0
