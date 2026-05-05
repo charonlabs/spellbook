@@ -81,6 +81,7 @@ class ReplayReport:
     starting_summaries: int = 0
     final_semantic_blocks: int | None = None
     final_summaries: int | None = None
+    finalization_passes: int = 0
     resume_backup_path: Path | None = None
     ticks: list[ReplayTickReport] = field(default_factory=list)
 
@@ -113,6 +114,7 @@ class ReplayReport:
             "starting_summaries": self.starting_summaries,
             "final_semantic_blocks": self.final_semantic_blocks,
             "final_summaries": self.final_summaries,
+            "finalization_passes": self.finalization_passes,
             "resume_backup_path": str(self.resume_backup_path)
             if self.resume_backup_path is not None
             else None,
@@ -330,6 +332,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Resume an existing replay transcript after validating it is a source prefix.",
     )
     parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help=(
+            "After replaying all source blocks, run one EOF detector pass to "
+            "flush stable buffered blocks into completed semantic blocks."
+        ),
+    )
+    parser.add_argument(
         "--report-json",
         type=Path,
         help="Optionally write a JSON replay report.",
@@ -346,12 +356,12 @@ async def replay_transcript(
     session_id: str | None = None,
     force: bool = False,
     resume: bool = False,
+    finalize: bool = False,
 ) -> ReplayReport:
     if interval is not None and interval <= 0:
         raise ValueError("Replay interval must be greater than zero.")
     if max_blocks is not None and max_blocks < 0:
         raise ValueError("max_blocks must be greater than or equal to zero.")
-
     transcript_path = transcript_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
     if not transcript_path.exists():
@@ -447,6 +457,10 @@ async def replay_transcript(
         ),
     )
     await block_manager.check_nursery(wait_for_all=True)
+    if finalize:
+        report.finalization_passes = await _finalize_replay_context(
+            block_manager=block_manager,
+        )
     report.final_semantic_blocks = len(block_manager.semantic_blocks)
     report.final_summaries = _summary_count(block_manager)
 
@@ -689,6 +703,18 @@ async def _replay_source_records(
     await state.flush()
 
 
+async def _finalize_replay_context(
+    *,
+    block_manager: BlockManager,
+) -> int:
+    started = await block_manager.force_detect(finalize=True)
+    if not started:
+        return 0
+    rich.print("[cyan]finalize pass 1[/cyan]: detector fork started")
+    await block_manager.check_nursery(wait_for_all=True)
+    return 1
+
+
 def _start_source_turn(recorder: Recorder, record: IRTurnStartRecord) -> None:
     recorder.set_state(
         turn_id="",
@@ -865,6 +891,7 @@ async def _async_main(argv: list[str] | None = None) -> None:
         session_id=args.session_id,
         force=args.force,
         resume=args.resume,
+        finalize=args.finalize,
     )
     if args.report_json is not None:
         report_path = args.report_json.expanduser().resolve()

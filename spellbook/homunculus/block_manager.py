@@ -2,7 +2,12 @@ from typing import Any, Sequence
 
 from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
-from spellbook.fork import BlockDetectorResult, BlockSummarizerResult, ForkRunner
+from spellbook.fork import (
+    BlockDetectorResult,
+    BlockSummarizerResult,
+    ForkRunner,
+    PreparedFork,
+)
 from spellbook.homunculus.block_detector import BlockDetector
 from spellbook.homunculus.block_summarizer import BlockSummarizer
 from spellbook.homunculus.common import render_context_block, render_summary
@@ -62,6 +67,10 @@ class BlockManager:
     @property
     def proposed_semantic_blocks(self) -> list[IRSemanticBlockRange]:
         return self._detector.buffered_blocks
+
+    @property
+    def has_unfinalized_detection(self) -> bool:
+        return self._detector.has_pending_blocks
 
     def rehydrate(self, rehydrated: RehydrationResult) -> None:
         self._detector.rehydrate(rehydrated)
@@ -462,12 +471,22 @@ class BlockManager:
         maybe_prepared = await self._detector.maybe_detect(blocks, first_block_id)
 
         if maybe_prepared is not None:
-            self._nursery.submit(
-                maybe_prepared.coro,
-                kind="detect_blocks",
-                source="block_manager",
-                metadata={"fork_id": maybe_prepared.fork_id},
-            )
+            self._submit_detection(maybe_prepared)
+
+    async def force_detect(self, *, finalize: bool = False) -> bool:
+        maybe_prepared = await self._detector.force_detect(finalize=finalize)
+        if maybe_prepared is None:
+            return False
+        self._submit_detection(maybe_prepared)
+        return True
+
+    def _submit_detection(self, prepared: PreparedFork) -> None:
+        self._nursery.submit(
+            prepared.coro,
+            kind="detect_blocks",
+            source="block_manager",
+            metadata={"fork_id": prepared.fork_id},
+        )
 
     async def _integrate_summarizer_result(
         self,

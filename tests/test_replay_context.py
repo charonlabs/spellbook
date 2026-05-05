@@ -73,6 +73,8 @@ class _FakeBlockManager:
         self.context_blocks: list[IRBlock] = []
         self.next_block_id = 0
         self.check_nursery_wait_flags: list[bool] = []
+        self.force_detect_results: list[bool] = []
+        self.force_detect_finalize_flags: list[bool] = []
 
     def rehydrate(self, rehydrated: RehydrationResult) -> None:
         self.context_blocks = list(rehydrated.blocks)
@@ -92,6 +94,12 @@ class _FakeBlockManager:
 
     async def generate_next_summary(self) -> None:
         return None
+
+    async def force_detect(self, *, finalize: bool = False) -> bool:
+        self.force_detect_finalize_flags.append(finalize)
+        if not self.force_detect_results:
+            return False
+        return self.force_detect_results.pop(0)
 
     async def check_nursery(
         self,
@@ -359,6 +367,31 @@ async def test_replay_report_counts_semantic_blocks_and_summaries(
 
     assert report.semantic_blocks == 1
     assert report.summaries == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_finalize_runs_one_eof_detector_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_source_transcript(tmp_path, [_user("one")])
+    output = tmp_path / "replay.jsonl"
+    fake_manager = _FakeBlockManager()
+    fake_manager.force_detect_results = [True, True]
+    monkeypatch.setattr(
+        replay_context,
+        "_build_block_manager",
+        lambda **kwargs: fake_manager,
+    )
+
+    report = await replay_context.replay_transcript(
+        transcript_path=source,
+        output_path=output,
+        finalize=True,
+    )
+
+    assert report.finalization_passes == 1
+    assert fake_manager.force_detect_finalize_flags == [True]
+    assert fake_manager.check_nursery_wait_flags == [True, True, True]
 
 
 @pytest.mark.asyncio

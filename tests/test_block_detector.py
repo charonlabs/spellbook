@@ -289,6 +289,49 @@ class TestMaybeDetect:
         assert call_count["value"] == 1
         assert detector._counter == 2
 
+    @pytest.mark.asyncio
+    async def test_force_detect_runs_below_threshold_with_eof_instructions(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path, detect_interval=100)
+        seen: dict[str, BlockDetectorConfig] = {}
+
+        async def _run_fork(*, fork_config: BlockDetectorConfig) -> PreparedFork:
+            seen["fork_config"] = fork_config
+            return _prepared(
+                BlockDetectorResult(
+                    completed=[],
+                    still_buffered=[
+                        IRSemanticBlockRange(
+                            title="Final draft",
+                            start_block=0,
+                            end_block=1,
+                        )
+                    ],
+                )
+            )
+
+        cast(Any, detector._fork_runner).run_fork = _run_fork
+        blocks = [_user("a"), _assistant("b")]
+
+        assert await detector.maybe_detect(blocks, first_block_id=0) is None
+        prepared = await detector.force_detect(finalize=True)
+
+        assert prepared is not None
+        await prepared.coro
+        assert seen["fork_config"].context_block_buffer == blocks
+        assert "EOF finalization pass" in seen["fork_config"].inbound_block.text
+
+    @pytest.mark.asyncio
+    async def test_force_detect_noops_when_no_buffered_or_raw_context(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path, detect_interval=100)
+
+        prepared = await detector.force_detect(finalize=True)
+
+        assert prepared is None
+
 
 class TestRehydrate:
     def test_restores_detector_state_from_rehydrated_transcript(self, tmp_path: Path) -> None:

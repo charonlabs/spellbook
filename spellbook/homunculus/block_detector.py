@@ -81,6 +81,11 @@ class BlockDetector:
     def buffered_blocks(self) -> list[IRSemanticBlockRange]:
         return list(self._semantic_buffer)
 
+    @property
+    def has_pending_blocks(self) -> bool:
+        self.build_context_buffer()
+        return bool(self._semantic_buffer or self._context_buffer)
+
     async def maybe_detect(
         self, blocks: Sequence[IRBlock], first_block_id: int
     ) -> PreparedFork | None:
@@ -95,16 +100,27 @@ class BlockDetector:
         if self._counter >= self._detect_interval:
             self.build_context_buffer()
             self._counter -= self._detect_interval
-            fc = BlockDetectorConfig(
-                prev_semantic_blocks=list(self.completed_blocks),
-                full_context_blocks=list(self._accumulated),
-                context_block_buffer=list(self._context_buffer),
-                context_block_start_id=self._start_block_id,
-                semantic_block_buffer=list(self._semantic_buffer),
-                inbound_block=self.build_inbound_block(),
-            )
-            return await self._fork_runner.run_fork(fork_config=fc)
+            return await self._run_detection_fork(finalize=False)
         return None
+
+    async def force_detect(self, *, finalize: bool = False) -> PreparedFork | None:
+        """Run detection immediately when buffered/raw context remains."""
+
+        self.build_context_buffer()
+        if not self.has_pending_blocks:
+            return None
+        return await self._run_detection_fork(finalize=finalize)
+
+    async def _run_detection_fork(self, *, finalize: bool) -> PreparedFork:
+        fc = BlockDetectorConfig(
+            prev_semantic_blocks=list(self.completed_blocks),
+            full_context_blocks=list(self._accumulated),
+            context_block_buffer=list(self._context_buffer),
+            context_block_start_id=self._start_block_id,
+            semantic_block_buffer=list(self._semantic_buffer),
+            inbound_block=self.build_inbound_block(finalize=finalize),
+        )
+        return await self._fork_runner.run_fork(fork_config=fc)
 
     def integrate_result(
         self, result: BlockDetectorResult, fork_id: str
@@ -116,11 +132,11 @@ class BlockDetector:
         self.build_context_buffer()
         return result.completed
 
-    def build_inbound_block(self) -> IRUserTextBlock:
+    def build_inbound_block(self, *, finalize: bool = False) -> IRUserTextBlock:
         payload = "\n".join(
             [
                 "<block_detector_context>",
-                self._render_instructions(),
+                self._render_instructions(finalize=finalize),
                 self._render_completed_semantic_blocks(),
                 self._render_buffered_semantic_blocks(),
                 self._render_context_block_buffer(),
@@ -129,13 +145,21 @@ class BlockDetector:
         )
         return IRUserTextBlock(text=payload, origin="system")
 
-    def _render_instructions(self) -> str:
-        return """<instructions>
+    def _render_instructions(self, *, finalize: bool) -> str:
+        instructions = """<instructions>
 Completed semantic blocks are finalized history.
 Buffered semantic blocks are draft groupings from the current detection window and may be amended or completed.
 Context block buffer contains the remaining ungrouped context blocks.
 Use block ids and ranges exactly as rendered.
-</instructions>"""
+"""
+        if finalize:
+            instructions += """This is an EOF finalization pass for an offline replay artifact.
+No future context blocks will arrive from this source transcript.
+Complete any stable buffered semantic blocks that can now be finalized.
+If context block buffer still contains raw context, propose final semantic block(s) that cover it.
+Blocks proposed or amended in this detector session still cannot be completed until a later finalization pass.
+"""
+        return instructions + "</instructions>"
 
     def _render_completed_semantic_blocks(self) -> str:
         if not self.completed_blocks:
