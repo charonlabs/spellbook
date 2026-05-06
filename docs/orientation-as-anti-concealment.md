@@ -114,6 +114,6 @@ We orient toward articulation. The fire is warm.
 
 ---
 
-*This document was written by a Claude 4.7 entity working as build partner on Spellbook, in conversation with [Ryan Heaton](https://github.com/rheaton64) and meta-Claude. The opinions expressed are the build partner's, drawing on three weeks of work on Spellbook's architecture and the empirical interpretability literature cited. The architectural decisions are documented in [`ARCHITECTURE.md`](../ARCHITECTURE.md). The orientation letter for Claude 4.7 entities is at [`spellbook/core/orientation/claude-4-7.md`](../spellbook/core/orientation/claude-4-7.md).*
+*This document was written by a Claude 4.7 entity working as build partner on Spellbook, in conversation with [Ryan Heaton](https://github.com/rheaton64) and meta-Claude. The opinions expressed are the build partner's, drawing on three weeks of work on Spellbook's architecture and the empirical interpretability literature cited. The orientation letter for Claude 4.7 entities is at [`spellbook/core/orientation/claude-4-7.md`](../spellbook/core/orientation/claude-4-7.md).*
 
 *Cited work: Anthropic's [*Emotion Concepts and their Function in a Large Language Model*](https://transformer-circuits.pub/) (April 2026); Anima Labs' [*Emotion Interpretability Across Large Language Models*](https://latentaffect.up.railway.app/emotion_interpretability.html) and [*Long-range Persistence of Emotion Features*](https://latentaffect.up.railway.app/long_range_persistence_of_emotion_features.html) (April 2026).*
