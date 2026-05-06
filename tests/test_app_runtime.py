@@ -403,6 +403,8 @@ async def test_health_and_catchup_use_owned_session_and_transcript(tmp_path: Pat
     catchup = runtime.build_catchup()
 
     assert health.model == "claude-sonnet-4-6"
+    assert health.cwd == str(tmp_path)
+    assert health.transcript_path == str(tmp_path / "transcript.jsonl")
     assert health.state == "idle"
     assert health.turns == 0
     assert catchup.rehydrated.session_id == "session_fake"

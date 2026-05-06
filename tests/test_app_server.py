@@ -72,6 +72,8 @@ class _FakeRuntime:
     def build_health(self) -> HealthResponse:
         return HealthResponse(
             model="claude-sonnet-4-6",
+            cwd=str(self._tmp_path),
+            transcript_path=str(self._tmp_path / "transcript.jsonl"),
             state="idle",
             turns=0,
             gauge_input_tokens=None,

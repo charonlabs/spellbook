@@ -196,6 +196,8 @@ class HealthResponse(BaseModel, frozen=True):
     time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: Literal["ok"] = "ok"
     model: str
+    cwd: str
+    transcript_path: str
     state: RuntimeState
     turns: int
     gauge_input_tokens: int | None

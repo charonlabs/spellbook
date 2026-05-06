@@ -1,5 +1,9 @@
 import logging
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
+
+import pytest
 
 from scripts import server
 
@@ -120,6 +124,43 @@ def test_config_from_args_infers_openai_provider_for_gpt_model(tmp_path: Path) -
 
     assert config.provider == "openai"
     assert config.model == "gpt-5.5"
+
+
+def test_model_is_optional_when_resuming_existing_transcript(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+
+    args = server._parse_args([str(transcript)])
+
+    assert args.model is None
+    assert server._resolve_transcript_path(args) == transcript.resolve()
+
+
+def test_model_is_required_when_initializing_new_transcript(tmp_path: Path) -> None:
+    with redirect_stderr(StringIO()), pytest.raises(SystemExit):
+        server._parse_args([str(tmp_path / "missing.jsonl")])
+
+
+def test_main_resumes_existing_transcript_without_model(tmp_path: Path, monkeypatch) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def _create_app(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    def _run(app, **kwargs) -> None:
+        seen["app"] = app
+        seen["run_kwargs"] = kwargs
+
+    monkeypatch.setattr(server, "create_app", _create_app)
+    monkeypatch.setattr(server.uvicorn, "run", _run)
+
+    server.main([str(transcript), "--env", str(tmp_path / "missing.env")])
+
+    assert seen["transcript_path"] == transcript.resolve()
+    assert seen["config"] is None
 
 
 def test_configure_logging_enables_core_app_info_logs() -> None:

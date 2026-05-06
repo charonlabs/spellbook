@@ -71,7 +71,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        required=True,
+        default=None,
         help="Model slug to use when initializing a new transcript.",
     )
     parser.add_argument(
@@ -146,10 +146,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="info",
         help="Uvicorn log level. Defaults to info.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.model is None and (
+        args.transcript is None or not args.transcript.expanduser().exists()
+    ):
+        parser.error("--model is required when initializing a new transcript")
+    return args
 
 
 def _config_from_args(args: argparse.Namespace) -> SpellbookConfig:
+    if args.model is None:
+        raise ValueError("Cannot build a new SpellbookConfig without --model.")
     return SpellbookConfig(
         provider=infer_provider_for_model(args.model),
         system_prompt=_system_prompt_from_args(args),
@@ -236,7 +243,7 @@ def main(argv: list[str] | None = None) -> None:
 
     app = create_app(
         transcript_path=transcript_path,
-        config=_config_from_args(args),
+        config=None if transcript_path.exists() else _config_from_args(args),
     )
     uvicorn.run(
         app,

@@ -308,6 +308,8 @@ class CoreAppRuntime:
         session = self._require_session()
         return HealthResponse(
             model=session.config.model,
+            cwd=str(session.config.cwd.expanduser().resolve()),
+            transcript_path=str(self.transcript_path.expanduser().resolve()),
             state=session_to_runtime_state(session.state),
             turns=session.recorder.current_turn_idx,
             gauge_input_tokens=None,
