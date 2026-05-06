@@ -494,7 +494,7 @@ class TestForkProtocolTypes:
 
         assert config.type == "block_detector"
         assert config.context_block_start_id == 1
-        assert config.detector_model == "claude-opus-4-6"
+        assert config.detector_model is None
         assert config.prev_semantic_blocks[0].title == "Prior block"
         assert config.semantic_block_buffer[0].title == "Buffered block"
         assert config.inbound_block.origin == "system"

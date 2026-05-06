@@ -165,6 +165,35 @@ async def test_analyze_initial_context_plan_walks_newest_full_suffix(
     ] == ["memory", "memory", "human"]
 
 
+async def test_analyze_initial_context_plan_model_override_infers_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcript = _write_transcript(tmp_path)
+    seen: dict[str, str] = {}
+
+    def _build_surface_builder(config: SpellbookConfig) -> _FakeSurfaceBuilder:
+        seen["provider"] = config.provider
+        seen["model"] = config.model
+        return _FakeSurfaceBuilder()
+
+    monkeypatch.setattr(
+        analyze_initial_context_plan,
+        "_build_surface_builder",
+        _build_surface_builder,
+    )
+
+    await analyze(
+        transcript_path=transcript,
+        threshold=300,
+        after_over=0,
+        token_counter=cast(TokenCounter, _FakeTokenCounter([100, 200, 350])),
+        model="gpt-5.5",
+    )
+
+    assert seen == {"provider": "openai", "model": "gpt-5.5"}
+
+
 async def test_analyze_initial_context_plan_requires_summary_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

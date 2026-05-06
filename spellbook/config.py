@@ -16,6 +16,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+Provider = Literal["anthropic", "openai", "local"]
+
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MAX_OUTPUT_TOKENS = 128_000
 DEFAULT_EFFORT = "high"
@@ -60,7 +62,7 @@ class HomunculusConfig(BaseModel, frozen=True):
 class SpellbookConfig(BaseModel, frozen=True):
     """Main Config object that threads through systems for one Spellbook entity."""
 
-    provider: str = DEFAULT_PROVIDER
+    provider: Provider = DEFAULT_PROVIDER
     model: str = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]
     effort: str = DEFAULT_EFFORT
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS

@@ -648,7 +648,10 @@ class TestBuildResumeBehavior:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setattr("spellbook.session_manager.AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
         config = _config(tmp_path).model_copy(
             update={"skill_discovery_dirs": [".test-skills"]}
         )
@@ -695,7 +698,10 @@ class TestBuildResumeBehavior:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setattr("spellbook.session_manager.AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
         config = _config(tmp_path).model_copy(
             update={"skill_discovery_dirs": [".test-skills"]}
         )
@@ -808,7 +814,11 @@ class TestBuildResumeBehavior:
         import spellbook.session_manager as session_manager_module
 
         monkeypatch.setattr(session_manager_module, "Homunculus", _factory)
-        monkeypatch.setattr(session_manager_module, "AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            session_manager_module,
+            "build_backend",
+            lambda config: _DummyBackend(),
+        )
 
         manager = await SessionManager.build(transcript_path=transcript)
 
@@ -851,7 +861,11 @@ class TestBuildResumeBehavior:
 
         import spellbook.session_manager as session_manager_module
 
-        monkeypatch.setattr(session_manager_module, "AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            session_manager_module,
+            "build_backend",
+            lambda config: _DummyBackend(),
+        )
 
         manager = await SessionManager.build(transcript_path=transcript)
         manager.generator = cast(Generator, gen)
@@ -882,7 +896,10 @@ class TestBuildResumeBehavior:
     ) -> None:
         transcript = tmp_path / "round_trip.jsonl"
 
-        monkeypatch.setattr("spellbook.session_manager.AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
 
         created = await SessionManager.build(
             transcript_path=transcript,
@@ -922,7 +939,10 @@ class TestBuildResumeBehavior:
             inbound_block=inbound,
         )
 
-        monkeypatch.setattr("spellbook.session_manager.AnthropicBackend", _DummyBackend)
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
 
         manager = await SessionManager.build(
             transcript_path=transcript,
@@ -995,8 +1015,8 @@ class TestBuildResumeBehavior:
         )
 
         monkeypatch.setattr(
-            "spellbook.session_manager.AnthropicBackend",
-            lambda: backend,
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
         )
 
         manager = await SessionManager.build(

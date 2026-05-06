@@ -106,6 +106,22 @@ def test_server_prompt_renders_gpt_5_5_orientation(tmp_path: Path) -> None:
     assert "{model_name}" not in prompt
 
 
+def test_config_from_args_infers_openai_provider_for_gpt_model(tmp_path: Path) -> None:
+    args = server._parse_args(
+        [
+            "--model",
+            "gpt-5.5",
+            "--cwd",
+            str(tmp_path),
+        ]
+    )
+
+    config = server._config_from_args(args)
+
+    assert config.provider == "openai"
+    assert config.model == "gpt-5.5"
+
+
 def test_configure_logging_enables_core_app_info_logs() -> None:
     logger = logging.getLogger(server.APP_LOGGER_NAME)
     old_level = logger.level

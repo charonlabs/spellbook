@@ -49,7 +49,10 @@ if TYPE_CHECKING:
 
     from .session_manager import SessionBuilder
 
-DEFAULT_DETECTOR_MODEL = "claude-opus-4-6"
+DEFAULT_DETECTOR_MODEL: str | None = None
+# Detector default is None = inherit parent session's model/provider.
+# The grouping pass should run in the same model family as the live mind unless
+# the caller makes an explicit override.
 # Summarizer default is None = inherit parent session's model.
 # The mind that lived the experience compresses the experience.
 DEFAULT_SUMMARIZER_MODEL: str | None = None
@@ -66,7 +69,7 @@ class BlockDetectorConfig(BaseModel, frozen=True):
     )
     semantic_block_buffer: list[IRSemanticBlockRange]
     inbound_block: IRUserTextBlock
-    detector_model: str = DEFAULT_DETECTOR_MODEL
+    detector_model: str | None = DEFAULT_DETECTOR_MODEL
 
 
 class BlockSummarizerConfig(BaseModel, frozen=True):
@@ -156,11 +159,16 @@ class ForkRunner:
         self,
         fork_config: BlockDetectorConfig,
     ) -> PreparedFork:
+        detector_model = (
+            fork_config.detector_model
+            if fork_config.detector_model is not None
+            else self._parent_config.model
+        )
         child_config = self._parent_config.model_copy(
             update={
                 "session_type": "block_detector",
                 "tool_categories": {"block_detection"},
-                "model": fork_config.detector_model,
+                "model": detector_model,
                 "system_prompt": self._get_orientation(fork_config),
             }
         )

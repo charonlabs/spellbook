@@ -18,7 +18,7 @@ import rich
 from dotenv import load_dotenv
 from rich.table import Table
 
-from spellbook.backends.anthropic import AnthropicBackend
+from spellbook.backends import build_backend, infer_provider_for_model
 from spellbook.backends.model_backend import RequestSurface, TokenCounter
 from spellbook.config import SpellbookConfig
 from spellbook.footer import FooterController
@@ -170,7 +170,9 @@ async def analyze_initial_context_plan(
 
     config = rehydrated.config
     if model is not None:
-        config = config.model_copy(update={"model": model})
+        config = config.model_copy(
+            update={"model": model, "provider": infer_provider_for_model(model)}
+        )
     soft_threshold = (
         threshold if threshold is not None else config.hom_config.soft_threshold
     )
@@ -376,13 +378,7 @@ def _tail_start(semantic_blocks: list[IRSemanticBlock]) -> int:
 
 
 def _build_surface_builder(config: SpellbookConfig) -> RequestSurfaceBuilder:
-    match config.provider:
-        case "anthropic":
-            backend = AnthropicBackend()
-        case _:
-            raise NotImplementedError(
-                f"Initial context plan analysis does not support provider `{config.provider}` yet."
-            )
+    backend = build_backend(config)
     registry = ToolRegistry.build(config.tool_categories, surface=config.session_type)
     return RequestSurfaceBuilder.from_config(
         backend=backend,
@@ -392,13 +388,7 @@ def _build_surface_builder(config: SpellbookConfig) -> RequestSurfaceBuilder:
 
 
 def _build_token_counter(config: SpellbookConfig) -> TokenCounter:
-    match config.provider:
-        case "anthropic":
-            backend = AnthropicBackend()
-        case _:
-            raise NotImplementedError(
-                f"Initial context plan analysis does not support provider `{config.provider}` yet."
-            )
+    backend = build_backend(config)
     registry = ToolRegistry.build(config.tool_categories, surface=config.session_type)
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,

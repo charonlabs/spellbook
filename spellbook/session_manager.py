@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from spellbook.backends.anthropic import AnthropicBackend
+from spellbook.backends import build_backend
 from spellbook.footer import (
     FooterController,
     FooterControllerRoundLifecycle,
@@ -227,13 +227,7 @@ class SessionManager:
         skill_manager = SkillManager(config=config)
         skill_manager.rehydrate(rehydrated)
         session_id = rehydrated.session_id
-        match config.provider:
-            case "anthropic":
-                backend = AnthropicBackend()
-            case _:
-                raise NotImplementedError(
-                    f"{config.provider} is not a supported provider."
-                )
+        backend = build_backend(config)
         surface_builder = RequestSurfaceBuilder.from_config(
             backend=backend,
             config=config,

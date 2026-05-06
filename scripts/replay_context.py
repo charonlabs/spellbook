@@ -16,7 +16,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from spellbook.backends.anthropic import AnthropicBackend
+from spellbook.backends import build_backend
 from spellbook.backends.model_backend import ModelBackend
 from spellbook.config import SpellbookConfig
 from spellbook.footer import FooterController
@@ -772,13 +772,7 @@ def _build_block_manager(
 
 
 def _build_backend(config: SpellbookConfig) -> ModelBackend:
-    match config.provider:
-        case "anthropic":
-            return AnthropicBackend()
-        case _:
-            raise NotImplementedError(
-                f"Replay does not support provider `{config.provider}` yet."
-            )
+    return build_backend(config)
 
 
 def _as_replayed_block(block: IRBlock) -> IRBlock:

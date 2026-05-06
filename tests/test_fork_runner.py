@@ -135,7 +135,11 @@ class TestBlockDetectorForkRun:
     async def test_run_block_detector_derives_child_config_and_submits_inbound_block(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        parent_config = _parent_config(tmp_path)
+        parent_config = SpellbookConfig(
+            provider="openai",
+            model="gpt-5.5",
+            cwd=tmp_path,
+        )
         parent_path = tmp_path / "parent_transcript.jsonl"
         fork_config = _detector_config()
 
@@ -204,7 +208,8 @@ class TestBlockDetectorForkRun:
 
         assert built["config"].session_type == "block_detector"
         assert built["config"].tool_categories == {"block_detection"}
-        assert built["config"].model == fork_config.detector_model
+        assert built["config"].provider == parent_config.provider
+        assert built["config"].model == parent_config.model
         assert built["fork_config"] == fork_config
         assert built["transcript_path"].parent == parent_path.parent / "forks"
         assert built["transcript_path"].name.startswith("detector_")
@@ -229,6 +234,56 @@ class TestBlockDetectorForkRun:
         assert [b.title for b in result.still_buffered] == ["Still buffered in child"]
         runner.integrate_result(prepared.fork_id)
         assert recorder.shutdowns == [built["session_id"]]
+
+    @pytest.mark.asyncio
+    async def test_run_block_detector_honors_explicit_detector_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent_config = _parent_config(tmp_path)
+        fork_config = _detector_config().model_copy(
+            update={"detector_model": "claude-opus-4-7"}
+        )
+        final_meta = BlockDetectorToolMetadata(
+            cwd=tmp_path,
+            transcript_path=Path(),
+            prev_semantic_blocks=[],
+            full_context_blocks=[],
+            context_block_buffer=[],
+            context_block_start_id=0,
+            semantic_block_buffer=[],
+            new_semantic_blocks=[],
+            touched_block_titles=set(),
+        )
+        fake_session = _FakeForkSession(final_meta)
+        built: dict[str, Any] = {}
+
+        async def _build_session(**kwargs):
+            built.update(kwargs)
+            kwargs["lifecycle"].turn_end_event.set()
+            return fake_session
+
+        def _fake_create_task(coro):
+            coro.close()
+
+            class _Task:
+                def cancel(self) -> bool:
+                    return False
+
+            return _Task()
+
+        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
+        runner = ForkRunner(
+            parent_config=parent_config,
+            parent_transcript_path=tmp_path / "parent.jsonl",
+            recorder=cast(Recorder, _FakeRecorder()),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_block_detector(fork_config)
+        await prepared.coro
+
+        assert built["config"].provider == "anthropic"
+        assert built["config"].model == "claude-opus-4-7"
 
     @pytest.mark.asyncio
     async def test_run_block_detector_waits_for_turn_end_before_reading_tool_meta(

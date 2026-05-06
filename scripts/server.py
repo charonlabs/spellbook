@@ -16,6 +16,7 @@ from typing import Literal, cast
 import uvicorn
 from dotenv import load_dotenv
 from spellbook.app.server import create_app
+from spellbook.backends import infer_provider_for_model
 from spellbook.config import (
     DEFAULT_DETECT_INTERVAL,
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -150,6 +151,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _config_from_args(args: argparse.Namespace) -> SpellbookConfig:
     return SpellbookConfig(
+        provider=infer_provider_for_model(args.model),
         system_prompt=_system_prompt_from_args(args),
         model=args.model,
         max_output_tokens=args.max_output_tokens,
