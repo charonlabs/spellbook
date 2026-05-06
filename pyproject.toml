@@ -8,6 +8,7 @@ dependencies = [
     "anthropic>=0.86.0",
     "exa-py>=1.0.0",
     "fastapi[standard]>=0.136.1",
+    "openai>=2.30.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.2",
     "rich>=14.3.3",
