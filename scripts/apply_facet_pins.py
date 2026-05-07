@@ -185,8 +185,7 @@ def _resolve_facet_prefix(
             for match in matches
         )
         raise ValueError(
-            f'Facet id prefix "{requested}" is ambiguous.\n\n'
-            f"Matches:\n{match_lines}"
+            f'Facet id prefix "{requested}" is ambiguous.\n\nMatches:\n{match_lines}'
         )
     return matches[0]
 

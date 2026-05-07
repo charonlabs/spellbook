@@ -225,7 +225,9 @@ async def test_forget_invalidates_reflect_counts_and_rerenders_between_rounds(
     assert ctx.blocks[1].text == "Tail remains full."
 
 
-async def test_between_rounds_is_noop_without_scheduled_rerender(tmp_path: Path) -> None:
+async def test_between_rounds_is_noop_without_scheduled_rerender(
+    tmp_path: Path,
+) -> None:
     full_block = _user("Full transcript text.")
     homunculus = _homunculus(tmp_path)
     await homunculus.rehydrate(
@@ -307,7 +309,9 @@ async def test_reflect_shows_pin_reason(tmp_path: Path) -> None:
     assert "pinned: This setup was hard won." in reflect
 
 
-async def test_reflect_shows_summary_facets_and_facet_pin_reason(tmp_path: Path) -> None:
+async def test_reflect_shows_summary_facets_and_facet_pin_reason(
+    tmp_path: Path,
+) -> None:
     full_block = _user("Full transcript text.")
     facet = IRSemanticBlockFacet(
         id="facet_design",
@@ -508,7 +512,9 @@ async def test_planner_compacts_between_rounds_records_source_and_rerenders(
     assert "savings: ~105 tokens" in compaction_records[0].footer.text
 
 
-async def test_planner_proposal_records_plan_without_rerendering(tmp_path: Path) -> None:
+async def test_planner_proposal_records_plan_without_rerendering(
+    tmp_path: Path,
+) -> None:
     transcript = tmp_path / "transcript.jsonl"
     full_block = _user("Full transcript text.")
     semantic_block = _summary_block(full_tokens=120, summary_tokens=15)

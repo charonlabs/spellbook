@@ -189,7 +189,9 @@ class TestRequestSurfaceBuilderDirect:
 
 
 class TestRequestSurfaceBuilderFromConfig:
-    def test_from_config_uses_backend_tool_schemas_and_spellbook_config(self, tmp_path) -> None:
+    def test_from_config_uses_backend_tool_schemas_and_spellbook_config(
+        self, tmp_path
+    ) -> None:
         backend = _FakeBackend()
         registry = ToolRegistry(tools=[FAKE_TOOL])
         config = SpellbookConfig(
@@ -224,7 +226,9 @@ class TestRequestSurfaceBuilderFromConfig:
 
         assert surface.tools == [{"name": "FakeRead"}]
 
-    def test_from_config_rebuilds_system_from_current_config_value(self, tmp_path) -> None:
+    def test_from_config_rebuilds_system_from_current_config_value(
+        self, tmp_path
+    ) -> None:
         backend = _FakeBackend()
         registry = ToolRegistry(tools=[])
 
@@ -253,7 +257,9 @@ class TestRequestSurfaceBuilderFromConfig:
         builder.build([IRUserTextBlock(text="second", origin="human")])
         assert backend.request_surface_calls[1]["system"] == "Updated prompt"
 
-    def test_from_config_passes_empty_tool_registry_through_cleanly(self, tmp_path) -> None:
+    def test_from_config_passes_empty_tool_registry_through_cleanly(
+        self, tmp_path
+    ) -> None:
         backend = _FakeBackend()
         registry = ToolRegistry(tools=[])
         config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)

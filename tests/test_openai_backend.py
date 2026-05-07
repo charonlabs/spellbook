@@ -73,7 +73,7 @@ class TestOpenAIBlockTranslation:
                 "type": "function_call",
                 "call_id": "call_1",
                 "name": "Read",
-                "arguments": "{\"file_path\":\"/tmp/demo.py\"}",
+                "arguments": '{"file_path":"/tmp/demo.py"}',
             },
             {
                 "type": "function_call_output",
@@ -157,7 +157,7 @@ class TestOpenAIBlockTranslation:
                 "type": "function_call",
                 "call_id": "call_1",
                 "name": "Read",
-                "arguments": "{\"file_path\":\"/tmp/demo.py\"}",
+                "arguments": '{"file_path":"/tmp/demo.py"}',
             },
             {
                 "type": "message",
@@ -292,7 +292,9 @@ class _CountingBackend(OpenAIBackend):
 
 class TestOpenAITokenCounter:
     @pytest.mark.asyncio
-    async def test_count_blocks_uses_responses_input_token_endpoint(self, tmp_path) -> None:
+    async def test_count_blocks_uses_responses_input_token_endpoint(
+        self, tmp_path
+    ) -> None:
         client = _FakeOpenAIClient()
         backend = _CountingBackend(client=client)
         config = SpellbookConfig(

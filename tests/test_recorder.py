@@ -139,7 +139,9 @@ class TestSessionRecord:
 
 
 class TestTurnLifecycle:
-    def test_start_turn_without_initial_blocks_writes_only_start(self, tmp_path) -> None:
+    def test_start_turn_without_initial_blocks_writes_only_start(
+        self, tmp_path
+    ) -> None:
         recorder, transcript = _make_recorder(tmp_path)
         recorder.write_session_record(skill_catalog=IRSkillCatalog())
         recorder.start_turn("t1", [])

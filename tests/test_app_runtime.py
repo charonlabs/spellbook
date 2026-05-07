@@ -433,7 +433,9 @@ async def test_conduit_notification_while_running_queues_footer_context(
     await runtime.shutdown()
 
 
-async def test_health_and_catchup_use_owned_session_and_transcript(tmp_path: Path) -> None:
+async def test_health_and_catchup_use_owned_session_and_transcript(
+    tmp_path: Path,
+) -> None:
     builder = _FakeSessionBuilder()
     runtime = CoreAppRuntime(
         transcript_path=tmp_path / "transcript.jsonl",

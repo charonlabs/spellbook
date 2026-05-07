@@ -26,6 +26,4 @@ def build_backend(config: SpellbookConfig) -> ModelBackend:
         case "openai":
             return OpenAIBackend()
         case _:
-            raise NotImplementedError(
-                f"{config.provider} is not a supported provider."
-            )
+            raise NotImplementedError(f"{config.provider} is not a supported provider.")

@@ -118,7 +118,9 @@ class TestGasGaugeObserve:
         assert gauge.input_tokens == 49_999
         assert gauge.regime == "calm"
 
-    def test_new_bucket_replaces_existing_gas_gauge_footer(self, tmp_path: Path) -> None:
+    def test_new_bucket_replaces_existing_gas_gauge_footer(
+        self, tmp_path: Path
+    ) -> None:
         footer_c = _make_footer_controller(tmp_path)
         gauge = GasGauge(config=HomunculusConfig(), footer_c=footer_c)
 
@@ -131,7 +133,9 @@ class TestGasGaugeObserve:
         assert footer.key == "gas_gauge"
         assert footer.text == "[context: 50K / 1M - calm]"
 
-    def test_invalidate_hides_tokens_and_clears_pending_footer(self, tmp_path: Path) -> None:
+    def test_invalidate_hides_tokens_and_clears_pending_footer(
+        self, tmp_path: Path
+    ) -> None:
         footer_c = _make_footer_controller(tmp_path)
         gauge = GasGauge(config=HomunculusConfig(), footer_c=footer_c)
 

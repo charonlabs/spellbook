@@ -636,7 +636,9 @@ class TestUnfinishedTurn:
         assert result.last_seq == 1  # second block (0-indexed)
         assert result.last_completed_turn == 0  # no turn ever completed
 
-    def test_last_completed_turn_tracked_correctly_when_unfinished(self, tmp_path) -> None:
+    def test_last_completed_turn_tracked_correctly_when_unfinished(
+        self, tmp_path
+    ) -> None:
         """When the unfinished turn is not the first, last_completed_turn is current_turn - 1."""
         recorder, transcript = _make_recorder(tmp_path)
         recorder.write_session_record(skill_catalog=IRSkillCatalog())
@@ -709,7 +711,9 @@ class TestMalformed:
         with pytest.raises(Exception):
             Rehydrator(bad).run()
 
-    def test_legacy_session_without_skill_catalog_raises_friendly_error(self, tmp_path) -> None:
+    def test_legacy_session_without_skill_catalog_raises_friendly_error(
+        self, tmp_path
+    ) -> None:
         legacy = tmp_path / "legacy.jsonl"
         config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)
         legacy.write_text(
@@ -785,7 +789,9 @@ class TestPendingFooters:
 
         assert result.pending_footers == {}
 
-    def test_partial_drain_leaves_only_undrained_footers_pending(self, tmp_path) -> None:
+    def test_partial_drain_leaves_only_undrained_footers_pending(
+        self, tmp_path
+    ) -> None:
         recorder, transcript = _make_recorder(tmp_path)
         recorder.write_session_record(skill_catalog=IRSkillCatalog())
         recorder.start_turn("t1", [])
@@ -824,7 +830,9 @@ class TestPendingFooters:
             "gas_gauge": third,
         }
 
-    def test_latest_queued_footer_for_same_key_wins_on_rehydrate(self, tmp_path) -> None:
+    def test_latest_queued_footer_for_same_key_wins_on_rehydrate(
+        self, tmp_path
+    ) -> None:
         recorder, transcript = _make_recorder(tmp_path)
         recorder.write_session_record(skill_catalog=IRSkillCatalog())
         recorder.start_turn("t1", [])

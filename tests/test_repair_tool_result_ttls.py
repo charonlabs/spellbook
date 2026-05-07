@@ -59,7 +59,9 @@ def _read_records(path: Path) -> list[IRRecord]:
     ]
 
 
-def test_repair_tool_result_ttls_dry_run_reports_without_mutating(tmp_path: Path) -> None:
+def test_repair_tool_result_ttls_dry_run_reports_without_mutating(
+    tmp_path: Path,
+) -> None:
     recorder, transcript = _recorder(tmp_path)
     output = "large output\n" * 3
     recorder.start_turn("turn_1", [IRUserTextBlock(text="read it", origin="human")])
@@ -99,7 +101,9 @@ def test_repair_tool_result_ttls_dry_run_reports_without_mutating(tmp_path: Path
     )
 
 
-def test_repair_tool_result_ttls_appends_records_and_saves_outputs(tmp_path: Path) -> None:
+def test_repair_tool_result_ttls_appends_records_and_saves_outputs(
+    tmp_path: Path,
+) -> None:
     recorder, transcript = _recorder(tmp_path)
     output = "large output\n" * 3
     recorder.start_turn("turn_1", [IRUserTextBlock(text="read it", origin="human")])

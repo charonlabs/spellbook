@@ -914,7 +914,9 @@ def test_forget_pinned_block_with_confirm_compacts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_summary_result_is_discarded_but_fork_is_shutdown(tmp_path: Path) -> None:
+async def test_stale_summary_result_is_discarded_but_fork_is_shutdown(
+    tmp_path: Path,
+) -> None:
     blocks = _user_blocks("a")
     semantic_blocks = [
         _semantic_block(idx=0, start=0, end=0, title="First"),

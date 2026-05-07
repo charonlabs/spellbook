@@ -104,7 +104,9 @@ async def test_turn_start_queues_idle_footer(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_start_idle_footer_does_not_duplicate_rollover_time(tmp_path: Path) -> None:
+async def test_turn_start_idle_footer_does_not_duplicate_rollover_time(
+    tmp_path: Path,
+) -> None:
     controller, recorder, _ = _make_controller(tmp_path)
     clock = _Clock(_dt("2026-03-29T12:00:00"))
     timekeeper = Timekeeper(

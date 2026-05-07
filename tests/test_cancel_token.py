@@ -48,7 +48,9 @@ class TestCancelToken:
         assert token.cancelled is True
 
     @pytest.mark.asyncio
-    async def test_wait_cancelled_returns_immediately_if_already_cancelled(self) -> None:
+    async def test_wait_cancelled_returns_immediately_if_already_cancelled(
+        self,
+    ) -> None:
         token = CancelToken()
         token.cancel()
 

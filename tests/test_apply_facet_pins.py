@@ -110,7 +110,9 @@ def test_apply_facet_pins_resolves_prefix_and_appends_pin_record(
         )
     ]
     pin_records = [
-        record for record in result.records if isinstance(record, IRSemanticBlockPinRecord)
+        record
+        for record in result.records
+        if isinstance(record, IRSemanticBlockPinRecord)
     ]
     assert len(pin_records) == 1
     assert pin_records[0].turn == 1

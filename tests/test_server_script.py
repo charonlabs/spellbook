@@ -172,7 +172,9 @@ def test_model_is_required_when_initializing_new_transcript(tmp_path: Path) -> N
         server._parse_args([str(tmp_path / "missing.jsonl")])
 
 
-def test_main_resumes_existing_transcript_without_model(tmp_path: Path, monkeypatch) -> None:
+def test_main_resumes_existing_transcript_without_model(
+    tmp_path: Path, monkeypatch
+) -> None:
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text("", encoding="utf-8")
     seen: dict[str, object] = {}

@@ -334,7 +334,9 @@ class TestMaybeDetect:
 
 
 class TestRehydrate:
-    def test_restores_detector_state_from_rehydrated_transcript(self, tmp_path: Path) -> None:
+    def test_restores_detector_state_from_rehydrated_transcript(
+        self, tmp_path: Path
+    ) -> None:
         detector = _make_detector(tmp_path, detect_interval=4)
         blocks: list[
             IRUserTextBlock
@@ -372,7 +374,9 @@ class TestRehydrate:
         assert detector._start_block_id == 2
         assert detector._context_buffer == [blocks[2]]
 
-    def test_rehydrate_empty_transcript_resets_detector_buffers(self, tmp_path: Path) -> None:
+    def test_rehydrate_empty_transcript_resets_detector_buffers(
+        self, tmp_path: Path
+    ) -> None:
         detector = _make_detector(tmp_path)
         detector.completed_blocks = [
             IRSemanticBlockRange(title="stale", start_block=0, end_block=0)
@@ -423,7 +427,9 @@ class TestInboundRendering:
         assert "<context_block_buffer />" in inbound.text
         assert "<instructions>" in inbound.text
 
-    def test_renders_completed_buffered_and_context_sections(self, tmp_path: Path) -> None:
+    def test_renders_completed_buffered_and_context_sections(
+        self, tmp_path: Path
+    ) -> None:
         detector = _make_detector(tmp_path)
         detector.completed_blocks = [
             IRSemanticBlockRange(title="Already done", start_block=0, end_block=1)

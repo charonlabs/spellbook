@@ -102,7 +102,9 @@ class OpenAIGenerationStream(GenerationStream):
         if self._response is None:
             raise ValueError("OpenAI stream exhausted without a final response.")
 
-        blocks, has_tool_call = _normalize_content_blocks(_obj_get(self._response, "output"))
+        blocks, has_tool_call = _normalize_content_blocks(
+            _obj_get(self._response, "output")
+        )
         usage = _normalize_usage(_obj_get(self._response, "usage"))
         return IRGeneration(
             model=self._model,
@@ -183,7 +185,9 @@ class OpenAIGenerationStream(GenerationStream):
 
     def _finish_partial_text(self, item: Any) -> None:
         if self._text_parts is not None:
-            self._partial_blocks.append(IRAssistantTextBlock(text="".join(self._text_parts)))
+            self._partial_blocks.append(
+                IRAssistantTextBlock(text="".join(self._text_parts))
+            )
             self._text_parts = None
             return
 
@@ -317,7 +321,9 @@ class OpenAIBackend(ModelBackend):
         registry: ToolRegistry,
     ) -> list[dict[str, Any]]:
         """Generate provider-specific tool schemas from the registry."""
-        return [_openai_tool_schema(tool.name, tool.input_model) for tool in registry.tools]
+        return [
+            _openai_tool_schema(tool.name, tool.input_model) for tool in registry.tools
+        ]
 
     def build_token_counter(
         self, config: SpellbookConfig, surface_builder: RequestSurfaceBuilder
@@ -384,7 +390,9 @@ def _translate_system_to_instructions(
     return "\n\n".join(parts) if parts else None
 
 
-def _ir_blocks_to_response_input_items(blocks: Sequence[IRBlock]) -> list[dict[str, Any]]:
+def _ir_blocks_to_response_input_items(
+    blocks: Sequence[IRBlock],
+) -> list[dict[str, Any]]:
     input_items: list[dict[str, Any]] = []
     pending_user_content: list[dict[str, Any]] = []
 
@@ -454,7 +462,9 @@ def _tool_result_block_to_openai_item(block: IRToolResultBlock) -> dict[str, Any
 def _tool_result_output(block: IRToolResultBlock) -> str | list[dict[str, Any]]:
     if not block.content:
         return ""
-    if all(isinstance(content_block, IRToolTextBlock) for content_block in block.content):
+    if all(
+        isinstance(content_block, IRToolTextBlock) for content_block in block.content
+    ):
         return "".join(
             content_block.text
             for content_block in block.content
@@ -474,9 +484,7 @@ def _tool_result_output(block: IRToolResultBlock) -> str | list[dict[str, Any]]:
 def _image_block_to_openai_part(block: IRImageBlock) -> dict[str, Any]:
     match block.source:
         case IRImageBase64Source():
-            image_url = (
-                f"data:{block.source.media_type};base64,{block.source.data}"
-            )
+            image_url = f"data:{block.source.media_type};base64,{block.source.data}"
         case IRImageURLSource():
             image_url = block.source.url
         case IRImageBlobSource():
@@ -519,8 +527,7 @@ def _normalize_content_blocks(output: Any) -> tuple[list[IRBlock], bool]:
             continue
 
         raise ValueError(
-            "Unsupported OpenAI output item type: "
-            f"{str(item.get('type') or '')!r}"
+            f"Unsupported OpenAI output item type: {str(item.get('type') or '')!r}"
         )
 
     return blocks, has_tool_call
@@ -556,7 +563,9 @@ def _translate_openai_reasoning_item_to_ir_block(item: Any) -> IRThinkingBlock |
     return IRThinkingBlock(text="".join(thinking_parts), signature=encrypted_content)
 
 
-def _translate_openai_message_item_to_ir_block(item: Any) -> IRAssistantTextBlock | None:
+def _translate_openai_message_item_to_ir_block(
+    item: Any,
+) -> IRAssistantTextBlock | None:
     if not isinstance(item, dict) or str(item.get("type") or "") != "message":
         return None
 
@@ -586,7 +595,9 @@ def _translate_openai_message_item_to_ir_block(item: Any) -> IRAssistantTextBloc
     return IRAssistantTextBlock(text="".join(text_parts))
 
 
-def _translate_openai_function_call_item_to_ir_block(item: Any) -> IRToolCallBlock | None:
+def _translate_openai_function_call_item_to_ir_block(
+    item: Any,
+) -> IRToolCallBlock | None:
     if not isinstance(item, dict) or str(item.get("type") or "") != "function_call":
         return None
 
@@ -666,7 +677,9 @@ def _response_has_refusal(response: Any) -> bool:
         content = item.get("content") or []
         if not isinstance(content, list):
             continue
-        if any(isinstance(part, dict) and part.get("type") == "refusal" for part in content):
+        if any(
+            isinstance(part, dict) and part.get("type") == "refusal" for part in content
+        ):
             return True
     return False
 
@@ -727,8 +740,7 @@ def _ensure_closed_object_schema(schema: Any) -> Any:
         return schema
 
     normalized = {
-        str(key): _ensure_closed_object_schema(value)
-        for key, value in schema.items()
+        str(key): _ensure_closed_object_schema(value) for key, value in schema.items()
     }
     if normalized.get("type") == "object" and "additionalProperties" not in normalized:
         normalized["additionalProperties"] = False

@@ -413,7 +413,9 @@ class TestInboundQueueSemantics:
         assert queued[0].blocks[0].text == "background notification"
 
     @pytest.mark.asyncio
-    async def test_shutdown_wakes_idle_queue_and_run_exits(self, tmp_path: Path) -> None:
+    async def test_shutdown_wakes_idle_queue_and_run_exits(
+        self, tmp_path: Path
+    ) -> None:
         lifecycle = _RecordingSessionLifecycle()
         manager = _make_manager(tmp_path, session_lifecycle=lifecycle)
 
@@ -479,7 +481,9 @@ class TestInboundInjectionRoundLifecycle:
 
 class TestRunningPhase:
     @pytest.mark.asyncio
-    async def test_running_phase_processes_pending_turn_messages(self, tmp_path: Path) -> None:
+    async def test_running_phase_processes_pending_turn_messages(
+        self, tmp_path: Path
+    ) -> None:
         gen = _FakeGenerator(
             [
                 _gen(blocks=[IRAssistantTextBlock(text="done", origin="model")]),
@@ -536,7 +540,9 @@ class TestRunningPhase:
         assert lifecycle.events[1] == ("on_turn_ended", "end_turn")
 
     @pytest.mark.asyncio
-    async def test_running_phase_drains_multiple_turn_messages(self, tmp_path: Path) -> None:
+    async def test_running_phase_drains_multiple_turn_messages(
+        self, tmp_path: Path
+    ) -> None:
         gen = _FakeGenerator(
             [
                 _gen(blocks=[IRAssistantTextBlock(text="first", origin="model")]),
@@ -564,7 +570,9 @@ class TestRunningPhase:
         assert not manager.inbound_queue.has_pending_turn()
 
     @pytest.mark.asyncio
-    async def test_running_phase_handles_tool_use_roundtrip(self, tmp_path: Path) -> None:
+    async def test_running_phase_handles_tool_use_roundtrip(
+        self, tmp_path: Path
+    ) -> None:
         gen = _FakeGenerator(
             [
                 _gen(blocks=[_tool_call("toolu_1")], stop_reason="tool_use"),
@@ -683,7 +691,9 @@ class TestBuildResumeBehavior:
         assert "compose" in rehydrated.skill_catalog.skills
 
     @pytest.mark.asyncio
-    async def test_skill_tool_missing_manager_surfaces_tool_error(self, tmp_path: Path) -> None:
+    async def test_skill_tool_missing_manager_surfaces_tool_error(
+        self, tmp_path: Path
+    ) -> None:
         with pytest.raises(ToolError, match="Skills were not initialized"):
             await exec_skill(
                 ToolMetadata(cwd=tmp_path, transcript_path=Path()),

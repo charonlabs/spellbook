@@ -68,7 +68,9 @@ async def test_read_missing_file_errors(tmp_path: Path) -> None:
         await exec_read(_meta(tmp_path), ReadInput(file_path="missing.txt"))
 
 
-async def test_read_image_returns_image_and_persists_relative_blob(tmp_path: Path) -> None:
+async def test_read_image_returns_image_and_persists_relative_blob(
+    tmp_path: Path,
+) -> None:
     image_bytes = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
         "/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -99,7 +101,9 @@ async def test_read_directory_errors(tmp_path: Path) -> None:
         await exec_read(_meta(tmp_path), ReadInput(file_path="folder"))
 
 
-async def test_write_creates_parent_dirs_and_returns_diff_display(tmp_path: Path) -> None:
+async def test_write_creates_parent_dirs_and_returns_diff_display(
+    tmp_path: Path,
+) -> None:
     result = await exec_write(
         _meta(tmp_path),
         WriteInput(file_path="nested/example.py", content="print('hi')\n"),
