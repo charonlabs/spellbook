@@ -348,7 +348,7 @@ class CoreAppRuntime:
         await self._note_surface_for_inbound(ctx.inbound)
 
     async def _note_surface_for_inbound(self, inbound: IRInboundMessage) -> None:
-        assert self.config is not None
+        session = self._require_session()
         surface = surface_for_inbound(inbound)
         if surface is None:
             logger.debug(
@@ -383,7 +383,7 @@ class CoreAppRuntime:
         if self._last_reported_surface is None:
             text = f"Current human surface: {surface}."
         else:
-            text = f"{self.config.user_name} is now on {surface}."
+            text = f"{session.config.user_name} is now on {surface}."
         self._last_reported_surface = surface
         logger.info(
             "runtime.surface.transition surface=%s previous_reported=%s",

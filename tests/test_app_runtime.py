@@ -314,6 +314,50 @@ async def test_active_conduit_message_injects_surface_footer_for_current_turn(
     await runtime.shutdown()
 
 
+async def test_surface_footer_uses_session_config_after_resume(
+    tmp_path: Path,
+) -> None:
+    builder = _FakeSessionBuilder()
+    runtime = CoreAppRuntime(
+        transcript_path=tmp_path / "transcript.jsonl",
+        config=_config(tmp_path).model_copy(update={"user_name": "Will"}),
+        session_builder=cast(SessionBuilder, builder),
+    )
+    await runtime.startup()
+    assert builder.session is not None
+    runtime.config = None
+
+    telegram = IRInboundMessage(
+        blocks=[IRUserTextBlock(text="hi", origin="human")],
+        source_metadata={"source": "telegram"},
+        delivery="turn",
+    )
+    web = IRInboundMessage(
+        blocks=[IRUserTextBlock(text="hi again", origin="human")],
+        source_metadata={"source": "web"},
+        delivery="turn",
+    )
+
+    await builder.session._lifecycle.on_turn_started(
+        SessionContext(session_id="session_fake", turn_idx=1, inbound=telegram),
+        "turn_1",
+    )
+    await builder.session._lifecycle.on_turn_started(
+        SessionContext(session_id="session_fake", turn_idx=2, inbound=web),
+        "turn_2",
+    )
+
+    assert len(builder.session.submitted) == 2
+    first_footer = builder.session.submitted[0].blocks[0]
+    second_footer = builder.session.submitted[1].blocks[0]
+    assert isinstance(first_footer, IRUserTextBlock)
+    assert isinstance(second_footer, IRUserTextBlock)
+    assert first_footer.text == "Current human surface: Telegram."
+    assert second_footer.text == "Will is now on web UI."
+
+    await runtime.shutdown()
+
+
 async def test_conduit_notification_wakes_with_frame_but_no_surface_footer(
     tmp_path: Path,
 ) -> None:

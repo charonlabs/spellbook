@@ -14,7 +14,7 @@ in the rewrite.
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Provider = Literal["anthropic", "openai", "local"]
 
@@ -35,6 +35,7 @@ DEFAULT_TOOL_RESULT_TTL_TURNS = 3
 DEFAULT_TOOL_RESULT_TTL_CHAR_THRESHOLD = 4000
 
 DEFAULT_SKILL_DISCOVERY_DIRS = [".claude", ".agents", ".spellbook", ".chorus/.claude"]
+DEFAULT_OPENAI_SKILL_DISCOVERY_DIRS = [".agents", ".spellbook"]
 
 DEFAULT_LOCAL_TIMEZONE = "America/New_York"
 DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS = 300
@@ -42,6 +43,12 @@ DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS = 300
 DEFAULT_USER_NAME = "Ryan"
 
 SessionType = Literal["main", "block_detector", "block_summarizer"]
+
+
+def default_skill_discovery_dirs(provider: str) -> list[str]:
+    if provider == "openai":
+        return list(DEFAULT_OPENAI_SKILL_DISCOVERY_DIRS)
+    return list(DEFAULT_SKILL_DISCOVERY_DIRS)
 
 
 class HomunculusConfig(BaseModel, frozen=True):
@@ -66,7 +73,9 @@ class SpellbookConfig(BaseModel, frozen=True):
     model: str = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]
     effort: str = DEFAULT_EFFORT
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
-    skill_discovery_dirs: list[str] = DEFAULT_SKILL_DISCOVERY_DIRS
+    skill_discovery_dirs: list[str] = Field(
+        default_factory=lambda: default_skill_discovery_dirs(DEFAULT_PROVIDER)
+    )
     local_timezone: str = DEFAULT_LOCAL_TIMEZONE
     idle_footer_threshold_seconds: int = Field(
         default=DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS, ge=0
@@ -81,3 +90,13 @@ class SpellbookConfig(BaseModel, frozen=True):
 
     # Nested configs
     hom_config: HomunculusConfig = Field(default_factory=HomunculusConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_provider_specific_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict) or "skill_discovery_dirs" in data:
+            return data
+        values = dict(data)
+        provider = str(values.get("provider", DEFAULT_PROVIDER))
+        values["skill_discovery_dirs"] = default_skill_discovery_dirs(provider)
+        return values

@@ -175,8 +175,16 @@ def _system_prompt_from_args(args: argparse.Namespace) -> str:
         user_name=args.user_name,
         system_prompt_text=tuple(args.system_prompt_text or ()),
         system_prompt_files=tuple(args.system_prompt_files or ()),
-        discover_claude_md=not args.no_discover_claude_md,
+        discover_claude_md=_should_discover_claude_md(args),
     )
+
+
+def _should_discover_claude_md(args: argparse.Namespace) -> bool:
+    if args.no_discover_claude_md:
+        return False
+    if args.model is None:
+        return False
+    return infer_provider_for_model(args.model) == "anthropic"
 
 
 def _log_level_from_arg(value: str) -> LogLevel:

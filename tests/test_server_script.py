@@ -76,6 +76,37 @@ def test_server_prompt_can_disable_claude_md_discovery(
     assert "Workspace instruction." not in prompt
 
 
+def test_server_prompt_skips_claude_md_for_openai_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    (cwd / "CLAUDE.md").write_text(
+        "# Workspace Note\nWorkspace instruction.",
+        encoding="utf-8",
+    )
+
+    args = server._parse_args(
+        [
+            "--model",
+            "gpt-5.5",
+            "--cwd",
+            str(cwd),
+            "--system-prompt-text",
+            "# Runtime Note\nRuntime instruction.",
+        ]
+    )
+
+    prompt = server._system_prompt_from_args(args)
+
+    assert "GPT-5.5 entity" in prompt
+    assert "Runtime instruction." in prompt
+    assert "Workspace instruction." not in prompt
+
+
 def test_server_prompt_renders_claude_4_7_orientation(tmp_path: Path) -> None:
     cwd = tmp_path / "workspace"
     cwd.mkdir()
