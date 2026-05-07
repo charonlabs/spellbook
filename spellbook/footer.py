@@ -41,7 +41,7 @@ class FooterController:
         msgs = self._inbound.drain_footer_messages()
         for msg in msgs:
             # fail loudly, when drained, on footer msgs that have multiple blocks or bad blocks
-            if len(msg.blocks) > 1 or not isinstance(msg.blocks[0], IRUserTextBlock):
+            if len(msg.blocks) != 1 or not isinstance(msg.blocks[0], IRUserTextBlock):
                 raise ValueError(
                     f"Tried to drain malformed inbound footer message. msg={msg.model_dump_json()}"
                 )

@@ -151,7 +151,9 @@ class TestFooterControllerQueueing:
         pending = controller.peek_pending()
         assert [f.key for f in pending] == ["high-prio", "mid-prio", "low-prio"]
 
-    def test_collect_and_drain_returns_sorted_and_clears_pending(self, tmp_path: Path) -> None:
+    def test_collect_and_drain_returns_sorted_and_clears_pending(
+        self, tmp_path: Path
+    ) -> None:
         recorder, _ = _make_recorder(tmp_path)
         inbound = InboundMessageQueue()
         controller = FooterController(inbound_queue=inbound, recorder=recorder)
@@ -295,6 +297,28 @@ class TestFooterControllerInboundDrain:
             controller.collect_and_drain()
 
     @pytest.mark.asyncio
+    async def test_collect_and_drain_rejects_footer_message_with_empty_blocks(
+        self, tmp_path: Path
+    ) -> None:
+        recorder, _ = _make_recorder(tmp_path)
+        inbound = InboundMessageQueue()
+        controller = FooterController(inbound_queue=inbound, recorder=recorder)
+
+        bad = IRInboundMessage(
+            blocks=[],
+            delivery="footer",
+            source_metadata={
+                "footer_type": "notif",
+                "footer_source": "conduit",
+                "footer_key": "bad",
+            },
+        )
+        await inbound.put(bad)
+
+        with pytest.raises(ValueError, match="malformed inbound footer message"):
+            controller.collect_and_drain()
+
+    @pytest.mark.asyncio
     async def test_collect_and_drain_rejects_footer_message_with_non_text_block(
         self, tmp_path: Path
     ) -> None:
@@ -377,7 +401,9 @@ class TestFooterControllerTranscriptEffects:
 
 class TestFooterControllerRoundLifecycle:
     @pytest.mark.asyncio
-    async def test_before_round_is_noop_when_no_pending_footers(self, tmp_path: Path) -> None:
+    async def test_before_round_is_noop_when_no_pending_footers(
+        self, tmp_path: Path
+    ) -> None:
         recorder, transcript = _make_recorder(tmp_path)
         inbound = InboundMessageQueue()
         controller = FooterController(inbound_queue=inbound, recorder=recorder)

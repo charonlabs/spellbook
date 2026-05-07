@@ -67,10 +67,10 @@ The build partner reviewed Ryan's TokenMeter implementation (221 lines, prefix-c
 ## Facets
 - TokenMeter review (blocks 412-418)
   Build partner verified prefix-cache semantics, thinking-boundary repair, and observe_generation_usage. One P3: dual cache (_approx_prefix_counts) could be consolidated. Otherwise clean.
-  Resources: spellbook/core/homunculus/token_meter.py; tests/core/test_token_meter.py
+  Resources: spellbook/homunculus/token_meter.py; tests/test_token_meter.py
 - Self-state vs mechanism architecture (blocks 419-425)
   Build partner proposed: self-state goes inside Homunculus (coherent update ordering), mechanisms stay outside (distributed lifecycle hooks). GasGauge consolidated into Homunculus rather than standalone. The principle: "when a generation arrives, self-state subsystems need to update in a specific order."
-  Resources: spellbook/core/homunculus/homunculus.py
+  Resources: spellbook/homunculus/homunculus.py
 
 Open thread: GasGauge consolidation into Homunculus not yet implemented.
 ```

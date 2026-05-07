@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file is for humans and agents changing `spellbook/core/`.
+This file is for humans and agents changing `spellbook/`.
 
 The old root-level guidance still contains useful product philosophy, but this file is the contributor guide for the **core rewrite as it exists in code now**.
 
@@ -8,9 +8,9 @@ The code is source of truth. Design targets under `spellbook/design/` are useful
 
 ---
 
-## What `core/` is
+## What `spellbook/` is
 
-`core/` is the runtime spine for the rewrite. It currently includes:
+`spellbook/` is the runtime spine for the rewrite. It currently includes:
 
 - canonical IR types
 - the inner generate/execute loop
@@ -112,7 +112,7 @@ It currently owns or coordinates:
 - block detector integration
 - fork-backed awareness work
 
-If you are adding context intelligence, semantic grouping, derived awareness, or “active self” behavior, it probably belongs here or under `core/homunculus/`.
+If you are adding context intelligence, semantic grouping, derived awareness, or “active self” behavior, it probably belongs here or under `spellbook/homunculus/`.
 
 ### `BlockManager`
 
@@ -403,14 +403,14 @@ Implementation-local guidance for these renderers should live in the module docs
 
 ## Testing expectations
 
-At minimum, changes in `core/` should preserve or extend focused coverage in `tests/core/`.
+At minimum, changes in `spellbook/` should preserve or extend focused coverage in `tests/`.
 
 Before committing core source changes, run:
 
 ```bash
-uv run ruff check spellbook/core tests/core
-uv run ruff format --check spellbook/core tests/core
-uv run ty check spellbook/core tests/core
+uv run ruff check spellbook tests
+uv run ruff format --check spellbook tests
+uv run ty check spellbook tests
 ```
 
 Current useful areas include:

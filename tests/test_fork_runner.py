@@ -93,7 +93,9 @@ class _FakeRecorder:
 
 class TestForkDispatch:
     @pytest.mark.asyncio
-    async def test_run_fork_dispatches_block_detector_config(self, tmp_path: Path) -> None:
+    async def test_run_fork_dispatches_block_detector_config(
+        self, tmp_path: Path
+    ) -> None:
         runner = ForkRunner(
             parent_config=_parent_config(tmp_path),
             parent_transcript_path=tmp_path / "parent.jsonl",
@@ -117,7 +119,9 @@ class TestForkDispatch:
         assert result is prepared
         prepared.coro.close()
 
-    def test_orientation_loader_reads_markdown_fork_orientation(self, tmp_path: Path) -> None:
+    def test_orientation_loader_reads_markdown_fork_orientation(
+        self, tmp_path: Path
+    ) -> None:
         runner = ForkRunner(
             parent_config=_parent_config(tmp_path),
             parent_transcript_path=tmp_path / "parent.jsonl",
@@ -133,7 +137,7 @@ class TestForkDispatch:
 class TestBlockDetectorForkRun:
     @pytest.mark.asyncio
     async def test_run_block_detector_derives_child_config_and_submits_inbound_block(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         parent_config = SpellbookConfig(
             provider="openai",
@@ -188,20 +192,6 @@ class TestBlockDetectorForkRun:
             session_builder=cast(Any, _build_session),
         )
 
-        scheduled_coroutines: list[object] = []
-
-        def _fake_create_task(coro):
-            scheduled_coroutines.append(coro)
-            coro.close()
-
-            class _Task:
-                def cancel(self) -> bool:
-                    return False
-
-            return _Task()
-
-        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
-
         prepared = await runner._run_block_detector(fork_config)
         result = await prepared.coro
         assert isinstance(result, BlockDetectorResult)
@@ -224,7 +214,7 @@ class TestBlockDetectorForkRun:
         ]
         assert recorder.shutdowns == []
 
-        assert len(scheduled_coroutines) == 1
+        assert fake_session.run_calls == 1
         assert fake_session.submitted_messages == [
             IRInboundMessage(blocks=[fork_config.inbound_block], delivery="turn")
         ]
@@ -237,7 +227,7 @@ class TestBlockDetectorForkRun:
 
     @pytest.mark.asyncio
     async def test_run_block_detector_honors_explicit_detector_model(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         parent_config = _parent_config(tmp_path)
         fork_config = _detector_config().model_copy(
@@ -262,16 +252,6 @@ class TestBlockDetectorForkRun:
             kwargs["lifecycle"].turn_end_event.set()
             return fake_session
 
-        def _fake_create_task(coro):
-            coro.close()
-
-            class _Task:
-                def cancel(self) -> bool:
-                    return False
-
-            return _Task()
-
-        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
         runner = ForkRunner(
             parent_config=parent_config,
             parent_transcript_path=tmp_path / "parent.jsonl",
@@ -287,7 +267,7 @@ class TestBlockDetectorForkRun:
 
     @pytest.mark.asyncio
     async def test_run_block_detector_waits_for_turn_end_before_reading_tool_meta(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         fork_config = _detector_config()
         events: list[str] = []
@@ -338,20 +318,14 @@ class TestBlockDetectorForkRun:
             session_builder=cast(Any, _build_session),
         )
 
-        def _fake_create_task(coro):
-            coro.close()
-            return object()
-
-        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
-
         prepared = await runner._run_block_detector(fork_config)
         await prepared.coro
 
-        assert events == ["submit", "set_turn_end", "get_tool_meta", "shutdown"]
+        assert events == ["submit", "set_turn_end", "get_tool_meta", "shutdown", "run"]
 
     @pytest.mark.asyncio
     async def test_run_block_detector_requires_block_detector_tool_metadata(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         fork_config = _detector_config()
 
@@ -379,19 +353,13 @@ class TestBlockDetectorForkRun:
             session_builder=cast(Any, _build_session),
         )
 
-        def _fake_create_task(coro):
-            coro.close()
-            return object()
-
-        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
-
         with pytest.raises(AssertionError):
             prepared = await runner._run_block_detector(fork_config)
             await prepared.coro
 
     @pytest.mark.asyncio
     async def test_run_block_detector_shuts_down_child_session_after_collecting_result(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         fork_config = _detector_config()
         events: list[str] = []
@@ -438,27 +406,75 @@ class TestBlockDetectorForkRun:
             session_builder=cast(Any, _build_session),
         )
 
-        def _fake_create_task(coro):
-            coro.close()
-            return object()
-
-        monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
-
         prepared = await runner._run_block_detector(fork_config)
         result = await prepared.coro
         assert isinstance(result, BlockDetectorResult)
 
         assert [b.title for b in result.completed] == ["Completed block"]
-        assert events == ["submit", "get_tool_meta", "shutdown"]
+        assert events == ["submit", "get_tool_meta", "shutdown", "run"]
 
     @pytest.mark.asyncio
-    async def test_prepared_fork_shutdowns_child_when_cancelled(self, tmp_path: Path) -> None:
+    async def test_prepared_fork_fails_if_child_errors_before_turn_end(
+        self, tmp_path: Path
+    ) -> None:
         fork_config = _detector_config()
         events: list[str] = []
+
+        class _ErroringSession:
+            async def run(self) -> None:
+                events.append("run")
+                raise RuntimeError("child boom")
+
+            async def submit_message(self, msg: IRInboundMessage) -> None:
+                events.append("submit")
+
+            async def get_tool_meta(self) -> BlockDetectorToolMetadata:
+                events.append("get_tool_meta")
+                return BlockDetectorToolMetadata(
+                    cwd=tmp_path,
+                    transcript_path=Path(),
+                    prev_semantic_blocks=[],
+                    full_context_blocks=[],
+                    context_block_buffer=[],
+                    context_block_start_id=0,
+                    semantic_block_buffer=[],
+                    new_semantic_blocks=[],
+                    touched_block_titles=set(),
+                )
+
+            async def shutdown(self) -> None:
+                events.append("shutdown")
+
+        async def _build_session(**kwargs):
+            return _ErroringSession()
+
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=tmp_path / "parent.jsonl",
+            recorder=cast(Recorder, _FakeRecorder()),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_block_detector(fork_config)
+
+        with pytest.raises(RuntimeError, match="child boom"):
+            await asyncio.wait_for(prepared.coro, timeout=1)
+
+        assert events == ["submit", "run", "shutdown"]
+
+    @pytest.mark.asyncio
+    async def test_prepared_fork_shutdowns_child_when_cancelled(
+        self, tmp_path: Path
+    ) -> None:
+        fork_config = _detector_config()
+        events: list[str] = []
+
+        never = asyncio.Event()
 
         class _CancellableSession:
             async def run(self) -> None:
                 events.append("run")
+                await never.wait()
 
             async def submit_message(self, msg: IRInboundMessage) -> None:
                 events.append("submit")

@@ -26,9 +26,10 @@ result decoding explicit and coherent together.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Coroutine, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Coroutine, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -107,6 +108,12 @@ ForkResult = Annotated[
 class PreparedFork:
     coro: Coroutine[Any, Any, ForkResult]
     fork_id: str
+
+
+class ForkSession(Protocol):
+    async def run(self) -> None: ...
+
+    async def shutdown(self) -> None: ...
 
 
 class ForkSessionLifecycle(SessionLifecycle):
@@ -189,14 +196,18 @@ class ForkRunner:
         )
 
         async def _run() -> BlockDetectorResult:
-            asyncio.create_task(fork_session.run())
+            child_task = asyncio.create_task(fork_session.run())
             try:
                 initial_msg = IRInboundMessage(
                     blocks=[fork_config.inbound_block],
                     delivery="turn",
                 )
                 await fork_session.submit_message(initial_msg)
-                await lifecycle.turn_end_event.wait()
+                await self._wait_for_turn_end_or_child_exit(
+                    fork_id=fork_id,
+                    lifecycle=lifecycle,
+                    child_task=child_task,
+                )
                 final_meta = await fork_session.get_tool_meta()
                 from spellbook.tools.common import BlockDetectorToolMetadata
 
@@ -210,7 +221,7 @@ class ForkRunner:
                     ],
                 )
             finally:
-                await fork_session.shutdown()
+                await self._shutdown_child_session(fork_session, child_task)
 
         return PreparedFork(coro=_run(), fork_id=fork_id)
 
@@ -250,7 +261,7 @@ class ForkRunner:
         )
 
         async def _run() -> BlockSummarizerResult:
-            asyncio.create_task(fork_session.run())
+            child_task = asyncio.create_task(fork_session.run())
             try:
                 initial_msg = IRInboundMessage(
                     blocks=[fork_config.inbound_block],
@@ -258,16 +269,74 @@ class ForkRunner:
                 )
                 # TODO: make this shutdown on the after_execute round boundary instead of the turn boundary
                 await fork_session.submit_message(initial_msg)
-                await lifecycle.turn_end_event.wait()
+                await self._wait_for_turn_end_or_child_exit(
+                    fork_id=fork_id,
+                    lifecycle=lifecycle,
+                    child_task=child_task,
+                )
                 final_meta = await fork_session.get_tool_meta()
                 from spellbook.tools.common import BlockSummarizerToolMetadata
 
                 assert isinstance(final_meta, BlockSummarizerToolMetadata)
                 return BlockSummarizerResult(summary=final_meta.new_summary)
             finally:
-                await fork_session.shutdown()
+                await self._shutdown_child_session(fork_session, child_task)
 
         return PreparedFork(coro=_run(), fork_id=fork_id)
+
+    async def _wait_for_turn_end_or_child_exit(
+        self,
+        *,
+        fork_id: str,
+        lifecycle: ForkSessionLifecycle,
+        child_task: asyncio.Task[None],
+    ) -> None:
+        """Wait for a fork turn to finish, but don't hide child-session failure.
+
+        A fork child session is expected to keep running until the fork turn ends
+        and the parent explicitly shuts it down. If the child session task exits
+        first, the prepared fork should fail so the Nursery can harvest the error
+        instead of leaving a background job waiting forever.
+        """
+        if child_task.done() and not lifecycle.turn_end_event.is_set():
+            await self._raise_child_exit_before_turn_end(fork_id, child_task)
+        if lifecycle.turn_end_event.is_set():
+            return
+
+        turn_end_task = asyncio.create_task(lifecycle.turn_end_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {turn_end_task, child_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if child_task in done and not lifecycle.turn_end_event.is_set():
+                await self._raise_child_exit_before_turn_end(fork_id, child_task)
+        finally:
+            if not turn_end_task.done():
+                turn_end_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await turn_end_task
+
+    async def _raise_child_exit_before_turn_end(
+        self, fork_id: str, child_task: asyncio.Task[None]
+    ) -> None:
+        try:
+            await child_task
+        except asyncio.CancelledError as exc:
+            raise RuntimeError(
+                f"Fork child session {fork_id} was cancelled before turn end."
+            ) from exc
+        raise RuntimeError(f"Fork child session {fork_id} exited before turn end.")
+
+    async def _shutdown_child_session(
+        self, fork_session: ForkSession, child_task: asyncio.Task[None]
+    ) -> None:
+        await fork_session.shutdown()
+        if not child_task.done():
+            await asyncio.sleep(0)
+        if not child_task.done():
+            child_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await child_task
 
     def _get_orientation(self, fc: ForkConfig) -> str:
         orientation_path = self.ORIENTATION_PATH / fc.type
