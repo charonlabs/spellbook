@@ -40,6 +40,8 @@ MISSING_SKILL_CATALOG_ERROR = (
     'Please populate the session record with an empty skill catalog: {"skills": {}}.'
 )
 
+adapter = TypeAdapter(IRRecord)
+
 
 class RehydrationResult(BaseModel, frozen=True):
     """The result of a rehydration.
@@ -96,7 +98,7 @@ class Rehydrator:
                 if not line:
                     continue
                 # Fails loudly. Malformed transcripts should never silently sneak through.
-                records.append(TypeAdapter(IRRecord).validate_json(line))
+                records.append(adapter.validate_json(line))
         return records
 
     def run(self) -> RehydrationResult:

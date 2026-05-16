@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
+import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -37,6 +39,20 @@ def _default_runtime_factory(
     return CoreAppRuntime(transcript_path=transcript_path, config=config)
 
 
+def _enable_faulthandler() -> None:
+    if faulthandler.is_enabled():
+        return
+    fault_file = sys.__stderr__
+    if fault_file is None:
+        fault_file = sys.stderr
+    try:
+        faulthandler.enable(file=fault_file, all_threads=True)
+    except Exception:
+        logger.exception("app.faulthandler_enable_failed")
+    else:
+        logger.info("app.faulthandler_enabled")
+
+
 def create_app(
     *,
     transcript_path: Path,
@@ -44,6 +60,7 @@ def create_app(
     runtime_factory: RuntimeFactory = _default_runtime_factory,
 ) -> FastAPI:
     """Create a FastAPI app around one `CoreAppRuntime`."""
+    _enable_faulthandler()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

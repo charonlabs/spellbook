@@ -13,6 +13,7 @@ generate and execute.
 """
 
 import asyncio
+import logging
 from contextlib import suppress
 
 from spellbook.round_lifecycle import RoundLifecycle
@@ -22,6 +23,8 @@ from .cancel_token import CancelToken
 from .config import SpellbookConfig
 from .ir_types import IRBlock, IRGeneration
 from .surface_builder import RequestSurfaceBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class Generator:
@@ -43,6 +46,21 @@ class Generator:
         lifecycle: RoundLifecycle,
     ) -> IRGeneration:
         surface = self.builder.build(blocks)
+        logger.info(
+            "generator.surface_built model=%s blocks=%s messages=%s tools=%s max_output_tokens=%s",
+            surface.model,
+            len(blocks),
+            len(surface.messages),
+            len(surface.tools),
+            surface.max_output_tokens,
+        )
+        logger.info(
+            "generator.stream_enter model=%s messages=%s tools=%s",
+            surface.model,
+            len(surface.messages),
+            len(surface.tools),
+        )
+        first_event_seen = False
         async with self.backend.stream(surface, cancel_token) as stream:
             while True:
                 next_event = asyncio.create_task(stream.__anext__())
@@ -65,6 +83,19 @@ class Generator:
                 try:
                     event = next_event.result()
                 except StopAsyncIteration:
+                    logger.info(
+                        "generator.stream_exhausted model=%s first_event_seen=%s",
+                        surface.model,
+                        first_event_seen,
+                    )
                     return await stream.get_final_response()
 
+                if not first_event_seen:
+                    first_event_seen = True
+                    logger.info(
+                        "generator.first_stream_event model=%s event=%s kind=%s",
+                        surface.model,
+                        type(event).__name__,
+                        getattr(event, "kind", None),
+                    )
                 await lifecycle.on_stream_event(event)

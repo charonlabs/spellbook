@@ -7,6 +7,7 @@ and request token counting.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal, Sequence
 
 from anthropic import AsyncAnthropic
@@ -61,6 +62,8 @@ from ..tools.common import TOOL_DESCS_DIR
 from ..tools.registry import ToolRegistry
 from .model_backend import GenerationStream, ModelBackend, RequestSurface, TokenCounter
 
+logger = logging.getLogger(__name__)
+
 
 class AnthropicGenerationStream(GenerationStream):
     """Wraps Anthropic's streaming response into normalized StreamEvents."""
@@ -75,10 +78,17 @@ class AnthropicGenerationStream(GenerationStream):
         self._in_text = False
 
     async def __aenter__(self) -> "AnthropicGenerationStream":
+        logger.info("anthropic.stream_context_enter model=%s", self._model)
         self._stream = await self._stream_ctx.__aenter__()
+        logger.info("anthropic.stream_context_entered model=%s", self._model)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
+        logger.info(
+            "anthropic.stream_context_exit model=%s exc_type=%s",
+            self._model,
+            type(exc[0]).__name__ if exc and exc[0] is not None else None,
+        )
         return await self._stream_ctx.__aexit__(*exc)
 
     def __aiter__(self) -> "AnthropicGenerationStream":
@@ -316,6 +326,17 @@ class AnthropicBackend(ModelBackend):
         if surface.cache_control is not None:
             kwargs["cache_control"] = surface.cache_control
 
+        logger.info(
+            "anthropic.stream_create model=%s messages=%s tools=%s max_tokens=%s system=%s thinking=%s output_config=%s cache_control=%s",
+            surface.model,
+            len(surface.messages),
+            len(surface.tools),
+            surface.max_output_tokens,
+            surface.system is not None,
+            surface.thinking is not None,
+            surface.output_config is not None,
+            surface.cache_control is not None,
+        )
         stream_ctx = self.client.messages.stream(**kwargs)
         return AnthropicGenerationStream(stream_ctx, model=surface.model)
 
