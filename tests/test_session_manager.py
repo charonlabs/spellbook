@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any, Sequence, cast, Never
 
 import pytest
+from pydantic import BaseModel
 
 from spellbook.backends.model_backend import RequestSurface, TokenCounter
 from spellbook.cancel_token import CancelToken
 from spellbook.config import HomunculusConfig, SpellbookConfig
+from spellbook.custom import CustomSurface
 from spellbook.executor import Executor
 from spellbook.footer import FooterController
 from spellbook.fork import BlockDetectorConfig, ForkRunner
@@ -48,7 +50,9 @@ from spellbook.session_manager import SessionManager
 from spellbook.skills.manager import SkillManager
 from spellbook.tools.common import (
     BlockDetectorToolMetadata,
+    Tool,
     ToolError,
+    ToolExecutionResult,
     ToolMetadata,
 )
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
@@ -184,6 +188,24 @@ class _FakeTokenCounter(TokenCounter):
 class _FakeForkRunner:
     async def run_fork(self, fork_config) -> Never:
         raise AssertionError("Fork runner should not be used in this test")
+
+
+class _CustomToolInput(BaseModel):
+    value: str = "ok"
+
+
+async def _exec_custom_tool(
+    meta: ToolMetadata, input: _CustomToolInput
+) -> ToolExecutionResult:
+    return ToolExecutionResult(content=[IRToolTextBlock(text=input.value)])
+
+
+CUSTOM_TEST_TOOL: Tool[_CustomToolInput] = Tool(
+    name="CustomTool",
+    input_model=_CustomToolInput,
+    exec=_exec_custom_tool,
+    category="filesystem",
+)
 
 
 def _nursery(config: SpellbookConfig | HomunculusConfig) -> Nursery:
@@ -975,6 +997,55 @@ class TestBuildResumeBehavior:
 
         rehydrated = Rehydrator(transcript).run()
         assert rehydrated.skill_catalog == IRSkillCatalog()
+
+    @pytest.mark.asyncio
+    async def test_build_custom_session_uses_custom_surface_and_metadata(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "custom.jsonl"
+        config = _config(tmp_path).model_copy(update={"session_type": "custom"})
+        custom_surface = CustomSurface(
+            tools=[CUSTOM_TEST_TOOL],
+            include_tool_categories={"memory"},
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript,
+            config=config,
+            custom_surface=custom_surface,
+        )
+
+        assert manager.session_id.startswith("custom_session_")
+        assert manager.tool_registry.tool_names == {
+            "CustomTool",
+            "Reflect",
+            "Forget",
+            "Pin",
+            "Recall",
+        }
+        assert isinstance(manager.executor.meta, ToolMetadata)
+        assert manager.executor.meta.cwd == tmp_path
+        assert manager.executor.meta.transcript_path == transcript
+        assert manager.executor.meta.homunculus is manager.homunculus
+        assert manager.executor.meta.skill_manager is manager.skill_manager
+        assert manager.skill_manager.catalog == IRSkillCatalog()
+
+        rehydrated = Rehydrator(
+            transcript,
+            custom_tools=[CUSTOM_TEST_TOOL],
+        ).run()
+        assert {tool.name for tool in rehydrated.tools} == {
+            "CustomTool",
+            "Reflect",
+            "Forget",
+            "Pin",
+            "Recall",
+        }
 
     @pytest.mark.asyncio
     async def test_block_detector_session_records_tool_rounds(

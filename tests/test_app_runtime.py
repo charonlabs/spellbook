@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import BaseModel
 
 from spellbook.app.event_bus import AppEventBus
 from spellbook.app.lifecycle import AppRoundLifecycle, AppSessionLifecycle
@@ -15,13 +16,20 @@ from spellbook.app.protocol import (
 )
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.config import SpellbookConfig
+from spellbook.custom import CustomSurface
 from spellbook.fork import ForkConfig
 from spellbook.inbound import InboundMessageQueue
-from spellbook.ir_types import IRInboundMessage, IRSkillCatalog, IRUserTextBlock
+from spellbook.ir_types import (
+    IRInboundMessage,
+    IRSkillCatalog,
+    IRToolTextBlock,
+    IRUserTextBlock,
+)
 from spellbook.recorder import Recorder, RecordTap
 from spellbook.round_lifecycle import RoundLifecycle
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 from spellbook.session_manager import SessionBuilder, SessionManager, SessionState
+from spellbook.tools.common import Tool, ToolExecutionResult, ToolMetadata
 from spellbook.tools.registry import ToolRegistry
 
 pytestmark = pytest.mark.asyncio
@@ -36,6 +44,24 @@ def _message(text: str) -> IRInboundMessage:
         blocks=[IRUserTextBlock(text=text, origin="human")],
         delivery="turn",
     )
+
+
+class _CustomToolInput(BaseModel):
+    value: str = "ok"
+
+
+async def _exec_custom_tool(
+    meta: ToolMetadata, input: _CustomToolInput
+) -> ToolExecutionResult:
+    return ToolExecutionResult(content=[IRToolTextBlock(text=input.value)])
+
+
+CUSTOM_TEST_TOOL: Tool[_CustomToolInput] = Tool(
+    name="CustomRuntimeTool",
+    input_model=_CustomToolInput,
+    exec=_exec_custom_tool,
+    category="filesystem",
+)
 
 
 class _FakeRecorder:
@@ -95,12 +121,14 @@ class _FakeSessionBuilder:
         pre_round_lifecycle: RoundLifecycle | None = None,
         post_round_lifecycle: RoundLifecycle | None = None,
         record_tap: RecordTap | None = None,
+        custom_surface: CustomSurface | None = None,
     ) -> SessionManager:
         assert config is not None
         if not transcript_path.exists():
             tool_registry = ToolRegistry.build(
                 config.tool_categories,
                 surface=config.session_type,
+                custom=custom_surface,
             )
             Recorder(
                 config=config,
@@ -454,6 +482,28 @@ async def test_health_and_catchup_use_owned_session_and_transcript(
     assert health.state == "idle"
     assert health.turns == 0
     assert catchup.rehydrated.session_id == "session_fake"
+
+    await runtime.shutdown()
+
+
+async def test_custom_runtime_full_catchup_rehydrates_custom_tools(
+    tmp_path: Path,
+) -> None:
+    builder = _FakeSessionBuilder()
+    custom_surface = CustomSurface(tools=[CUSTOM_TEST_TOOL])
+    runtime = CoreAppRuntime(
+        transcript_path=tmp_path / "transcript.jsonl",
+        config=_config(tmp_path).model_copy(update={"session_type": "custom"}),
+        session_builder=cast(SessionBuilder, builder),
+        custom_surface=custom_surface,
+    )
+
+    await runtime.startup()
+
+    catchup = runtime.build_catchup()
+
+    assert catchup.rehydrated.config.session_type == "custom"
+    assert {tool.name for tool in catchup.rehydrated.tools} == {"CustomRuntimeTool"}
 
     await runtime.shutdown()
 

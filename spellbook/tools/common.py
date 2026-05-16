@@ -131,6 +131,13 @@ def build_tool_metadata(
                 homunculus=homunculus,
                 skill_manager=skill_manager,
             )
+        case "custom":
+            return ToolMetadata(
+                cwd=config.cwd,
+                transcript_path=transcript_path,
+                homunculus=homunculus,
+                skill_manager=skill_manager,
+            )
         case "block_detector":
             assert isinstance(fork_config, BlockDetectorConfig)
             return BlockDetectorToolMetadata(

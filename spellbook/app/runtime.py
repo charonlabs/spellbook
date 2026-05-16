@@ -34,6 +34,7 @@ from spellbook.app.protocol import (
     session_to_runtime_state,
 )
 from spellbook.config import SpellbookConfig
+from spellbook.custom import CustomSurface
 from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 from spellbook.rehydrator import Rehydrator
 from spellbook.session_lifecycle import SessionContext
@@ -52,10 +53,12 @@ class CoreAppRuntime:
         config: SpellbookConfig | None = None,
         session_builder: SessionBuilder = SessionManager.build,
         bus: AppEventBus | None = None,
+        custom_surface: CustomSurface | None = None,
     ) -> None:
         self.transcript_path = transcript_path
         self.config = config
         self.bus = bus or AppEventBus()
+        self._custom_surface = custom_surface
         self._session_builder = session_builder
         self._session: SessionManager | None = None
         self._session_task: asyncio.Task[None] | None = None
@@ -87,6 +90,7 @@ class CoreAppRuntime:
             ),
             pre_round_lifecycle=AppRoundLifecycle(self.bus),
             record_tap=self.bus.record_tap,
+            custom_surface=self._custom_surface,
         )
         self._session = session
         self._session_task = asyncio.create_task(session.run())
@@ -290,8 +294,14 @@ class CoreAppRuntime:
     def build_catchup(self) -> CatchupResponse:
         """Build a transcript-backed catchup snapshot."""
         self._require_session()
+        custom_tools = (
+            self._custom_surface.tools if self._custom_surface is not None else None
+        )
         return CatchupResponse(
-            rehydrated=Rehydrator(self.transcript_path).run(),
+            rehydrated=Rehydrator(
+                self.transcript_path,
+                custom_tools=custom_tools,
+            ).run(),
             surface=self._last_active_surface,
             surface_time=self._last_surface_time,
         )

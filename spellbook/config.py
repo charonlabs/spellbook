@@ -42,7 +42,7 @@ DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS = 300
 
 DEFAULT_USER_NAME = "Ryan"
 
-SessionType = Literal["main", "block_detector", "block_summarizer"]
+SessionType = Literal["main", "block_detector", "block_summarizer", "custom"]
 
 
 def default_skill_discovery_dirs(provider: str) -> list[str]:

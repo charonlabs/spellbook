@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from spellbook.custom import CustomSurface
 from spellbook.tools.skills import SKILL_TOOL
 from spellbook.tools.web import WEB_ANSWER_TOOL, WEB_READ_TOOL, WEB_SEARCH_TOOL
 
@@ -31,7 +32,7 @@ from .homunculus.block_detector import (
 from .homunculus.block_summarizer import SUMMARIZE_TOOL
 from .self_work import FORGET_TOOL, PIN_TOOL, RECALL_TOOL, REFLECT_TOOL
 
-ToolSurface = Literal["main", "block_detector", "block_summarizer"]
+ToolSurface = Literal["main", "block_detector", "block_summarizer", "custom"]
 
 
 class ToolRegistry(BaseModel, frozen=True):
@@ -60,7 +61,20 @@ class ToolRegistry(BaseModel, frozen=True):
         categories: set[str] | None = None,
         *,
         surface: ToolSurface = "main",
+        custom: CustomSurface | None = None,
     ) -> "ToolRegistry":
+        if surface == "custom" and custom is None:
+            raise ValueError("Custom tool surfaces require a CustomSurface.")
+        if custom is not None:
+            if surface != "custom":
+                raise ValueError(f"Found surface={surface} instead of `custom`.")
+            custom_tools = [
+                tool
+                for tool in TOOLS_BY_SURFACE["main"]
+                if tool.category in custom.include_tool_categories
+            ]
+            custom_tools.extend(custom.tools)
+            return cls(tools=custom_tools)
         surface_tools = TOOLS_BY_SURFACE[surface]
         if categories is None:
             return cls(tools=surface_tools)

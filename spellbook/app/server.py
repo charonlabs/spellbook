@@ -26,17 +26,23 @@ from spellbook.app.protocol import (
 )
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.config import SpellbookConfig
+from spellbook.custom import CustomSurface
 from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 
-RuntimeFactory = Callable[[Path, SpellbookConfig | None], CoreAppRuntime]
+RuntimeFactory = Callable[
+    [Path, SpellbookConfig | None, CustomSurface | None], CoreAppRuntime
+]
 logger = logging.getLogger(__name__)
 
 
 def _default_runtime_factory(
     transcript_path: Path,
     config: SpellbookConfig | None,
+    custom_surface: CustomSurface | None = None,
 ) -> CoreAppRuntime:
-    return CoreAppRuntime(transcript_path=transcript_path, config=config)
+    return CoreAppRuntime(
+        transcript_path=transcript_path, config=config, custom_surface=custom_surface
+    )
 
 
 def _enable_faulthandler() -> None:
@@ -57,6 +63,7 @@ def create_app(
     *,
     transcript_path: Path,
     config: SpellbookConfig | None = None,
+    custom_surface: CustomSurface | None = None,
     runtime_factory: RuntimeFactory = _default_runtime_factory,
 ) -> FastAPI:
     """Create a FastAPI app around one `CoreAppRuntime`."""
@@ -64,7 +71,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime = runtime_factory(transcript_path, config)
+        runtime = runtime_factory(transcript_path, config, custom_surface)
         app.state.runtime = runtime
         logger.info("app.startup transcript=%s", transcript_path)
         await runtime.startup()

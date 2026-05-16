@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from spellbook.backends.anthropic import AnthropicBackend
+from spellbook.custom import CustomSurface
 from spellbook.ir_types import IRToolTextBlock
 from spellbook.tools.common import (
     Tool,
@@ -266,3 +267,26 @@ class TestToolSurfaces:
         )
 
         assert registry.tool_names == set()
+
+    def test_custom_surface_includes_selected_main_categories_and_custom_tools(
+        self,
+    ) -> None:
+        registry = ToolRegistry.build(
+            surface="custom",
+            custom=CustomSurface(
+                tools=[FAKE_FS_TOOL],
+                include_tool_categories={"memory"},
+            ),
+        )
+
+        assert registry.tool_names == {
+            "FakeRead",
+            "Reflect",
+            "Forget",
+            "Pin",
+            "Recall",
+        }
+
+    def test_custom_surface_requires_custom_surface_definition(self) -> None:
+        with pytest.raises(ValueError, match="Custom tool surfaces require"):
+            ToolRegistry.build(surface="custom")

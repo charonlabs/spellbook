@@ -3,6 +3,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from spellbook.backends import build_backend
+from spellbook.custom import CustomSurface
 from spellbook.footer import (
     FooterController,
     FooterControllerRoundLifecycle,
@@ -50,6 +51,7 @@ class SessionBuilder(Protocol):
         pre_round_lifecycle: RoundLifecycle | None = None,
         post_round_lifecycle: RoundLifecycle | None = None,
         record_tap: RecordTap | None = None,
+        custom_surface: CustomSurface | None = None,
     ) -> "SessionManager": ...
 
 
@@ -172,6 +174,7 @@ class SessionManager:
         pre_round_lifecycle: RoundLifecycle | None = None,
         post_round_lifecycle: RoundLifecycle | None = None,
         record_tap: RecordTap | None = None,
+        custom_surface: CustomSurface | None = None,
     ) -> "SessionManager":
         """Build a `SessionManager`. Always needs a transcript path. If not resuming (i.e. the transcript
         does not exist), must also pass a `SpellbookConfig` to intialize the new session"""
@@ -189,8 +192,14 @@ class SessionManager:
                         session_id = f"bd_session_{uuid4().hex}"
                     case "block_summarizer":
                         session_id = f"bs_session_{uuid4().hex}"
+                    case "custom":
+                        session_id = f"custom_session_{uuid4().hex}"
             assert session_id is not None
-            if config.session_type == "main":
+            discover_skills = config.session_type == "main"
+            if config.session_type == "custom":
+                assert custom_surface is not None
+                discover_skills = "skills" in custom_surface.include_tool_categories
+            if discover_skills:
                 initial_skill_manager = SkillManager(config=config)
                 initial_catalog = initial_skill_manager.discover_skills()
                 # TODO: make this go into its spot in the structured frame once that lands.
@@ -207,6 +216,7 @@ class SessionManager:
             tool_registry = ToolRegistry.build(
                 config.tool_categories,
                 surface=config.session_type,
+                custom=custom_surface,
             )
             initial_recorder = Recorder(
                 config=config,
@@ -217,12 +227,16 @@ class SessionManager:
             )
 
             initial_recorder.write_session_record(skill_catalog=initial_catalog)
-        rehydrator = Rehydrator(transcript_path=transcript_path)
+        custom_tools = custom_surface.tools if custom_surface is not None else None
+        rehydrator = Rehydrator(
+            transcript_path=transcript_path, custom_tools=custom_tools
+        )
         rehydrated = rehydrator.run()
         config = rehydrated.config
         tool_registry = ToolRegistry.build(
             config.tool_categories,
             surface=config.session_type,
+            custom=custom_surface,
         )
         skill_manager = SkillManager(config=config)
         skill_manager.rehydrate(rehydrated)

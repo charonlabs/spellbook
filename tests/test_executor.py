@@ -104,6 +104,54 @@ class TestSuccessfulDispatch:
         assert result.cancelled_early is False
 
     @pytest.mark.asyncio
+    async def test_custom_session_tool_receives_base_metadata(self, tmp_path: Path) -> None:
+        seen: dict[str, object] = {}
+
+        class _InspectInput(BaseModel):
+            value: str
+
+        async def _exec_inspect(
+            meta: ToolMetadata, input: _InspectInput
+        ) -> ToolExecutionResult:
+            seen["cwd"] = meta.cwd
+            seen["transcript_path"] = meta.transcript_path
+            seen["input"] = input.value
+            return ToolExecutionResult(content=[IRToolTextBlock(text="ok")])
+
+        inspect_tool: Tool[_InspectInput] = Tool(
+            name="InspectMeta",
+            input_model=_InspectInput,
+            exec=_exec_inspect,
+            category="filesystem",
+        )
+        transcript = tmp_path / "custom.jsonl"
+        config = SpellbookConfig(
+            cwd=tmp_path,
+            model="claude-sonnet-4-6",
+            session_type="custom",
+        )
+        executor = Executor(config, transcript, ToolRegistry(tools=[inspect_tool]))
+
+        result = await executor.run(
+            [
+                IRToolCallBlock(
+                    origin="model",
+                    call_id="toolu_meta",
+                    tool="InspectMeta",
+                    input={"value": "hello"},
+                )
+            ],
+            CancelToken(),
+        )
+
+        assert result.blocks[0].is_error is False
+        assert seen == {
+            "cwd": tmp_path,
+            "transcript_path": transcript,
+            "input": "hello",
+        }
+
+    @pytest.mark.asyncio
     async def test_multiple_calls_preserve_order(self) -> None:
         executor = _make_executor(ECHO_TOOL)
         calls = [

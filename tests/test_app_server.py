@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import cast
 
 from fastapi.testclient import TestClient
-
 from spellbook.app.event_bus import AppEventBus
 from spellbook.app.protocol import (
     AwarenessResponse,
@@ -19,6 +18,7 @@ from spellbook.app.protocol import (
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.app.server import create_app
 from spellbook.config import SpellbookConfig
+from spellbook.custom import CustomSurface
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
     AwarenessHomunculusSnapshot,
@@ -143,6 +143,7 @@ def _make_app(tmp_path: Path) -> tuple[TestClient, _FakeRuntime]:
     def _factory(
         transcript_path: Path,
         config: SpellbookConfig | None,
+        custom_surface: CustomSurface | None = None,
     ) -> CoreAppRuntime:
         return cast(CoreAppRuntime, runtime)
 
@@ -162,6 +163,35 @@ def test_lifespan_starts_and_stops_runtime(tmp_path: Path) -> None:
         assert runtime.shutdown_called is False
 
     assert runtime.shutdown_called is True
+
+
+def test_lifespan_threads_custom_surface_to_runtime_factory(tmp_path: Path) -> None:
+    runtime = _FakeRuntime(tmp_path)
+    custom_surface = CustomSurface(tools=[])
+    seen: dict[str, object | None] = {}
+
+    def _factory(
+        transcript_path: Path,
+        config: SpellbookConfig | None,
+        custom_surface: CustomSurface | None = None,
+    ) -> CoreAppRuntime:
+        seen["transcript_path"] = transcript_path
+        seen["config"] = config
+        seen["custom_surface"] = custom_surface
+        return cast(CoreAppRuntime, runtime)
+
+    app = create_app(
+        transcript_path=tmp_path / "transcript.jsonl",
+        config=_config(tmp_path),
+        custom_surface=custom_surface,
+        runtime_factory=_factory,
+    )
+
+    with TestClient(app):
+        pass
+
+    assert seen["transcript_path"] == tmp_path / "transcript.jsonl"
+    assert seen["custom_surface"] is custom_surface
 
 
 def test_health_catchup_message_and_interrupt_routes(tmp_path: Path) -> None:

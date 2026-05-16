@@ -32,8 +32,8 @@ from .ir_types import (
     IRTurnEndRecord,
     IRTurnStartRecord,
 )
-from .tools.common import tool_to_record
-from .tools.registry import KNOWN_TOOL_REGISTRY
+from .tools.common import Tool, tool_to_record
+from .tools.registry import ALL_TOOLS, KNOWN_TOOL_REGISTRY, ToolRegistry
 
 MISSING_SKILL_CATALOG_ERROR = (
     "This transcript was made before Skill support was added. "
@@ -68,8 +68,11 @@ class RehydrationResult(BaseModel, frozen=True):
 
 
 class Rehydrator:
-    def __init__(self, transcript_path: Path):
+    def __init__(
+        self, transcript_path: Path, *, custom_tools: list[Tool] | None = None
+    ):
         self._path = transcript_path
+        self._custom_tools = custom_tools
 
     def _validate_session_record_shape(self) -> None:
         with open(self._path, "r") as f:
@@ -132,8 +135,17 @@ class Rehydrator:
                     # we do something like what exists now (and we make like a cli tool to refresh
                     # like we also have in the old one) or "... print warning while silenty using newer
                     # tools"? For now I'm erroring loudly
+                    known_registry = KNOWN_TOOL_REGISTRY
+                    if config.session_type == "custom":
+                        if self._custom_tools is None:
+                            raise ValueError(
+                                "Tried to rehydrate a custom session without giving custom tools."
+                            )
+                        known_registry = ToolRegistry(
+                            tools=ALL_TOOLS + self._custom_tools
+                        )
                     for tool in record.tools:
-                        registered = KNOWN_TOOL_REGISTRY.get(tool.name)
+                        registered = known_registry.get(tool.name)
                         if registered is None:
                             raise ValueError(
                                 f"Tool `{tool.name}` present in frame but not registry."
