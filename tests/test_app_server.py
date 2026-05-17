@@ -183,6 +183,9 @@ def test_configure_app_logging_enables_app_info_logs() -> None:
         assert logger.propagate is False
         assert handler is not None
         assert handler.level == logging.INFO
+        assert logging.getLogger("spellbook.backends.anthropic").isEnabledFor(
+            logging.INFO
+        )
     finally:
         logger.handlers[:] = old_handlers
         logger.setLevel(old_level)

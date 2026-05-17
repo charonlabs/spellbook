@@ -8,18 +8,22 @@ and request token counting.
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, Sequence
+from collections.abc import Mapping
+from typing import Any, Literal, Sequence, cast
 
-from anthropic import AsyncAnthropic
+from anthropic import NOT_GIVEN, AsyncAnthropic, AsyncStream
+from anthropic._base_client import make_request_options
 from anthropic._types import NotGiven
 from anthropic.lib.streaming import AsyncMessageStreamManager
 from anthropic.types import (
     Base64ImageSourceParam,
     ImageBlockParam,
+    Message,
     MessageParam,
     ParsedContentBlock,
     ParsedMessage,
     ParsedTextBlock,
+    RawMessageStreamEvent,
     TextBlockParam,
     ThinkingBlock,
     ThinkingBlockParam,
@@ -326,10 +330,14 @@ class AnthropicBackend(ModelBackend):
         if surface.cache_control is not None:
             kwargs["cache_control"] = surface.cache_control
 
+        first_role = _message_role(surface.messages[0]) if surface.messages else None
+        last_role = _message_role(surface.messages[-1]) if surface.messages else None
         logger.info(
-            "anthropic.stream_create model=%s messages=%s tools=%s max_tokens=%s system=%s thinking=%s output_config=%s cache_control=%s",
+            "anthropic.stream_create model=%s messages=%s first_role=%s last_role=%s tools=%s max_tokens=%s system=%s thinking=%s output_config=%s cache_control=%s",
             surface.model,
             len(surface.messages),
+            first_role,
+            last_role,
             len(surface.tools),
             surface.max_output_tokens,
             surface.system is not None,
@@ -337,8 +345,34 @@ class AnthropicBackend(ModelBackend):
             surface.output_config is not None,
             surface.cache_control is not None,
         )
-        stream_ctx = self.client.messages.stream(**kwargs)
+        stream_ctx = self._stream_without_transform(kwargs)
         return AnthropicGenerationStream(stream_ctx, model=surface.model)
+
+    def _stream_without_transform(
+        self, kwargs: dict[str, Any]
+    ) -> AsyncMessageStreamManager[NotGiven]:
+        """Create a message stream without the SDK's typed request transform.
+
+        The public `messages.stream(**kwargs)` helper runs `maybe_transform` over
+        the full request body before opening the stream. That path has segfaulted
+        in Python's typing machinery for large Spellbook requests, so this keeps
+        the SDK's HTTP/streaming machinery but sends our already-normalized plain
+        JSON body directly to the lower-level client.
+        """
+        body = {**kwargs, "stream": True}
+        extra_headers = {
+            "X-Stainless-Helper-Method": "stream",
+            "X-Stainless-Stream-Helper": "messages",
+        }
+        request = self.client.messages._post(
+            "/v1/messages",
+            body=body,
+            options=make_request_options(extra_headers=extra_headers),
+            cast_to=Message,
+            stream=True,
+            stream_cls=AsyncStream[RawMessageStreamEvent],
+        )
+        return AsyncMessageStreamManager(request, output_format=NOT_GIVEN)
 
     def build_tool_schemas(
         self,
@@ -531,6 +565,13 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
 
     _flush(buffer, last_role)
     return messages
+
+
+def _message_role(message: object) -> str | None:
+    if not isinstance(message, Mapping):
+        return None
+    role = cast(Mapping[str, object], message).get("role")
+    return role if isinstance(role, str) else None
 
 
 def _normalize_usage(usage: Usage) -> IRUsage:

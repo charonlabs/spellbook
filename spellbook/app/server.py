@@ -33,7 +33,7 @@ RuntimeFactory = Callable[
     [Path, SpellbookConfig | None, CustomSurface | None], CoreAppRuntime
 ]
 AppLogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
-APP_LOGGER_NAME = "spellbook.app"
+APP_LOGGER_NAME = "spellbook"
 APP_LOG_HANDLER_NAME = "spellbook-core-app-stderr"
 _PYTHON_LOG_LEVELS: dict[AppLogLevel, int] = {
     "critical": logging.CRITICAL,
@@ -72,7 +72,7 @@ def _enable_faulthandler() -> None:
 
 
 def configure_app_logging(log_level: AppLogLevel | int = "info") -> None:
-    """Configure Spellbook app logs for direct `create_app` callers."""
+    """Configure Spellbook runtime logs for direct `create_app` callers."""
     level = _python_log_level(log_level)
     app_logger = logging.getLogger(APP_LOGGER_NAME)
     app_logger.setLevel(level)
