@@ -7,7 +7,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Callable, Literal, cast
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -32,6 +32,18 @@ from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 RuntimeFactory = Callable[
     [Path, SpellbookConfig | None, CustomSurface | None], CoreAppRuntime
 ]
+AppLogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
+APP_LOGGER_NAME = "spellbook.app"
+APP_LOG_HANDLER_NAME = "spellbook-core-app-stderr"
+_PYTHON_LOG_LEVELS: dict[AppLogLevel, int] = {
+    "critical": logging.CRITICAL,
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+    "trace": logging.DEBUG,
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,14 +71,54 @@ def _enable_faulthandler() -> None:
         logger.info("app.faulthandler_enabled")
 
 
+def configure_app_logging(log_level: AppLogLevel | int = "info") -> None:
+    """Configure Spellbook app logs for direct `create_app` callers."""
+    level = _python_log_level(log_level)
+    app_logger = logging.getLogger(APP_LOGGER_NAME)
+    app_logger.setLevel(level)
+    app_logger.propagate = False
+
+    handler = _app_log_handler(app_logger)
+    if handler is None:
+        handler = logging.StreamHandler()
+        handler.set_name(APP_LOG_HANDLER_NAME)
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s:     %(name)s: %(message)s")
+        )
+        app_logger.addHandler(handler)
+    handler.setLevel(level)
+
+
+def _python_log_level(value: AppLogLevel | int) -> int:
+    if isinstance(value, int):
+        return value
+    return _PYTHON_LOG_LEVELS[_validate_log_level(value)]
+
+
+def _validate_log_level(value: str) -> AppLogLevel:
+    if value not in {"critical", "error", "warning", "info", "debug", "trace"}:
+        raise ValueError(f"Unsupported log level: {value}")
+    return cast(AppLogLevel, value)
+
+
+def _app_log_handler(logger: logging.Logger) -> logging.Handler | None:
+    for handler in logger.handlers:
+        if handler.get_name() == APP_LOG_HANDLER_NAME:
+            return handler
+    return None
+
+
 def create_app(
     *,
     transcript_path: Path,
     config: SpellbookConfig | None = None,
     custom_surface: CustomSurface | None = None,
     runtime_factory: RuntimeFactory = _default_runtime_factory,
+    log_level: AppLogLevel | int | None = "info",
 ) -> FastAPI:
     """Create a FastAPI app around one `CoreAppRuntime`."""
+    if log_level is not None:
+        configure_app_logging(log_level)
     _enable_faulthandler()
 
     @asynccontextmanager

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -16,7 +17,12 @@ from spellbook.app.protocol import (
     SubmitMessageResponse,
 )
 from spellbook.app.runtime import CoreAppRuntime
-from spellbook.app.server import create_app
+from spellbook.app.server import (
+    APP_LOG_HANDLER_NAME,
+    APP_LOGGER_NAME,
+    configure_app_logging,
+    create_app,
+)
 from spellbook.config import SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.homunculus.common import (
@@ -151,8 +157,91 @@ def _make_app(tmp_path: Path) -> tuple[TestClient, _FakeRuntime]:
         transcript_path=tmp_path / "transcript.jsonl",
         config=_config(tmp_path),
         runtime_factory=_factory,
+        log_level=None,
     )
     return TestClient(app), runtime
+
+
+def test_configure_app_logging_enables_app_info_logs() -> None:
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    old_level = logger.level
+    old_propagate = logger.propagate
+    old_handlers = list(logger.handlers)
+    logger.handlers.clear()
+    try:
+        configure_app_logging("info")
+
+        handler = next(
+            (
+                handler
+                for handler in logger.handlers
+                if handler.get_name() == APP_LOG_HANDLER_NAME
+            ),
+            None,
+        )
+        assert logger.isEnabledFor(logging.INFO)
+        assert logger.propagate is False
+        assert handler is not None
+        assert handler.level == logging.INFO
+    finally:
+        logger.handlers[:] = old_handlers
+        logger.setLevel(old_level)
+        logger.propagate = old_propagate
+
+
+def test_create_app_configures_app_logging_by_default(tmp_path: Path) -> None:
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    old_level = logger.level
+    old_propagate = logger.propagate
+    old_handlers = list(logger.handlers)
+    logger.handlers.clear()
+    try:
+        create_app(
+            transcript_path=tmp_path / "transcript.jsonl",
+            config=_config(tmp_path),
+            log_level="debug",
+        )
+
+        handler = next(
+            (
+                handler
+                for handler in logger.handlers
+                if handler.get_name() == APP_LOG_HANDLER_NAME
+            ),
+            None,
+        )
+        assert logger.isEnabledFor(logging.DEBUG)
+        assert logger.propagate is False
+        assert handler is not None
+        assert handler.level == logging.DEBUG
+    finally:
+        logger.handlers[:] = old_handlers
+        logger.setLevel(old_level)
+        logger.propagate = old_propagate
+
+
+def test_create_app_can_skip_app_logging_configuration(tmp_path: Path) -> None:
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    old_level = logger.level
+    old_propagate = logger.propagate
+    old_handlers = list(logger.handlers)
+    logger.handlers.clear()
+    logger.setLevel(logging.WARNING)
+    logger.propagate = True
+    try:
+        create_app(
+            transcript_path=tmp_path / "transcript.jsonl",
+            config=_config(tmp_path),
+            log_level=None,
+        )
+
+        assert logger.handlers == []
+        assert logger.level == logging.WARNING
+        assert logger.propagate is True
+    finally:
+        logger.handlers[:] = old_handlers
+        logger.setLevel(old_level)
+        logger.propagate = old_propagate
 
 
 def test_lifespan_starts_and_stops_runtime(tmp_path: Path) -> None:
@@ -185,6 +274,7 @@ def test_lifespan_threads_custom_surface_to_runtime_factory(tmp_path: Path) -> N
         config=_config(tmp_path),
         custom_surface=custom_surface,
         runtime_factory=_factory,
+        log_level=None,
     )
 
     with TestClient(app):

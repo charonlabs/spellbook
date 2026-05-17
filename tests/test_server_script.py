@@ -1,4 +1,3 @@
-import logging
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -194,23 +193,4 @@ def test_main_resumes_existing_transcript_without_model(
 
     assert seen["transcript_path"] == transcript.resolve()
     assert seen["config"] is None
-
-
-def test_configure_logging_enables_core_app_info_logs() -> None:
-    logger = logging.getLogger(server.APP_LOGGER_NAME)
-    old_level = logger.level
-    old_propagate = logger.propagate
-    old_handlers = list(logger.handlers)
-    logger.handlers.clear()
-    try:
-        server._configure_logging("info")
-
-        handler = server._app_log_handler(logger)
-        assert logger.isEnabledFor(logging.INFO)
-        assert logger.propagate is False
-        assert handler is not None
-        assert handler.level == logging.INFO
-    finally:
-        logger.handlers[:] = old_handlers
-        logger.setLevel(old_level)
-        logger.propagate = old_propagate
+    assert seen["log_level"] == "info"

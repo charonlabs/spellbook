@@ -204,7 +204,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--log-level",
         choices=("critical", "error", "warning", "info", "debug", "trace"),
         default="info",
-        help="Uvicorn log level. Defaults to info.",
+        help="Spellbook app and Uvicorn log level. Defaults to info.",
     )
     return parser.parse_args(argv)
 
@@ -267,6 +267,7 @@ def main(argv: list[str] | None = None) -> None:
         transcript_path=transcript_path,
         config=None if transcript_path.exists() else _config_from_args(args),
         custom_surface=custom_surface,
+        log_level=args.log_level,
     )
     uvicorn.run(
         app,

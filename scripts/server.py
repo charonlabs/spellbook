@@ -8,7 +8,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -37,8 +36,6 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_ENV_PATH = Path.home() / ".chorus" / ".env"
 SESSIONS_DIR = Path.home() / ".spellbook" / "sessions"
-APP_LOGGER_NAME = "spellbook.app"
-APP_LOG_HANDLER_NAME = "spellbook-core-app-stderr"
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 
@@ -144,7 +141,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--log-level",
         choices=("critical", "error", "warning", "info", "debug", "trace"),
         default="info",
-        help="Uvicorn log level. Defaults to info.",
+        help="Spellbook app and Uvicorn log level. Defaults to info.",
     )
     args = parser.parse_args(argv)
     if args.model is None and (
@@ -193,36 +190,6 @@ def _log_level_from_arg(value: str) -> LogLevel:
     return cast(LogLevel, value)
 
 
-def _configure_logging(log_level: str) -> None:
-    level = _python_log_level_from_arg(log_level)
-    app_logger = logging.getLogger(APP_LOGGER_NAME)
-    app_logger.setLevel(level)
-    app_logger.propagate = False
-
-    handler = _app_log_handler(app_logger)
-    if handler is None:
-        handler = logging.StreamHandler()
-        handler.set_name(APP_LOG_HANDLER_NAME)
-        handler.setFormatter(
-            logging.Formatter("%(levelname)s:     %(name)s: %(message)s")
-        )
-        app_logger.addHandler(handler)
-    handler.setLevel(level)
-
-
-def _python_log_level_from_arg(value: str) -> int:
-    if value == "trace":
-        return logging.DEBUG
-    return getattr(logging, _log_level_from_arg(value).upper())
-
-
-def _app_log_handler(logger: logging.Logger) -> logging.Handler | None:
-    for handler in logger.handlers:
-        if handler.get_name() == APP_LOG_HANDLER_NAME:
-            return handler
-    return None
-
-
 def _model_slug_to_name(slug: str) -> str:
     return model_slug_to_name(slug)
 
@@ -243,7 +210,6 @@ def _resolve_transcript_path(args: argparse.Namespace) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    _configure_logging(args.log_level)
     transcript_path = _resolve_transcript_path(args)
     env_path = args.env.expanduser()
     if env_path.exists():
@@ -252,6 +218,7 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(
         transcript_path=transcript_path,
         config=None if transcript_path.exists() else _config_from_args(args),
+        log_level=_log_level_from_arg(args.log_level),
     )
     uvicorn.run(
         app,

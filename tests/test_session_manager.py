@@ -310,6 +310,7 @@ class _ScriptedBackend:
     def __init__(self, responses: list[IRGeneration]):
         self._responses = list(responses)
         self.surfaces: list[RequestSurface] = []
+        self.blocks_seen: list[list[IRBlock]] = []
 
     def build_tool_schemas(self, registry):
         return [{"name": tool.name} for tool in registry.tools]
@@ -319,11 +320,12 @@ class _ScriptedBackend:
         *,
         model: str,
         system: str | list[dict[str, Any]],
-        blocks: list[IRBlock],
+        blocks: Sequence[IRBlock],
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
     ) -> RequestSurface:
+        self.blocks_seen.append(list(blocks))
         surface = RequestSurface(
             model=model,
             system=system,
@@ -1046,6 +1048,164 @@ class TestBuildResumeBehavior:
             "Pin",
             "Recall",
         }
+
+    @pytest.mark.asyncio
+    async def test_custom_session_drains_footer_messages_into_round(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "custom_footer.jsonl"
+        config = _config(tmp_path).model_copy(update={"session_type": "custom"})
+        backend = _ScriptedBackend([_gen(stop_reason="end_turn")])
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript,
+            config=config,
+            custom_surface=CustomSurface(tools=[]),
+        )
+
+        await manager.submit_message(
+            IRInboundMessage(
+                blocks=[
+                    IRUserTextBlock(
+                        text="Ambient custom-surface note.",
+                        origin="system",
+                    )
+                ],
+                source_metadata={
+                    "footer_type": "notif",
+                    "footer_source": "runtime",
+                    "footer_key": "custom_note",
+                },
+                delivery="footer",
+            )
+        )
+        await manager.submit_message(_user_msg("Start the scene."))
+        await manager._running_phase()
+
+        assert len(backend.blocks_seen) == 1
+        assert len(backend.blocks_seen[0]) == 2
+        assert isinstance(backend.blocks_seen[0][0], IRUserTextBlock)
+        assert backend.blocks_seen[0][0].text == "Start the scene."
+        assert isinstance(backend.blocks_seen[0][1], IRUserTextBlock)
+        assert backend.blocks_seen[0][1].origin == "system"
+        assert "<spellbook>" in backend.blocks_seen[0][1].text
+        assert "Ambient custom-surface note." in backend.blocks_seen[0][1].text
+
+    @pytest.mark.asyncio
+    async def test_custom_session_refreshes_skills_when_skill_tool_is_enabled(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "custom_runtime_skills.jsonl"
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        backend = _ScriptedBackend([_gen(stop_reason="end_turn")])
+        config = _config(tmp_path).model_copy(
+            update={
+                "session_type": "custom",
+                "skill_discovery_dirs": [".test-skills"],
+            }
+        )
+        custom_surface = CustomSurface(
+            tools=[],
+            include_tool_categories={"skills"},
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript,
+            config=config,
+            custom_surface=custom_surface,
+        )
+
+        assert manager.tool_registry.tool_names == {"Skill"}
+        assert manager.skill_manager.catalog == IRSkillCatalog()
+
+        _write_skill(tmp_path)
+        await manager.submit_message(_user_msg("Check for new skills."))
+        await manager._running_phase()
+
+        assert len(backend.blocks_seen) == 1
+        assert len(backend.blocks_seen[0]) == 2
+        assert isinstance(backend.blocks_seen[0][1], IRUserTextBlock)
+        assert backend.blocks_seen[0][1].origin == "system"
+        assert "Skill catalog updated:" in backend.blocks_seen[0][1].text
+        assert "<name>compose</name>" in backend.blocks_seen[0][1].text
+
+        rehydrated = Rehydrator(
+            transcript,
+            custom_tools=[],
+        ).run()
+        assert "compose" in rehydrated.skill_catalog.skills
+
+    @pytest.mark.asyncio
+    async def test_custom_session_keeps_assistant_generations_in_live_context(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "custom_memory.jsonl"
+        config = _config(tmp_path).model_copy(update={"session_type": "custom"})
+        backend = _ScriptedBackend(
+            [
+                _gen(
+                    blocks=[
+                        IRAssistantTextBlock(
+                            text="The brass notebook rests beside the teacup.",
+                            origin="model",
+                        )
+                    ],
+                    stop_reason="end_turn",
+                ),
+                _gen(
+                    blocks=[
+                        IRAssistantTextBlock(
+                            text="The notebook is still beside the teacup.",
+                            origin="model",
+                        )
+                    ],
+                    stop_reason="end_turn",
+                ),
+            ]
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript,
+            config=config,
+            custom_surface=CustomSurface(tools=[]),
+        )
+
+        await manager.submit_message(_user_msg("Describe the room."))
+        await manager._running_phase()
+        await manager.submit_message(_user_msg("What objects are already here?"))
+        await manager._running_phase()
+
+        assert len(backend.blocks_seen) == 2
+        second_request_texts = [
+            (type(block).__name__, block.text)
+            for block in backend.blocks_seen[1]
+            if isinstance(block, (IRUserTextBlock, IRAssistantTextBlock))
+        ]
+        assert second_request_texts[:3] == [
+            ("IRUserTextBlock", "Describe the room."),
+            (
+                "IRAssistantTextBlock",
+                "The brass notebook rests beside the teacup.",
+            ),
+            ("IRUserTextBlock", "What objects are already here?"),
+        ]
 
     @pytest.mark.asyncio
     async def test_block_detector_session_records_tool_rounds(

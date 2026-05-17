@@ -296,27 +296,41 @@ class SessionManager:
             fork_config=fork_config,
         )
         await homunculus.rehydrate(rehydrated)
-        if config.session_type == "main":
-            assert timekeeper is not None
-            comp_round_lifecycle = CompositeRoundLifecycle(
-                lifecycles=[
-                    RecordingRoundLifecycle(recorder=recorder),
-                    HomunculusRoundLifecycle(homunculus=homunculus),
+        custom_has_skills = (
+            config.session_type == "custom"
+            and custom_surface is not None
+            and "skills" in custom_surface.include_tool_categories
+        )
+        if config.session_type in {"main", "custom"}:
+            lifecycles: list[RoundLifecycle] = [
+                RecordingRoundLifecycle(recorder=recorder),
+                HomunculusRoundLifecycle(homunculus=homunculus),
+            ]
+            if config.session_type == "main" or custom_has_skills:
+                lifecycles.append(
                     SkillManagerRoundLifecycle(
                         footer_c=footer_controller,
                         manager=skill_manager,
                         recorder=recorder,
-                    ),
-                    InboundInjectionRoundLifecycle(
-                        inbound_queue=inbound_queue,
-                        recorder=recorder,
-                    ),
-                    TimekeeperRoundLifecycle(timekeeper),
-                    FooterControllerRoundLifecycle(
-                        controller=footer_controller, recorder=recorder
-                    ),
-                ]
+                    )
+                )
+            if config.session_type == "main":
+                assert timekeeper is not None
+                lifecycles.extend(
+                    [
+                        InboundInjectionRoundLifecycle(
+                            inbound_queue=inbound_queue,
+                            recorder=recorder,
+                        ),
+                        TimekeeperRoundLifecycle(timekeeper),
+                    ]
+                )
+            lifecycles.append(
+                FooterControllerRoundLifecycle(
+                    controller=footer_controller, recorder=recorder
+                )
             )
+            comp_round_lifecycle = CompositeRoundLifecycle(lifecycles=lifecycles)
         else:
             comp_round_lifecycle = CompositeRoundLifecycle(
                 lifecycles=[RecordingRoundLifecycle(recorder=recorder)]
