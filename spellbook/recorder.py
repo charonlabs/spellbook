@@ -24,6 +24,7 @@ from .ir_types import (
     IRForkSummonRecord,
     IRGeneration,
     IRRecord,
+    IRRuntimeConfigRecord,
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockArtifact,
@@ -43,6 +44,8 @@ from .ir_types import (
     SemanticBlockApplyModeSource,
     SemanticBlockMode,
     StopReason,
+    RuntimeConfigNamespace,
+    RuntimeConfigValue,
     ToolResultTTLSource,
     ToolResultTTLTrigger,
 )
@@ -127,6 +130,24 @@ class Recorder:
         )
         self._write_record(ttl_record)
         return ttl_record
+
+    def write_runtime_config(
+        self,
+        *,
+        namespace: RuntimeConfigNamespace,
+        updates: dict[str, RuntimeConfigValue],
+        effective: dict[str, RuntimeConfigValue],
+    ) -> IRRuntimeConfigRecord:
+        record = IRRuntimeConfigRecord(
+            session_id=self._session_id,
+            namespace=namespace,
+            updates=updates,
+            effective=effective,
+            turn=self._turn,
+            turn_id=self._curr_turn_id,
+        )
+        self._write_record(record)
+        return record
 
     def set_state(self, turn_id: str, turn: int, seq: int) -> None:
         self._curr_turn_id = turn_id

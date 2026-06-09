@@ -17,6 +17,7 @@ from .ir_types import (
     IRFooterDrainRecord,
     IRFooterQueueRecord,
     IRRecord,
+    IRRuntimeConfigRecord,
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockArtifactRecord,
@@ -61,6 +62,7 @@ class RehydrationResult(BaseModel, frozen=True):
     plan_proposal: IRContextPlan | None
     skill_catalog: IRSkillCatalog
     tool_result_ttls: list[IRToolResultTTLRecord] = Field(default_factory=list)
+    runtime_config_updates: list[IRRuntimeConfigRecord] = Field(default_factory=list)
     is_unfinished_turn: bool = False
     current_turn_id: str | None = None
     last_seq: int | None = None
@@ -117,6 +119,7 @@ class Rehydrator:
         plan_proposal: IRContextPlan | None = None
         skill_catalog: IRSkillCatalog | None = None
         tool_result_ttls: list[IRToolResultTTLRecord] = []
+        runtime_config_updates: list[IRRuntimeConfigRecord] = []
         current_turn: int = 0
         in_progress_turn: int | None = None
         current_turn_id: str | None = None
@@ -177,6 +180,8 @@ class Rehydrator:
                     )
                 case IRToolResultTTLRecord():
                     tool_result_ttls.append(record)
+                case IRRuntimeConfigRecord():
+                    runtime_config_updates.append(record)
                 case IRFooterQueueRecord():
                     pending_footers[record.footer.key] = record.footer
                 case IRFooterDrainRecord():
@@ -287,6 +292,7 @@ class Rehydrator:
             plan_proposal=plan_proposal,
             skill_catalog=skill_catalog,
             tool_result_ttls=tool_result_ttls,
+            runtime_config_updates=runtime_config_updates,
             is_unfinished_turn=is_unfinished_turn,
             current_turn_id=current_turn_id,
             last_seq=current_seq,

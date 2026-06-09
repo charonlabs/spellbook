@@ -19,6 +19,8 @@ from spellbook.homunculus.token_meter import TokenMeter
 from spellbook.homunculus.tool_result_ttl import (
     TTL_TRIGGER_END_TURN,
     TTL_TRIGGER_SEQ,
+    ToolResultTTLSettings,
+    ToolResultTTLStatus,
     ToolResultTTLRegistry,
 )
 from spellbook.nursery import Nursery
@@ -30,6 +32,7 @@ from ..ir_types import (
     IRCompactBlockIntent,
     IRExecution,
     IRGeneration,
+    IRToolResultBlock,
     SemanticBlockApplyModeSource,
     StopReason,
 )
@@ -76,6 +79,7 @@ class Homunculus:
         self._ttl_registry.rehydrate(
             rehydrated.tool_result_ttls,
             last_completed_turn=rehydrated.last_completed_turn,
+            config_records=rehydrated.runtime_config_updates,
         )
 
     def build_awareness(self) -> AwarenessHomunculusSnapshot:
@@ -210,6 +214,80 @@ class Homunculus:
             "token_summary": token_summary,
         }
 
+    def render_tool_results(
+        self, *, verbose: bool = False
+    ) -> tuple[str, dict[str, Any]]:
+        statuses = [
+            self._ttl_registry.status_for_block(
+                block,
+                current_turn=self._recorder.current_turn_idx,
+            )
+            for block in self._block_manager.context_blocks
+            if isinstance(block, IRToolResultBlock)
+        ]
+        shown = statuses if verbose else [s for s in statuses if s.show_by_default]
+
+        pending = sum(1 for s in statuses if s.kind == "pending")
+        collapsed = sum(1 for s in statuses if s.kind == "collapsed")
+        untracked = len(statuses) - pending - collapsed
+        large_untracked = sum(1 for s in statuses if s.kind == "large_untracked")
+
+        lines = ["## Tool Results", ""]
+        if not statuses:
+            lines.append("No tool results are currently in context.")
+            return "\n".join(lines), {
+                "kind": "reflect_tool_results",
+                "shown": 0,
+                "total": 0,
+                "verbose": verbose,
+            }
+
+        lines.append(
+            (
+                f"Showing {len(shown)} of {len(statuses)} tool result(s) "
+                f"({'verbose' if verbose else 'default'} view)."
+            )
+        )
+        lines.append(
+            (
+                f"Tracked: {pending} pending, {collapsed} collapsed. "
+                f"Untracked: {untracked} ({large_untracked} above threshold)."
+            )
+        )
+        if not verbose:
+            lines.append(
+                "Default view shows pending TTLs and large untracked results. "
+                "Pass verbose=true to inspect everything."
+            )
+        lines.append("")
+
+        if not shown:
+            lines.append("No token-relevant active tool results are waiting on TTL.")
+        else:
+            total_chars = sum(s.chars or 0 for s in shown)
+            total_lines = sum(s.lines or 0 for s in shown)
+            lines.append(
+                (
+                    f"Total shown: {total_chars:,} chars / {total_lines:,} lines "
+                    f"(~{self._approx_tokens(total_chars):,} tokens)."
+                )
+            )
+            lines.append("")
+            for status in shown:
+                lines.extend(self._render_tool_result_status(status))
+                lines.append("")
+
+        return "\n".join(lines).rstrip(), {
+            "kind": "reflect_tool_results",
+            "shown": len(shown),
+            "total": len(statuses),
+            "verbose": verbose,
+            "pending": pending,
+            "collapsed": collapsed,
+            "untracked": untracked,
+            "large_untracked": large_untracked,
+        }
+
     async def forget(
         self,
         block_idx: int,
@@ -235,6 +313,81 @@ class Homunculus:
 
     async def recall(self, block_idx: int) -> str:
         return self._block_manager.recall_block(block_idx)
+
+    async def forget_tool_result(self, call_id: str) -> str:
+        block = self._resolve_tool_result(call_id)
+        state = self._ttl_registry.forget(block)
+        self._invalidate()
+        return (
+            f"Tool result {block.call_id} successfully forgotten. "
+            f"It will render as: {state.replace_content}"
+        )
+
+    def configure(
+        self,
+        *,
+        key: str | None = None,
+        value: str | int | bool | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        ttl_enabled: bool | None = None
+        ttl_turns: int | None = None
+        ttl_char_threshold: int | None = None
+        if key is None and value is not None:
+            raise ValueError("Configure writes require both `key` and `value`.")
+        if key is not None:
+            if value is None:
+                raise ValueError("Configure writes require both `key` and `value`.")
+            normalized_key = self._normalize_config_key(key)
+            match normalized_key:
+                case "enabled":
+                    ttl_enabled = self._parse_bool_config_value(value, key)
+                case "ttl_turns":
+                    ttl_turns = self._parse_int_config_value(value, key)
+                case "char_threshold":
+                    ttl_char_threshold = self._parse_int_config_value(value, key)
+                case _:
+                    raise ValueError(f"Unknown runtime config key `{key}`.")
+
+        old, new, updates = self._ttl_registry.configure(
+            enabled=ttl_enabled,
+            ttl_turns=ttl_turns,
+            char_threshold=ttl_char_threshold,
+        )
+        if updates:
+            self._recorder.write_runtime_config(
+                namespace="tool_result_ttl",
+                updates=updates,
+                effective=new.as_record_dict(),
+            )
+
+        lines = ["## Runtime Configuration", "", "### Tool Result TTL", ""]
+        if not updates:
+            lines.extend(self._render_ttl_settings())
+            lines.append("")
+            lines.append(
+                "Set `key` and `value` to update one setting. Available keys: "
+                "`ttl_enabled`, `ttl_turns`, `ttl_char_threshold`."
+            )
+            action = "read"
+        else:
+            lines.append("Updated:")
+            for key in updates:
+                old_value = self._ttl_setting_value(old, key)
+                new_value = self._ttl_setting_value(new, key)
+                lines.append(
+                    f"- {self._display_ttl_key(key)}: {old_value} -> {new_value}"
+                )
+            lines.append("")
+            lines.append("Current:")
+            lines.extend(self._render_ttl_settings())
+            action = "update"
+        return "\n".join(lines), {
+            "kind": "configure",
+            "action": action,
+            "namespace": "tool_result_ttl",
+            "updates": updates,
+            "effective": new.as_record_dict(),
+        }
 
     async def integrate_generation(self, generation: IRGeneration) -> None:
         """Absorb a generation's output"""
@@ -327,6 +480,132 @@ class Homunculus:
         if count is None:
             return "unknown tokens"
         return f"{count} tokens"
+
+    def _render_tool_result_status(self, status: ToolResultTTLStatus) -> list[str]:
+        heading = f"{status.call_id} {status.tool}"
+        if status.label:
+            heading += f" ({status.label})"
+        lines = [heading]
+        if status.chars is None or status.lines is None:
+            lines.append("  size: non-text output")
+        else:
+            lines.append(f"  size: {status.chars:,} chars / {status.lines:,} lines")
+        if status.delivered_turn is None or status.age_turns is None:
+            lines.append("  age: unknown")
+        else:
+            plural = "" if status.age_turns == 1 else "s"
+            lines.append(
+                (
+                    f"  age: delivered turn {status.delivered_turn}, "
+                    f"{status.age_turns} turn{plural} ago"
+                )
+            )
+        lines.append(f"  status: {status.status}")
+        if status.output_ref is not None:
+            lines.append(f"  saved: {status.output_ref}")
+        return lines
+
+    def _approx_tokens(self, chars: int) -> int:
+        return chars // 4
+
+    def _render_ttl_settings(self) -> list[str]:
+        settings = self._ttl_registry.settings
+        return [
+            f"- ttl_enabled: {settings.enabled}",
+            f"- ttl_turns: {settings.ttl_turns}",
+            f"- ttl_char_threshold: {settings.char_threshold}",
+        ]
+
+    def _ttl_setting_value(
+        self, settings: ToolResultTTLSettings, key: str
+    ) -> bool | int:
+        match key:
+            case "enabled":
+                return settings.enabled
+            case "ttl_turns":
+                return settings.ttl_turns
+            case "char_threshold":
+                return settings.char_threshold
+            case _:
+                raise ValueError(f"Unknown tool_result_ttl config key `{key}`.")
+
+    def _display_ttl_key(self, key: str) -> str:
+        match key:
+            case "enabled":
+                return "ttl_enabled"
+            case "ttl_turns":
+                return "ttl_turns"
+            case "char_threshold":
+                return "ttl_char_threshold"
+            case _:
+                return key
+
+    def _normalize_config_key(self, key: str) -> str:
+        normalized = key.strip()
+        aliases = {
+            "enabled": "enabled",
+            "ttl_enabled": "enabled",
+            "tool_result_ttl.enabled": "enabled",
+            "ttl_turns": "ttl_turns",
+            "tool_result_ttl.ttl_turns": "ttl_turns",
+            "ttl_char_threshold": "char_threshold",
+            "char_threshold": "char_threshold",
+            "tool_result_ttl.char_threshold": "char_threshold",
+        }
+        try:
+            return aliases[normalized]
+        except KeyError as e:
+            raise ValueError(f"Unknown runtime config key `{key}`.") from e
+
+    def _parse_bool_config_value(self, value: str | int | bool, key: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            match value.strip().lower():
+                case "true" | "yes" | "on" | "1":
+                    return True
+                case "false" | "no" | "off" | "0":
+                    return False
+        raise ValueError(f"`{key}` expects a boolean value.")
+
+    def _parse_int_config_value(self, value: str | int | bool, key: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"`{key}` expects a non-negative integer value.")
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = int(value.strip())
+            except ValueError as e:
+                raise ValueError(
+                    f"`{key}` expects a non-negative integer value."
+                ) from e
+        else:
+            raise ValueError(f"`{key}` expects a non-negative integer value.")
+        if parsed < 0:
+            raise ValueError(f"`{key}` expects a non-negative integer value.")
+        return parsed
+
+    def _resolve_tool_result(self, call_id: str) -> IRToolResultBlock:
+        results = [
+            block
+            for block in self._block_manager.context_blocks
+            if isinstance(block, IRToolResultBlock)
+        ]
+        exact = [block for block in results if block.call_id == call_id]
+        if exact:
+            return exact[0]
+        matches = [block for block in results if block.call_id.startswith(call_id)]
+        if not matches:
+            raise ValueError(f"No tool result found for call_id `{call_id}`.")
+        if len(matches) > 1:
+            options = ", ".join(block.call_id for block in matches[:8])
+            if len(matches) > 8:
+                options += ", ..."
+            raise ValueError(
+                f"Tool result call_id `{call_id}` is ambiguous. Matches: {options}"
+            )
+        return matches[0]
 
     def _invalidate(self) -> None:
         self._should_rerender = True

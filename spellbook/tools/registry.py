@@ -30,7 +30,15 @@ from .homunculus.block_detector import (
     PROPOSE_BLOCK_TOOL,
 )
 from .homunculus.block_summarizer import SUMMARIZE_TOOL
-from .self_work import FORGET_TOOL, PIN_TOOL, RECALL_TOOL, REFLECT_TOOL
+from .self_work import (
+    CONFIGURE_TOOL,
+    FORGET_TOOL,
+    FORGET_TOOL_RESULT_TOOL,
+    PIN_TOOL,
+    RECALL_TOOL,
+    REFLECT_TOOL,
+    REFLECT_TOOL_RESULTS_TOOL,
+)
 
 ToolSurface = Literal["main", "block_detector", "block_summarizer", "custom"]
 
@@ -93,7 +101,10 @@ MAIN_TOOLS: list[Tool[Any]] = [
     WEB_ANSWER_TOOL,
     SKILL_TOOL,
     REFLECT_TOOL,
+    REFLECT_TOOL_RESULTS_TOOL,
     FORGET_TOOL,
+    FORGET_TOOL_RESULT_TOOL,
+    CONFIGURE_TOOL,
     PIN_TOOL,
     RECALL_TOOL,
 ]

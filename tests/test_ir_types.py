@@ -32,6 +32,7 @@ from spellbook.ir_types import (
     IRImageBlock,
     IRImageURLSource,
     IRRecord,
+    IRRuntimeConfigRecord,
     IRSemanticBlockRange,
     IRSessionRecord,
     IRSkillCatalog,
@@ -440,6 +441,24 @@ class TestIRRecordDiscrimination:
         assert [f.key for f in parsed.footers] == ["a", "b"]
         assert parsed.turn == 4
         assert parsed.turn_id == "turn_4"
+
+    def test_runtime_config_record_round_trips_through_ir_record_union(self) -> None:
+        record = IRRuntimeConfigRecord(
+            session_id="s1",
+            namespace="tool_result_ttl",
+            updates={"ttl_turns": 2},
+            effective={"enabled": True, "ttl_turns": 2, "char_threshold": 4000},
+            turn=5,
+            turn_id="turn_5",
+        )
+
+        adapter = TypeAdapter(IRRecord)
+        parsed = adapter.validate_json(record.model_dump_json())
+
+        assert isinstance(parsed, IRRuntimeConfigRecord)
+        assert parsed.namespace == "tool_result_ttl"
+        assert parsed.updates == {"ttl_turns": 2}
+        assert parsed.effective["char_threshold"] == 4000
 
     def test_ir_record_accepts_existing_record_variants(self, tmp_path) -> None:
         config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)

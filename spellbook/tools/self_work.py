@@ -34,6 +34,29 @@ async def exec_reflect(meta: ToolMetadata, input: ReflectInput) -> ToolExecution
     return ToolExecutionResult(content=[IRToolTextBlock(text=result)], display=display)
 
 
+class ReflectToolResultsInput(BaseModel):
+    """Inspect current tool results, sizes, and TTL status."""
+
+    verbose: bool = Field(
+        default=False,
+        description=(
+            "When false, show only token-relevant tool results: pending TTLs "
+            "and large untracked outputs. When true, show every tool result."
+        ),
+    )
+
+
+async def exec_reflect_tool_results(
+    meta: ToolMetadata, input: ReflectToolResultsInput
+) -> ToolExecutionResult:
+    if meta.homunculus is None:
+        raise ToolError(
+            "ReflectToolResults is unavailable because this session has no Homunculus."
+        )
+    result, display = meta.homunculus.render_tool_results(verbose=input.verbose)
+    return ToolExecutionResult(content=[IRToolTextBlock(text=result)], display=display)
+
+
 class ForgetInput(BaseModel):
     """Compact a semantic block to its summary."""
 
@@ -63,6 +86,71 @@ async def exec_forget(meta: ToolMetadata, input: ForgetInput) -> ToolExecutionRe
             IRToolTextBlock(text=f"Block {input.block_idx} successfully compacted.")
         ]
     )
+
+
+class ForgetToolResultInput(BaseModel):
+    """Forget a specific tool result by collapsing it immediately."""
+
+    call_id: str = Field(
+        description=(
+            "The tool result call_id to forget. Unique prefixes from "
+            "`ReflectToolResults` are accepted."
+        ),
+    )
+
+
+async def exec_forget_tool_result(
+    meta: ToolMetadata, input: ForgetToolResultInput
+) -> ToolExecutionResult:
+    if meta.homunculus is None:
+        raise ToolError(
+            "ForgetToolResult is unavailable because this session has no Homunculus."
+        )
+    try:
+        text = await meta.homunculus.forget_tool_result(input.call_id)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    return ToolExecutionResult(
+        content=[IRToolTextBlock(text=text)],
+        display={"kind": "forget_tool_result", "call_id": input.call_id},
+    )
+
+
+class ConfigureInput(BaseModel):
+    """Inspect or update runtime configuration."""
+
+    key: str | None = Field(
+        default=None,
+        description=(
+            "Optional runtime config key to update. Omit both key and value to read "
+            "the current configuration."
+        ),
+    )
+
+    value: str | int | bool | None = Field(
+        default=None,
+        description=(
+            "Optional value for the runtime config key. Omit both key and value to "
+            "read the current configuration."
+        ),
+    )
+
+
+async def exec_configure(
+    meta: ToolMetadata, input: ConfigureInput
+) -> ToolExecutionResult:
+    if meta.homunculus is None:
+        raise ToolError(
+            "Configure is unavailable because this session has no Homunculus."
+        )
+    try:
+        text, display = meta.homunculus.configure(
+            key=input.key,
+            value=input.value,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    return ToolExecutionResult(content=[IRToolTextBlock(text=text)], display=display)
 
 
 class PinInput(BaseModel):
@@ -130,10 +218,31 @@ REFLECT_TOOL: Tool[ReflectInput] = Tool(
     category="memory",
 )
 
+REFLECT_TOOL_RESULTS_TOOL: Tool[ReflectToolResultsInput] = Tool(
+    name="ReflectToolResults",
+    input_model=ReflectToolResultsInput,
+    exec=exec_reflect_tool_results,
+    category="memory",
+)
+
 FORGET_TOOL: Tool[ForgetInput] = Tool(
     name="Forget",
     input_model=ForgetInput,
     exec=exec_forget,
+    category="memory",
+)
+
+FORGET_TOOL_RESULT_TOOL: Tool[ForgetToolResultInput] = Tool(
+    name="ForgetToolResult",
+    input_model=ForgetToolResultInput,
+    exec=exec_forget_tool_result,
+    category="memory",
+)
+
+CONFIGURE_TOOL: Tool[ConfigureInput] = Tool(
+    name="Configure",
+    input_model=ConfigureInput,
+    exec=exec_configure,
     category="memory",
 )
 

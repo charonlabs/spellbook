@@ -178,7 +178,10 @@ class TestDefaultRegistry:
             "WebAnswer",
             "Skill",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
         }
@@ -201,7 +204,10 @@ class TestToolSurfaces:
             "WebAnswer",
             "Skill",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
             "ProposeBlock",
@@ -224,7 +230,10 @@ class TestToolSurfaces:
             "WebAnswer",
             "Skill",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
         }
@@ -237,7 +246,15 @@ class TestToolSurfaces:
     def test_main_surface_exposes_memory_tools(self) -> None:
         registry = ToolRegistry.build(categories={"memory"}, surface="main")
 
-        assert registry.tool_names == {"Reflect", "Forget", "Pin", "Recall"}
+        assert registry.tool_names == {
+            "Reflect",
+            "ReflectToolResults",
+            "Forget",
+            "ForgetToolResult",
+            "Configure",
+            "Pin",
+            "Recall",
+        }
 
     def test_block_detector_surface_default_exposes_detector_tools(self) -> None:
         registry = ToolRegistry.build(categories=None, surface="block_detector")
@@ -282,7 +299,10 @@ class TestToolSurfaces:
         assert registry.tool_names == {
             "FakeRead",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
         }
