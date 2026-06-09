@@ -1,5 +1,5 @@
-Inspect current tool results, their sizes, and their TTL status.
+See what's in your working context — which tool results are still taking up space and which are waiting to collapse.
 
-By default, this shows only token-relevant tool results: pending TTLs and large untracked outputs. Use this when you want to understand which tool outputs are still occupying context and which ones are waiting to collapse.
+By default, shows only the results that matter: pending TTLs and large outputs. This is the "what's in my backpack" view. Use it to decide what to set down.
 
-Pass `verbose=true` to inspect every tool result, including small outputs, ignored tools, error results, and already-collapsed outputs.
+Pass `verbose=true` to see everything, including small outputs, ignored tools, and already-collapsed results.

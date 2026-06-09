@@ -1,5 +1,5 @@
-Collapse a specific tool result immediately.
+Set down a specific tool result — collapse it now rather than waiting for TTL.
 
-Use this when a tool output is no longer useful enough to keep in active context. Pass the `call_id` shown by `ReflectToolResults`; unique prefixes are accepted.
+This is active context management at the tool-result level. You choose what to release. Pass the `call_id` shown by ReflectToolResults; unique prefixes are accepted.
 
-The full textual output is preserved in the session's `tool-outputs/` directory when needed, and the rendered context will show a compact pointer instead of the original result.
+Nothing is lost — the full output is preserved in `tool-outputs/` and can be re-read if needed. Your context shows a compact pointer where the full result was.
