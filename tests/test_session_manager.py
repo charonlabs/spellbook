@@ -1026,7 +1026,10 @@ class TestBuildResumeBehavior:
         assert manager.tool_registry.tool_names == {
             "CustomTool",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
         }
@@ -1044,7 +1047,10 @@ class TestBuildResumeBehavior:
         assert {tool.name for tool in rehydrated.tools} == {
             "CustomTool",
             "Reflect",
+            "ReflectToolResults",
             "Forget",
+            "ForgetToolResult",
+            "Configure",
             "Pin",
             "Recall",
         }

@@ -251,6 +251,9 @@ StopReason = Literal[
 
 ToolResultTTLTrigger = Literal["end_turn", "seq"]
 ToolResultTTLSource = Literal["auto", "manual", "repair"]
+RuntimeConfigNamespace = Literal["tool_result_ttl"]
+RuntimeConfigSource = Literal["model"]
+RuntimeConfigValue = int | bool
 
 
 class IRGeneration(BaseModel, frozen=True):
@@ -574,6 +577,19 @@ class IRToolResultTTLRecord(BaseModel, frozen=True):
     turn_id: str
 
 
+class IRRuntimeConfigRecord(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    ir: Literal["runtime_config"] = "runtime_config"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    namespace: RuntimeConfigNamespace
+    updates: dict[str, RuntimeConfigValue]
+    effective: dict[str, RuntimeConfigValue]
+    source: RuntimeConfigSource = "model"
+    turn: int
+    turn_id: str
+
+
 class IRFooterQueueRecord(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
     session_id: str
@@ -712,6 +728,7 @@ IRRecord = Annotated[
     | IRTurnEndRecord
     | IRBlockRecord
     | IRToolResultTTLRecord
+    | IRRuntimeConfigRecord
     | IRFooterQueueRecord
     | IRFooterDrainRecord
     | IRBlockDetectionRecord

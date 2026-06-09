@@ -22,6 +22,7 @@ from spellbook.ir_types import (
     IRFooterQueueRecord,
     IRGeneration,
     IRRecord,
+    IRRuntimeConfigRecord,
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockFacet,
@@ -661,6 +662,313 @@ async def test_small_tool_result_does_not_auto_register_ttl(tmp_path: Path) -> N
 
     records = _read_records(transcript)
     assert not any(isinstance(record, IRToolResultTTLRecord) for record in records)
+
+
+async def test_reflect_tool_results_default_shows_pending_ttls_only(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_turns=2,
+            tool_result_ttl_char_threshold=20,
+        ),
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+    big = _tool_result("toolu_big", "large output\n" * 4).model_copy(
+        update={
+            "display": {
+                "kind": "read",
+                "path": "/tmp/big.txt",
+                "start_line": 1,
+                "end_line": 4,
+                "total_lines": 4,
+            }
+        }
+    )
+    small = _tool_result("toolu_small", "short", tool="Bash")
+    skill = _tool_result("toolu_skill", "large skill output\n" * 4, tool="Skill")
+
+    await homunculus.integrate_execution(IRExecution(blocks=[big, small, skill]))
+    text, display = homunculus.render_tool_results()
+
+    assert display["kind"] == "reflect_tool_results"
+    assert display["shown"] == 1
+    assert display["total"] == 3
+    assert display["pending"] == 1
+    assert display["untracked"] == 2
+    assert "Showing 1 of 3 tool result(s) (default view)." in text
+    assert "Tracked: 1 pending, 0 collapsed. Untracked: 2 (0 above threshold)." in text
+    assert "toolu_big Read (/tmp/big.txt)" in text
+    assert "status: pending TTL, 2 turns remaining" in text
+    assert "saved: tool-outputs/toolu_big.txt" in text
+    assert "toolu_small" not in text
+    assert "toolu_skill" not in text
+
+
+async def test_reflect_tool_results_verbose_includes_untracked_and_ignored(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(tool_result_ttl_char_threshold=20),
+    )
+    small = _tool_result("toolu_small", "short", tool="Bash")
+    skill = _tool_result("toolu_skill", "large skill output\n" * 4, tool="Skill")
+    historical = _tool_result("toolu_old", "large historical output\n" * 4)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[small, skill, historical],
+            semantic_blocks=[],
+        )
+    )
+
+    default_text, default_display = homunculus.render_tool_results()
+    verbose_text, verbose_display = homunculus.render_tool_results(verbose=True)
+
+    assert default_display["shown"] == 1
+    assert "toolu_old Read" in default_text
+    assert "status: untracked, above TTL threshold" in default_text
+    assert "toolu_small" not in default_text
+    assert "toolu_skill" not in default_text
+
+    assert verbose_display["shown"] == 3
+    assert "Showing 3 of 3 tool result(s) (verbose view)." in verbose_text
+    assert "toolu_small Bash" in verbose_text
+    assert "status: untracked, below TTL threshold" in verbose_text
+    assert "toolu_skill Skill" in verbose_text
+    assert "status: ignored, tool is excluded from auto-TTL" in verbose_text
+
+
+async def test_forget_tool_result_registers_manual_ttl_and_rerenders(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(tool_result_ttl_char_threshold=10_000),
+    )
+    call = IRToolCallBlock(call_id="toolu_big_manual", tool="Read", input={})
+    output = "large output\n" * 4
+    result = _tool_result("toolu_big_manual", output).model_copy(
+        update={
+            "display": {
+                "kind": "read",
+                "path": "/tmp/big.txt",
+                "start_line": 1,
+                "end_line": 4,
+                "total_lines": 4,
+            }
+        }
+    )
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[call, result],
+            semantic_blocks=[],
+        )
+    )
+
+    message = await homunculus.forget_tool_result("toolu_big")
+    ctx = RoundContext(
+        blocks=[call, result],
+        round_number=1,
+        cancel_token=CancelToken(),
+        blocks_this_round=[],
+    )
+    await HomunculusRoundLifecycle(homunculus).between_rounds(ctx)
+
+    assert "Tool result toolu_big_manual successfully forgotten." in message
+    assert "Full output saved to tool-outputs/toolu_big_manual.txt" in message
+    assert (tmp_path / "tool-outputs" / "toolu_big_manual.txt").read_text() == output
+    assert ctx.blocks[0] == call
+    collapsed = ctx.blocks[1]
+    assert isinstance(collapsed, IRToolResultBlock)
+    assert collapsed.content == [
+        IRToolTextBlock(
+            text="[Read: /tmp/big.txt - lines 1-4 of 4. Full output saved to tool-outputs/toolu_big_manual.txt]"
+        )
+    ]
+
+    ttl_records = [
+        record
+        for record in _read_records(transcript)
+        if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert len(ttl_records) == 1
+    assert ttl_records[0].call_id == "toolu_big_manual"
+    assert ttl_records[0].ttl == 0
+    assert ttl_records[0].source == "manual"
+
+
+async def test_forget_tool_result_overrides_pending_auto_ttl(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_turns=5,
+            tool_result_ttl_char_threshold=20,
+        ),
+    )
+    output = "large output\n" * 4
+    result = _tool_result("toolu_auto", output, tool="Bash").model_copy(
+        update={
+            "display": {
+                "kind": "command",
+                "command": "cat big.txt",
+                "exit_code": 0,
+            }
+        }
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+    await homunculus.integrate_execution(IRExecution(blocks=[result]))
+
+    await homunculus.forget_tool_result("toolu_auto")
+    rendered = await homunculus.render_context([])
+
+    collapsed = rendered[0]
+    assert isinstance(collapsed, IRToolResultBlock)
+    assert collapsed.content == [
+        IRToolTextBlock(
+            text="[Bash: `cat big.txt` - exit 0, 4 lines. Full output saved to tool-outputs/toolu_auto.txt]"
+        )
+    ]
+
+    ttl_records = [
+        record
+        for record in _read_records(transcript)
+        if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert [record.source for record in ttl_records] == ["auto", "manual"]
+    assert [record.ttl for record in ttl_records] == [5, 0]
+    assert ttl_records[0].output_ref == ttl_records[1].output_ref
+
+
+async def test_forget_tool_result_rejects_ambiguous_prefix(tmp_path: Path) -> None:
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[
+                _tool_result("toolu_same_a", "a"),
+                _tool_result("toolu_same_b", "b"),
+            ],
+            semantic_blocks=[],
+        )
+    )
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        await homunculus.forget_tool_result("toolu_same")
+
+
+async def test_configure_reads_runtime_ttl_settings_without_recording(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_enabled=True,
+            tool_result_ttl_turns=7,
+            tool_result_ttl_char_threshold=1234,
+        ),
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+
+    text, display = homunculus.configure()
+
+    assert display == {
+        "kind": "configure",
+        "action": "read",
+        "namespace": "tool_result_ttl",
+        "updates": {},
+        "effective": {
+            "enabled": True,
+            "ttl_turns": 7,
+            "char_threshold": 1234,
+        },
+    }
+    assert "- ttl_enabled: True" in text
+    assert "- ttl_turns: 7" in text
+    assert "- ttl_char_threshold: 1234" in text
+    assert not any(
+        isinstance(record, IRRuntimeConfigRecord)
+        for record in _read_records(transcript)
+    )
+
+
+async def test_configure_persists_and_applies_ttl_runtime_settings(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_enabled=True,
+            tool_result_ttl_turns=3,
+            tool_result_ttl_char_threshold=20,
+        ),
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+
+    text, display = homunculus.configure(key="ttl_enabled", value=False)
+
+    assert display["action"] == "update"
+    assert display["updates"] == {
+        "enabled": False,
+    }
+    assert display["effective"] == {
+        "enabled": False,
+        "ttl_turns": 3,
+        "char_threshold": 20,
+    }
+    assert "- ttl_enabled: True -> False" in text
+
+    records = _read_records(transcript)
+    config_records = [
+        record for record in records if isinstance(record, IRRuntimeConfigRecord)
+    ]
+    assert len(config_records) == 1
+    assert config_records[0].namespace == "tool_result_ttl"
+    assert config_records[0].updates == display["updates"]
+    assert config_records[0].effective == display["effective"]
+
+    await homunculus.integrate_execution(
+        IRExecution(blocks=[_tool_result("toolu_disabled", "large output\n" * 20)])
+    )
+    ttl_records = [
+        record
+        for record in _read_records(transcript)
+        if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert ttl_records == []
+
+
+async def test_configure_rehydrates_runtime_ttl_settings(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+    homunculus.configure(key="ttl_turns", value=4)
+    homunculus.configure(key="ttl_char_threshold", value="99")
+
+    rehydrated = Rehydrator(transcript).run()
+    resumed = _homunculus_with_transcript(
+        tmp_path,
+        transcript,
+        initialize=False,
+    )
+    await resumed.rehydrate(rehydrated)
+    text, display = resumed.configure()
+
+    assert len(rehydrated.runtime_config_updates) == 2
+    assert display["effective"] == {
+        "enabled": True,
+        "ttl_turns": 4,
+        "char_threshold": 99,
+    }
+    assert "- ttl_turns: 4" in text
+    assert "- ttl_char_threshold: 99" in text
 
 
 async def test_ttl_rehydrates_remaining_from_completed_turns(tmp_path: Path) -> None:

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, replace
+from typing import Literal, Sequence
 
 from spellbook.config import HomunculusConfig
 from spellbook.ir_types import (
     IRBlock,
     IRExecution,
+    IRRuntimeConfigRecord,
     IRToolResultBlock,
     IRToolResultTTLRecord,
     IRToolTextBlock,
+    RuntimeConfigValue,
     ToolResultTTLSource,
     ToolResultTTLTrigger,
 )
@@ -22,8 +24,19 @@ TTL_TRIGGER_SEQ: ToolResultTTLTrigger = "seq"
 AUTO_TTL_SKIP_TOOLS = {
     "Pin",
     "Forget",
+    "ForgetToolResult",
     "Skill",
 }
+
+ToolResultTTLStatusKind = Literal[
+    "pending",
+    "collapsed",
+    "large_untracked",
+    "small_untracked",
+    "ignored",
+    "error",
+    "non_text",
+]
 
 
 @dataclass
@@ -56,6 +69,48 @@ class ToolResultTTL:
         )
 
 
+@dataclass(frozen=True)
+class ToolResultTTLSettings:
+    enabled: bool
+    ttl_turns: int
+    char_threshold: int
+
+    @classmethod
+    def from_config(cls, config: HomunculusConfig) -> "ToolResultTTLSettings":
+        return cls(
+            enabled=config.tool_result_ttl_enabled,
+            ttl_turns=config.tool_result_ttl_turns,
+            char_threshold=config.tool_result_ttl_char_threshold,
+        )
+
+    def as_record_dict(self) -> dict[str, RuntimeConfigValue]:
+        return {
+            "enabled": self.enabled,
+            "ttl_turns": self.ttl_turns,
+            "char_threshold": self.char_threshold,
+        }
+
+
+@dataclass(frozen=True)
+class ToolResultTTLStatus:
+    call_id: str
+    tool: str
+    label: str | None
+    chars: int | None
+    lines: int | None
+    kind: ToolResultTTLStatusKind
+    status: str
+    output_ref: str | None = None
+    delivered_turn: int | None = None
+    age_turns: int | None = None
+    remaining: int | None = None
+    trigger: ToolResultTTLTrigger | None = None
+
+    @property
+    def show_by_default(self) -> bool:
+        return self.kind in {"pending", "large_untracked"}
+
+
 class ToolResultTTLRegistry:
     """Render-time compaction for large historical tool results.
 
@@ -64,7 +119,7 @@ class ToolResultTTLRegistry:
     """
 
     def __init__(self, *, config: HomunculusConfig, recorder: Recorder) -> None:
-        self._config = config
+        self._settings = ToolResultTTLSettings.from_config(config)
         self._recorder = recorder
         self._ttls: dict[str, ToolResultTTL] = {}
 
@@ -72,11 +127,16 @@ class ToolResultTTLRegistry:
     def ttls(self) -> dict[str, ToolResultTTL]:
         return self._ttls
 
+    @property
+    def settings(self) -> ToolResultTTLSettings:
+        return self._settings
+
     def rehydrate(
         self,
         records: Sequence[IRToolResultTTLRecord],
         *,
         last_completed_turn: int,
+        config_records: Sequence[IRRuntimeConfigRecord] = (),
     ) -> None:
         self._ttls = {
             record.call_id: ToolResultTTL.from_record(
@@ -85,9 +145,61 @@ class ToolResultTTLRegistry:
             )
             for record in records
         }
+        for record in config_records:
+            if record.namespace == "tool_result_ttl":
+                self.apply_config(record.effective)
+
+    def configure(
+        self,
+        *,
+        enabled: bool | None = None,
+        ttl_turns: int | None = None,
+        char_threshold: int | None = None,
+    ) -> tuple[
+        ToolResultTTLSettings, ToolResultTTLSettings, dict[str, RuntimeConfigValue]
+    ]:
+        updates: dict[str, RuntimeConfigValue] = {}
+        if enabled is not None:
+            updates["enabled"] = enabled
+        if ttl_turns is not None:
+            if ttl_turns < 0:
+                raise ValueError("ttl_turns must be >= 0.")
+            updates["ttl_turns"] = ttl_turns
+        if char_threshold is not None:
+            if char_threshold < 0:
+                raise ValueError("ttl_char_threshold must be >= 0.")
+            updates["char_threshold"] = char_threshold
+        old = self._settings
+        self.apply_config(updates)
+        return old, self._settings, updates
+
+    def apply_config(self, updates: dict[str, RuntimeConfigValue]) -> None:
+        allowed = {"enabled", "ttl_turns", "char_threshold"}
+        unknown = sorted(set(updates) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown tool_result_ttl config key(s): {', '.join(unknown)}"
+            )
+        next_settings = self._settings
+        if "enabled" in updates:
+            value = updates["enabled"]
+            if not isinstance(value, bool):
+                raise ValueError("enabled must be a boolean.")
+            next_settings = replace(next_settings, enabled=value)
+        if "ttl_turns" in updates:
+            value = updates["ttl_turns"]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("ttl_turns must be a non-negative integer.")
+            next_settings = replace(next_settings, ttl_turns=value)
+        if "char_threshold" in updates:
+            value = updates["char_threshold"]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("char_threshold must be a non-negative integer.")
+            next_settings = replace(next_settings, char_threshold=value)
+        self._settings = next_settings
 
     def observe_execution(self, execution: IRExecution) -> None:
-        if not self._config.tool_result_ttl_enabled:
+        if not self._settings.enabled:
             return
         for block in execution.blocks:
             self._maybe_auto_register(block)
@@ -102,7 +214,7 @@ class ToolResultTTLRegistry:
         source: ToolResultTTLSource = "auto",
         output_ref: str | None = None,
     ) -> ToolResultTTL:
-        ttl_value = self._config.tool_result_ttl_turns if ttl is None else ttl
+        ttl_value = self._settings.ttl_turns if ttl is None else ttl
         record = self._recorder.write_tool_result_ttl(
             call_id=call_id,
             replace_content=replace_content,
@@ -119,6 +231,39 @@ class ToolResultTTLRegistry:
         self._ttls[call_id] = state
         return state
 
+    def forget(self, block: IRToolResultBlock) -> ToolResultTTL:
+        """Collapse a tool result immediately and persist the manual TTL decision."""
+        existing = self._ttls.get(block.call_id)
+        if existing is not None and existing.remaining <= 0:
+            return existing
+
+        output = tool_result_text_content(block)
+        if output is None:
+            raise ValueError(
+                f"Tool result `{block.call_id}` has no textual output to forget."
+            )
+
+        output_ref = existing.output_ref if existing is not None else None
+        if output_ref is None:
+            output_ref = self._save_output(block.call_id, output)
+        replace_content = (
+            existing.replace_content
+            if existing is not None
+            else build_tool_result_ttl_replacement(
+                tool=block.tool,
+                output=output,
+                display=block.display,
+                output_ref=output_ref,
+            )
+        )
+        return self.register(
+            call_id=block.call_id,
+            replace_content=replace_content,
+            ttl=0,
+            source="manual",
+            output_ref=output_ref,
+        )
+
     def tick(self, trigger: ToolResultTTLTrigger) -> bool:
         """Tick matching TTLs. Returns True if any tool result became collapsed."""
         any_newly_expired = False
@@ -134,6 +279,98 @@ class ToolResultTTLRegistry:
         if not self._ttls:
             return list(blocks)
         return [self._collapse_block(block) for block in blocks]
+
+    def status_for_block(
+        self, block: IRToolResultBlock, *, current_turn: int
+    ) -> ToolResultTTLStatus:
+        output = tool_result_text_content(block)
+        chars = len(output) if output is not None else None
+        lines = _line_count(output) if output is not None else None
+        label = tool_result_label(block)
+        state = self._ttls.get(block.call_id)
+        if state is not None:
+            age_turns = max(0, current_turn - state.delivered_turn)
+            if state.remaining <= 0:
+                return ToolResultTTLStatus(
+                    call_id=block.call_id,
+                    tool=block.tool,
+                    label=label,
+                    chars=chars,
+                    lines=lines,
+                    kind="collapsed",
+                    status="collapsed",
+                    output_ref=state.output_ref,
+                    delivered_turn=state.delivered_turn,
+                    age_turns=age_turns,
+                    remaining=state.remaining,
+                    trigger=state.trigger,
+                )
+            unit = "turn" if state.trigger == TTL_TRIGGER_END_TURN else "round"
+            plural = "" if state.remaining == 1 else "s"
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="pending",
+                status=f"pending TTL, {state.remaining} {unit}{plural} remaining",
+                output_ref=state.output_ref,
+                delivered_turn=state.delivered_turn,
+                age_turns=age_turns,
+                remaining=state.remaining,
+                trigger=state.trigger,
+            )
+
+        if block.is_error:
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="error",
+                status="untracked, error result",
+            )
+        if block.tool in AUTO_TTL_SKIP_TOOLS:
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="ignored",
+                status="ignored, tool is excluded from auto-TTL",
+            )
+        if output is None:
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="non_text",
+                status="untracked, no textual output",
+            )
+        if len(output) < self._settings.char_threshold:
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="small_untracked",
+                status="untracked, below TTL threshold",
+            )
+        return ToolResultTTLStatus(
+            call_id=block.call_id,
+            tool=block.tool,
+            label=label,
+            chars=chars,
+            lines=lines,
+            kind="large_untracked",
+            status="untracked, above TTL threshold",
+        )
 
     def _collapse_block(self, block: IRBlock) -> IRBlock:
         if not isinstance(block, IRToolResultBlock):
@@ -154,7 +391,7 @@ class ToolResultTTLRegistry:
         output = tool_result_text_content(block)
         if output is None:
             return
-        if len(output) < self._config.tool_result_ttl_char_threshold:
+        if len(output) < self._settings.char_threshold:
             return
 
         output_ref = self._save_output(block.call_id, output)
@@ -204,6 +441,28 @@ def tool_result_text_content(block: IRToolResultBlock) -> str | None:
     if not parts:
         return None
     return "\n".join(parts)
+
+
+def tool_result_label(block: IRToolResultBlock) -> str | None:
+    display = block.display
+    kind = display.get("kind")
+    match kind:
+        case "read":
+            value = display.get("path")
+        case "command":
+            value = display.get("command")
+        case "web_search" | "web_answer":
+            value = display.get("query")
+        case "web_read":
+            value = display.get("title") or display.get("url")
+        case "reflect":
+            target = display.get("target_block")
+            value = f"block {target}" if target is not None else "context"
+        case _:
+            value = None
+    if value is None:
+        return None
+    return _clip(str(value), 120)
 
 
 def build_tool_result_ttl_replacement(
