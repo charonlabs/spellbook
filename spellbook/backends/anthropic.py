@@ -7,6 +7,7 @@ and request token counting.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 from collections.abc import Mapping
 from typing import Any, Literal, Sequence, cast
@@ -69,6 +70,27 @@ from .model_backend import GenerationStream, ModelBackend, RequestSurface, Token
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _RefusalDebugSegment:
+    kind: Literal["text", "thinking", "tool_json"]
+    parts: list[str] = field(default_factory=list)
+
+    def append(self, text: str) -> None:
+        self.parts.append(text)
+
+    def render(self) -> str:
+        text = "".join(self.parts)
+        if self.kind == "text":
+            return text
+        if self.kind == "thinking":
+            if not text:
+                return ""
+            return f"<thinking_summary>\n{text}\n</thinking_summary>"
+        if not text:
+            return ""
+        return f"<partial_tool_call_json>\n{text}\n</partial_tool_call_json>"
+
+
 class AnthropicGenerationStream(GenerationStream):
     """Wraps Anthropic's streaming response into normalized StreamEvents."""
 
@@ -80,6 +102,8 @@ class AnthropicGenerationStream(GenerationStream):
         self._exhausted = False
         self._in_thinking = False
         self._in_text = False
+        self._active_refusal_debug: _RefusalDebugSegment | None = None
+        self._refusal_debug_segments: list[_RefusalDebugSegment] = []
 
     async def __aenter__(self) -> "AnthropicGenerationStream":
         logger.info("anthropic.stream_context_enter model=%s", self._model)
@@ -120,6 +144,18 @@ class AnthropicGenerationStream(GenerationStream):
 
         if self._response is None:
             raise ValueError("somehow _response is None?")
+
+        if self._response.stop_reason == "refusal":
+            return IRGeneration(
+                model=self._model,
+                blocks=[
+                    IRAssistantTextBlock(
+                        text=self._render_refusal_response(self._response)
+                    )
+                ],
+                stop_reason="refusal",
+                usage=_normalize_usage(self._response.usage),
+            )
 
         blocks, has_tool_use = _normalize_content_blocks(self._response.content)
         usage = _normalize_usage(self._response.usage)
@@ -167,23 +203,60 @@ class AnthropicGenerationStream(GenerationStream):
         if event.type == "content_block_start":
             if event.content_block.type == "thinking":
                 self._in_thinking = True
+                self._start_refusal_debug_segment("thinking")
                 return IRStreamThinkingStartEvent()
             elif event.content_block.type == "text":
                 self._in_text = True
+                self._start_refusal_debug_segment("text")
                 return IRStreamTextStartEvent()
+            elif event.content_block.type == "tool_use":
+                self._start_refusal_debug_segment("tool_json")
         elif event.type == "content_block_delta":
             if event.delta.type == "thinking_delta":
+                self._append_refusal_debug("thinking", event.delta.thinking)
                 return IRStreamThinkingDeltaEvent(text=event.delta.thinking)
             elif event.delta.type == "text_delta":
+                self._append_refusal_debug("text", event.delta.text)
                 return IRStreamTextDeltaEvent(text=event.delta.text)
+            elif event.delta.type == "input_json_delta":
+                self._append_refusal_debug("tool_json", event.delta.partial_json)
         elif event.type == "content_block_stop":
             if self._in_thinking:
                 self._in_thinking = False
+                self._active_refusal_debug = None
                 return IRStreamThinkingEndEvent()
             elif self._in_text:
                 self._in_text = False
+                self._active_refusal_debug = None
                 return IRStreamTextEndEvent()
+            else:
+                self._active_refusal_debug = None
         return None
+
+    def _start_refusal_debug_segment(
+        self, kind: Literal["text", "thinking", "tool_json"]
+    ) -> _RefusalDebugSegment:
+        segment = _RefusalDebugSegment(kind=kind)
+        self._refusal_debug_segments.append(segment)
+        self._active_refusal_debug = segment
+        return segment
+
+    def _append_refusal_debug(
+        self, kind: Literal["text", "thinking", "tool_json"], text: str
+    ) -> None:
+        segment = self._active_refusal_debug
+        if segment is None or segment.kind != kind:
+            segment = self._start_refusal_debug_segment(kind)
+        segment.append(text)
+
+    def _render_refusal_response(self, response: ParsedMessage[NotGiven]) -> str:
+        sections = [
+            rendered
+            for segment in self._refusal_debug_segments
+            if (rendered := segment.render())
+        ]
+        sections.append(_render_refusal_block(response))
+        return "\n\n".join(sections)
 
 
 class AnthropicTokenCounter(TokenCounter):
@@ -444,6 +517,34 @@ def _normalize_partial_content_blocks(
                 pass
 
     return blocks, has_tool_use
+
+
+def _render_refusal_block(response: ParsedMessage[NotGiven]) -> str:
+    stop_details = getattr(response, "stop_details", None)
+    detail_type = _details_value(stop_details, "type")
+    category = _details_value(stop_details, "category")
+    explanation = _details_value(stop_details, "explanation")
+
+    lines = ["<refusal>", "stop_reason: refusal"]
+    if detail_type is not None:
+        lines.append(f"type: {detail_type}")
+    if category is not None:
+        lines.append(f"category: {category}")
+    if explanation is not None:
+        lines.append("explanation:")
+        lines.append(str(explanation))
+    if stop_details is None:
+        lines.append("details: unavailable")
+    lines.append("</refusal>")
+    return "\n".join(lines)
+
+
+def _details_value(details: object, key: str) -> object:
+    if details is None:
+        return None
+    if isinstance(details, Mapping):
+        return cast(Mapping[str, object], details).get(key)
+    return getattr(details, key, None)
 
 
 def _parse_image_block(block: IRImageBlock) -> ImageBlockParam:
