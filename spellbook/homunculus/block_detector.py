@@ -29,6 +29,7 @@ The detector currently relies on global block ids threaded in from Homunculus so
 that semantic ranges remain stable across batches.
 """
 
+from dataclasses import dataclass
 from html import escape
 from typing import Sequence
 
@@ -47,6 +48,18 @@ from spellbook.ir_types import (
 )
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDetectorIntegration:
+    result: BlockDetectorResult
+    completed: list[IRSemanticBlockRange]
+    deferred_completed: list[IRSemanticBlockRange]
+    discarded_ranges: list[IRSemanticBlockRange]
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.deferred_completed or self.discarded_ranges)
 
 
 class BlockDetector:
@@ -125,12 +138,131 @@ class BlockDetector:
     def integrate_result(
         self, result: BlockDetectorResult, fork_id: str
     ) -> list[IRSemanticBlockRange]:
+        integration = self.simulate_result(result)
+        return self.integrate_prepared_result(integration, fork_id)
+
+    def simulate_result(self, result: BlockDetectorResult) -> BlockDetectorIntegration:
+        completed = self._sort_ranges(result.completed)
+        still_buffered = self._sort_ranges(result.still_buffered)
+        self._validate_ranges_in_known_context([*completed, *still_buffered])
+
+        accepted, deferred = self._split_completed_prefix(completed)
+        buffer_start = self._next_block_after(accepted)
+        safe_buffer, discarded = self._split_safe_buffer(
+            [*still_buffered, *deferred],
+            start_block=buffer_start,
+        )
+
+        if result.completed or result.still_buffered:
+            if not accepted and not safe_buffer:
+                raise ValueError(
+                    "Detector result did not contain any contiguous semantic range "
+                    "that could be integrated safely."
+                )
+
+        sanitized = result.model_copy(
+            update={
+                "completed": accepted,
+                "still_buffered": safe_buffer,
+            }
+        )
+        return BlockDetectorIntegration(
+            result=sanitized,
+            completed=accepted,
+            deferred_completed=deferred,
+            discarded_ranges=discarded,
+        )
+
+    def integrate_prepared_result(
+        self, integration: BlockDetectorIntegration, fork_id: str
+    ) -> list[IRSemanticBlockRange]:
         self._fork_runner.integrate_result(fork_id)
-        self._recorder.detect_blocks(result)
-        self.completed_blocks.extend(result.completed)
-        self._semantic_buffer = result.still_buffered
+        self._recorder.detect_blocks(integration.result)
+        self.completed_blocks.extend(integration.completed)
+        self._semantic_buffer = integration.result.still_buffered
         self.build_context_buffer()
-        return result.completed
+        return integration.completed
+
+    def discard_result(self, fork_id: str) -> None:
+        self._fork_runner.integrate_result(fork_id)
+
+    def _sort_ranges(
+        self, ranges: Sequence[IRSemanticBlockRange]
+    ) -> list[IRSemanticBlockRange]:
+        return sorted(ranges, key=lambda r: (r.start_block, r.end_block))
+
+    def _next_expected_completed_start(self) -> int:
+        if self.completed_blocks:
+            return self.completed_blocks[-1].end_block + 1
+        if self._accumulated_start_block_id is not None:
+            return self._accumulated_start_block_id
+        return 0
+
+    def _next_block_after(self, ranges: Sequence[IRSemanticBlockRange]) -> int:
+        if ranges:
+            return ranges[-1].end_block + 1
+        return self._next_expected_completed_start()
+
+    def _validate_ranges_in_known_context(
+        self, ranges: Sequence[IRSemanticBlockRange]
+    ) -> None:
+        if not ranges:
+            return
+        if self._accumulated_start_block_id is None:
+            raise ValueError("Detector result returned ranges with no known context.")
+
+        first = self._accumulated_start_block_id
+        last = first + len(self._accumulated) - 1
+        for block in ranges:
+            if block.start_block < first or block.end_block > last:
+                raise ValueError(
+                    "Detector result returned a semantic range outside the known "
+                    f"context: {block.start_block}-{block.end_block}, expected "
+                    f"{first}-{last}."
+                )
+
+    def _split_completed_prefix(
+        self, completed: Sequence[IRSemanticBlockRange]
+    ) -> tuple[list[IRSemanticBlockRange], list[IRSemanticBlockRange]]:
+        accepted: list[IRSemanticBlockRange] = []
+        expected_start = self._next_expected_completed_start()
+
+        for idx, block in enumerate(completed):
+            if block.start_block < expected_start:
+                raise ValueError(
+                    "Detector result returned overlapping completed ranges. "
+                    f'Range "{block.title}" starts at {block.start_block}, '
+                    f"expected at least {expected_start}."
+                )
+            if block.start_block != expected_start:
+                return accepted, list(completed[idx:])
+            accepted.append(block)
+            expected_start = block.end_block + 1
+        return accepted, []
+
+    def _split_safe_buffer(
+        self,
+        ranges: Sequence[IRSemanticBlockRange],
+        *,
+        start_block: int,
+    ) -> tuple[list[IRSemanticBlockRange], list[IRSemanticBlockRange]]:
+        safe: list[IRSemanticBlockRange] = []
+        discarded: list[IRSemanticBlockRange] = []
+        expected_start = start_block
+
+        for block in self._sort_ranges(ranges):
+            if block.start_block < expected_start:
+                raise ValueError(
+                    "Detector result returned overlapping buffered ranges. "
+                    f'Range "{block.title}" starts at {block.start_block}, '
+                    f"expected at least {expected_start}."
+                )
+            if block.start_block != expected_start:
+                discarded.append(block)
+                continue
+            safe.append(block)
+            expected_start = block.end_block + 1
+        return safe, discarded
 
     def build_inbound_block(self, *, finalize: bool = False) -> IRUserTextBlock:
         payload = "\n".join(

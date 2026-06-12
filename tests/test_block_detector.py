@@ -232,7 +232,7 @@ class TestMaybeDetect:
                     completed=[],
                     still_buffered=[
                         IRSemanticBlockRange(
-                            title="buffered", start_block=12, end_block=13
+                            title="buffered", start_block=10, end_block=13
                         )
                     ],
                 )

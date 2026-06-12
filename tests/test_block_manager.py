@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Sequence, cast
 
@@ -14,6 +15,7 @@ from spellbook.fork import (
     ForkRunner,
     PreparedFork,
 )
+from spellbook.homunculus.block_detector import BlockDetectorIntegration
 from spellbook.homunculus.block_manager import BlockManager
 from spellbook.homunculus.token_meter import TokenMeter
 from spellbook.ir_types import (
@@ -182,6 +184,23 @@ class _FakeDetector:
         self.integrated_forks.append(fork_id)
         return result.completed
 
+    def simulate_result(self, result: BlockDetectorResult) -> BlockDetectorIntegration:
+        return BlockDetectorIntegration(
+            result=result,
+            completed=result.completed,
+            deferred_completed=[],
+            discarded_ranges=[],
+        )
+
+    def integrate_prepared_result(
+        self, integration: BlockDetectorIntegration, fork_id: str
+    ) -> list[IRSemanticBlockRange]:
+        self.integrated_forks.append(fork_id)
+        return integration.completed
+
+    def discard_result(self, fork_id: str) -> None:
+        self.integrated_forks.append(fork_id)
+
 
 class _FakeSummarizer:
     def __init__(self) -> None:
@@ -235,6 +254,19 @@ def _manager() -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunne
         token_meter=cast(TokenMeter, _FakeMeter()),
     )
     return manager, recorder, footer, fork_runner
+
+
+def _prime_detector(
+    manager: BlockManager,
+    *,
+    completed: list[IRSemanticBlockRange] | None = None,
+) -> None:
+    manager._detector.completed_blocks = list(completed or [])  # noqa: SLF001
+    manager._detector._accumulated = list(manager.context_blocks)  # noqa: SLF001
+    manager._detector._accumulated_start_block_id = (  # noqa: SLF001
+        0 if manager.context_blocks else None
+    )
+    manager._detector.build_context_buffer()  # noqa: SLF001
 
 
 def _count(tokens: int) -> IRTokenRangeCount:
@@ -361,19 +393,224 @@ def test_rehydrate_rejects_bad_semantic_idx_order(tmp_path: Path) -> None:
 async def test_detected_blocks_are_validated_before_recording() -> None:
     manager, recorder, footer, _ = _manager()
     manager.context_blocks = _user_blocks("a", "b")
-    manager._detector = cast(  # noqa: SLF001 - test swaps collaborator
-        Any,
-        _FakeDetector([IRSemanticBlockRange(title="Gap", start_block=1, end_block=1)]),
+    detector = _FakeDetector(
+        [IRSemanticBlockRange(title="Gap", start_block=1, end_block=1)]
     )
+    manager._detector = cast(Any, detector)  # noqa: SLF001 - test swaps collaborator
 
     await manager.maybe_detect([manager.context_blocks[1]], first_block_id=1)
     await _settle()
-    with pytest.raises(ValueError, match="gapless prefix"):
-        await manager.check_nursery()
+    await manager.check_nursery()
 
     assert manager.semantic_blocks == []
+    assert recorder.detected == []
     assert recorder.semantic_blocks == []
-    assert footer.queued == []
+    assert detector.integrated_forks == ["detector_test"]
+    assert footer.queued[0]["text"] == (
+        "a detection pass failed validation and was discarded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_detection_hole_defers_then_heals(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="spellbook.homunculus.block_manager")
+    manager, recorder, footer, _ = _manager()
+    manager._summarizer = cast(  # noqa: SLF001 - avoid real fork submission
+        Any, _FakeSummarizer()
+    )
+    manager.context_blocks = _user_blocks(*(f"block {i}" for i in range(1438)))
+    earlier = _semantic_block(
+        idx=0,
+        start=0,
+        end=943,
+        title="Earlier work",
+    )
+    manager.semantic_blocks = [earlier]
+    _prime_detector(manager, completed=[earlier.range])
+
+    first_completed = IRSemanticBlockRange(
+        title="First contiguous completion",
+        start_block=944,
+        end_block=1007,
+        completed=True,
+    )
+    missing = IRSemanticBlockRange(
+        title="Missing middle",
+        start_block=1008,
+        end_block=1043,
+    )
+    later = IRSemanticBlockRange(
+        title="Later completion",
+        start_block=1044,
+        end_block=1149,
+        completed=True,
+    )
+    tail = IRSemanticBlockRange(
+        title="Tail completion",
+        start_block=1150,
+        end_block=1437,
+        completed=True,
+    )
+
+    await manager._integrate_detection(  # noqa: SLF001 - exercise boundary directly
+        BlockDetectorResult(
+            completed=[first_completed, later, tail],
+            still_buffered=[missing],
+        ),
+        "detector_4",
+    )
+
+    assert [
+        (b.range.start_block, b.range.end_block) for b in manager.semantic_blocks
+    ] == [
+        (0, 943),
+        (944, 1007),
+    ]
+    assert recorder.detected[0].completed == [first_completed]
+    assert recorder.detected[0].still_buffered == [missing, later, tail]
+    assert [b.completed for b in recorder.detected[0].still_buffered] == [
+        False,
+        True,
+        True,
+    ]
+    assert footer.queued[0]["text"] == (
+        "a detection result failed validation and was partially deferred"
+    )
+    assert any(
+        "block_detector.result_partially_deferred" in record.message
+        for record in caplog.records
+    )
+
+    healed_missing = missing.model_copy(update={"completed": True})
+    await manager._integrate_detection(  # noqa: SLF001 - exercise boundary directly
+        BlockDetectorResult(
+            completed=[healed_missing, later, tail],
+            still_buffered=[],
+        ),
+        "detector_5",
+    )
+
+    assert [
+        (b.range.start_block, b.range.end_block) for b in manager.semantic_blocks
+    ] == [
+        (0, 943),
+        (944, 1007),
+        (1008, 1043),
+        (1044, 1149),
+        (1150, 1437),
+    ]
+    assert recorder.detected[1].completed == [healed_missing, later, tail]
+    assert recorder.detected[1].still_buffered == []
+    await manager._nursery.shutdown(cancel=True)  # noqa: SLF001 - cleanup jobs
+
+
+@pytest.mark.asyncio
+async def test_gap_detection_that_never_heals_is_discarded(caplog) -> None:
+    caplog.set_level(logging.ERROR, logger="spellbook.homunculus.block_manager")
+    manager, recorder, footer, fork_runner = _manager()
+    manager.context_blocks = _user_blocks("a", "b", "c")
+    _prime_detector(manager)
+    bad_result = BlockDetectorResult(
+        completed=[
+            IRSemanticBlockRange(
+                title="Starts after a hole",
+                start_block=1,
+                end_block=1,
+                completed=True,
+            )
+        ],
+        still_buffered=[],
+    )
+
+    await manager._integrate_detection(bad_result, "detector_gap_1")  # noqa: SLF001
+    await manager._integrate_detection(bad_result, "detector_gap_2")  # noqa: SLF001
+
+    assert manager.semantic_blocks == []
+    assert manager.render_tail() == manager.context_blocks
+    assert manager._detector.completed_blocks == []  # noqa: SLF001
+    assert manager._detector.buffered_blocks == []  # noqa: SLF001
+    assert recorder.detected == []
+    assert recorder.semantic_blocks == []
+    assert fork_runner.integrated_forks == ["detector_gap_1", "detector_gap_2"]
+    assert [queued["text"] for queued in footer.queued] == [
+        "a detection pass failed validation and was discarded",
+        "a detection pass failed validation and was discarded",
+    ]
+    assert any(
+        "block_detector.result_rejected" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_overlapping_detection_is_rejected_without_mutation(caplog) -> None:
+    caplog.set_level(logging.ERROR, logger="spellbook.homunculus.block_manager")
+    manager, recorder, footer, fork_runner = _manager()
+    manager.context_blocks = _user_blocks("a", "b", "c")
+    existing = _semantic_block(idx=0, start=0, end=1, title="Existing")
+    manager.semantic_blocks = [existing]
+    _prime_detector(manager, completed=[existing.range])
+
+    await manager._integrate_detection(  # noqa: SLF001 - exercise boundary directly
+        BlockDetectorResult(
+            completed=[
+                IRSemanticBlockRange(
+                    title="Overlap",
+                    start_block=1,
+                    end_block=2,
+                    completed=True,
+                )
+            ],
+            still_buffered=[],
+        ),
+        "detector_overlap",
+    )
+
+    assert manager.semantic_blocks == [existing]
+    assert manager._detector.completed_blocks == [existing.range]  # noqa: SLF001
+    assert recorder.detected == []
+    assert recorder.semantic_blocks == []
+    assert fork_runner.integrated_forks == ["detector_overlap"]
+    assert footer.queued[0]["text"] == (
+        "a detection pass failed validation and was discarded"
+    )
+    assert any(
+        "block_detector.result_rejected" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_contiguous_detection_records_and_mutates_after_validation() -> None:
+    manager, recorder, footer, fork_runner = _manager()
+    manager._summarizer = cast(  # noqa: SLF001 - avoid real fork submission
+        Any, _FakeSummarizer()
+    )
+    manager.context_blocks = _user_blocks("a", "b", "c", "d")
+    _prime_detector(manager)
+    completed = IRSemanticBlockRange(
+        title="Clean completion",
+        start_block=0,
+        end_block=1,
+        completed=True,
+    )
+    buffered = IRSemanticBlockRange(
+        title="Clean buffer",
+        start_block=2,
+        end_block=3,
+    )
+    result = BlockDetectorResult(completed=[completed], still_buffered=[buffered])
+
+    await manager._integrate_detection(result, "detector_happy")  # noqa: SLF001
+
+    assert recorder.detected == [result]
+    assert [block.title for block in manager.semantic_blocks] == ["Clean completion"]
+    assert [block.title for block in recorder.semantic_blocks] == ["Clean completion"]
+    assert manager._detector.completed_blocks == [completed]  # noqa: SLF001
+    assert manager._detector.buffered_blocks == [buffered]  # noqa: SLF001
+    assert fork_runner.integrated_forks == ["detector_happy"]
+    assert [queued["text"] for queued in footer.queued] == [
+        'New block crystallized: "Clean completion"'
+    ]
+    await manager._nursery.shutdown(cancel=True)  # noqa: SLF001 - cleanup jobs
 
 
 @pytest.mark.asyncio

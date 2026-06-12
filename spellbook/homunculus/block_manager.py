@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Sequence
 
 from spellbook.config import HomunculusConfig
@@ -33,6 +34,8 @@ from spellbook.ir_types import (
 from spellbook.nursery import Nursery, NurseryJob, NurseryJobResult
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
+
+logger = logging.getLogger(__name__)
 
 
 class BlockManager:
@@ -406,21 +409,32 @@ class BlockManager:
     async def _integrate_detection(
         self, result: BlockDetectorResult, fork_id: str
     ) -> None:
-        new_completed = self._detector.integrate_result(result, fork_id)
-        new_blocks: list[IRSemanticBlock] = []
-        for completed in new_completed:
-            idx = len(self.semantic_blocks) + len(new_blocks)
-            new_block = IRSemanticBlock(
-                idx=idx,
-                title=completed.title,
-                range=completed,
-                toks=None,
-                full_toks=None,
-            )
-            new_blocks.append(new_block)
+        try:
+            integration = self._detector.simulate_result(result)
+            new_blocks = self._semantic_blocks_for_completed(integration.completed)
+            candidate_blocks = [*self.semantic_blocks, *new_blocks]
+            self._validate_semantic_blocks(candidate_blocks)
+        except ValueError as exc:
+            self._discard_detection_result(fork_id=fork_id, result=result, error=exc)
+            return
 
-        candidate_blocks = [*self.semantic_blocks, *new_blocks]
-        self._validate_semantic_blocks(candidate_blocks)
+        if integration.partial:
+            logger.warning(
+                "block_detector.result_partially_deferred fork_id=%s "
+                "accepted=%s deferred=%s discarded=%s",
+                fork_id,
+                len(integration.completed),
+                len(integration.deferred_completed),
+                len(integration.discarded_ranges),
+            )
+            self._footer_c.queue_footer(
+                text="a detection result failed validation and was partially deferred",
+                footer_type="notif",
+                source="detector",
+                key="detector:partial_deferred",
+            )
+
+        self._detector.integrate_prepared_result(integration, fork_id)
 
         # semantic_blocks may be in a partial-merge state during this loop.
         for new_block in new_blocks:
@@ -448,6 +462,45 @@ class BlockManager:
             )
         if new_blocks:
             await self.generate_next_summary()
+
+    def _semantic_blocks_for_completed(
+        self, completed_ranges: Sequence[IRSemanticBlockRange]
+    ) -> list[IRSemanticBlock]:
+        new_blocks: list[IRSemanticBlock] = []
+        for completed in completed_ranges:
+            idx = len(self.semantic_blocks) + len(new_blocks)
+            new_block = IRSemanticBlock(
+                idx=idx,
+                title=completed.title,
+                range=completed,
+                toks=None,
+                full_toks=None,
+            )
+            new_blocks.append(new_block)
+        return new_blocks
+
+    def _discard_detection_result(
+        self,
+        *,
+        fork_id: str,
+        result: BlockDetectorResult,
+        error: ValueError,
+    ) -> None:
+        logger.exception(
+            "block_detector.result_rejected fork_id=%s completed=%s "
+            "still_buffered=%s reason=%s",
+            fork_id,
+            len(result.completed),
+            len(result.still_buffered),
+            error,
+        )
+        self._detector.discard_result(fork_id)
+        self._footer_c.queue_footer(
+            text="a detection pass failed validation and was discarded",
+            footer_type="notif",
+            source="detector",
+            key="detector:validation_failed",
+        )
 
     def _integrate_block_metrics(
         self, toks: IRTokenRangeCount | None, block_idx: int, block_id: str

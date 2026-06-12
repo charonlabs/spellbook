@@ -104,7 +104,9 @@ class TestSuccessfulDispatch:
         assert result.cancelled_early is False
 
     @pytest.mark.asyncio
-    async def test_custom_session_tool_receives_base_metadata(self, tmp_path: Path) -> None:
+    async def test_custom_session_tool_receives_base_metadata(
+        self, tmp_path: Path
+    ) -> None:
         seen: dict[str, object] = {}
 
         class _InspectInput(BaseModel):
