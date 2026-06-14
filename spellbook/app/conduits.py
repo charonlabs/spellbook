@@ -11,7 +11,7 @@ from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 
 HUMAN_SURFACES: dict[str, str] = {
     "tui": "terminal TUI",
-    "human": "terminal TUI",
+    "human": "web UI",
     "telegram": "Telegram",
     "web": "web UI",
 }

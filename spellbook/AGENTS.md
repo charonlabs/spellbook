@@ -2,15 +2,13 @@
 
 This file is for humans and agents changing `spellbook/`.
 
-The old root-level guidance still contains useful product philosophy, but this file is the contributor guide for the **core rewrite as it exists in code now**.
-
-The code is source of truth. Design targets under `spellbook/design/` are useful context, but they drift. When a document and the implementation disagree, trust the implementation.
+The code is source of truth. When a document and the implementation disagree, trust the implementation.
 
 ---
 
 ## What `spellbook/` is
 
-`spellbook/` is the runtime spine for the rewrite. It currently includes:
+`spellbook/` is the runtime spine. It currently includes:
 
 - canonical IR types
 - the inner generate/execute loop
@@ -46,7 +44,7 @@ If you are unsure where something belongs, ask:
 4. Is this provider-facing rendering?
 5. Is this a generic fork/subsession concern?
 
-Most mistakes in the rewrite come from collapsing those layers together.
+Most mistakes in the code come from collapsing those layers together.
 
 ---
 
@@ -54,7 +52,7 @@ Most mistakes in the rewrite come from collapsing those layers together.
 
 ### `IR*` types in `ir_types.py`
 
-These are the canonical internal language of the core rewrite.
+These are the canonical internal language of the core.
 
 Important rules:
 
@@ -350,7 +348,7 @@ Keep provider logic inside backends and request-surface building.
 
 ### Circular imports
 
-The core rewrite has enough typed seams that circular imports are easy to create.
+The core runtime has enough typed seams that circular imports are easy to create.
 
 Prefer:
 
