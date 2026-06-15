@@ -19,6 +19,8 @@ from spellbook.ir_types import (
     IRImageBlock,
     IRSemanticBlock,
     IRSemanticBlockFacet,
+    IRSemanticBlockPairNarrative,
+    IRSemanticBlockPairNarrativeChild,
     IRSemanticBlockPin,
     IRSemanticBlockRange,
     IRSemanticBlockSummary,
@@ -132,6 +134,8 @@ class BlockManager:
                 return [render_summary(block)]
             case "full":
                 return self._context_blocks_in_block(block)
+            case "pair_narrative":
+                return self._render_pair_narrative(block)
             case _:
                 raise NotImplementedError(f"Mode `{block.mode} not yet supported.")
 
@@ -201,6 +205,74 @@ class BlockManager:
         if artifact is None:
             raise ValueError(f"Block {block.idx} has no summary artifact.")
         return artifact
+
+    def _pair_narrative_artifact(
+        self, block: IRSemanticBlock
+    ) -> IRSemanticBlockPairNarrative | IRSemanticBlockPairNarrativeChild:
+        artifact = next(
+            (a for a in reversed(block.artifacts) if a.mode == "pair_narrative"),
+            None,
+        )
+        if artifact is None:
+            raise ValueError(f"Block {block.idx} has no pair narrative artifact.")
+        if not isinstance(
+            artifact, IRSemanticBlockPairNarrative | IRSemanticBlockPairNarrativeChild
+        ):
+            raise ValueError(
+                f"Block {block.idx} has an invalid pair narrative artifact."
+            )
+        return artifact
+
+    def _render_pair_narrative(self, block: IRSemanticBlock) -> list[IRBlock]:
+        artifact = self._pair_narrative_artifact(block)
+        self._validate_pair_narrative_render(block, artifact)
+        if isinstance(artifact, IRSemanticBlockPairNarrativeChild):
+            return []
+        return artifact.blocks
+
+    def _validate_pair_narrative_render(
+        self,
+        block: IRSemanticBlock,
+        artifact: IRSemanticBlockPairNarrative | IRSemanticBlockPairNarrativeChild,
+    ) -> None:
+        expected_idx = (
+            artifact.pair[0]
+            if isinstance(artifact, IRSemanticBlockPairNarrative)
+            else artifact.pair[1]
+        )
+        if block.idx != expected_idx:
+            raise ValueError(
+                f"Block {block.idx} has a pair narrative artifact for pair "
+                f"{artifact.pair}."
+            )
+
+        other_idx = (
+            artifact.pair[1] if block.idx == artifact.pair[0] else artifact.pair[0]
+        )
+        if not -1 < other_idx < len(self.semantic_blocks):
+            raise ValueError(
+                f"Block {block.idx} pair narrative references missing block {other_idx}."
+            )
+        other = self.semantic_blocks[other_idx]
+        if other.mode != "pair_narrative":
+            raise ValueError(
+                f"Block {block.idx} pair narrative is active but block {other_idx} "
+                f"is in mode {other.mode}."
+            )
+        other_artifact = self._pair_narrative_artifact(other)
+        if other_artifact.narrative_id != artifact.narrative_id:
+            raise ValueError(
+                f"Block {block.idx} pair narrative does not match block {other_idx}."
+            )
+        if isinstance(artifact, IRSemanticBlockPairNarrativeChild):
+            if artifact.parent_block_id != other.id:
+                raise ValueError(
+                    f"Block {block.idx} pair narrative child references a different parent."
+                )
+        elif not isinstance(other_artifact, IRSemanticBlockPairNarrativeChild):
+            raise ValueError(
+                f"Block {block.idx} pair narrative parent has no child artifact."
+            )
 
     def _pinned_facets(
         self, block: IRSemanticBlock, artifact: IRSemanticBlockSummary
@@ -612,6 +684,7 @@ class BlockManager:
         self, idx: int, confirm: bool, source: SemanticBlockApplyModeSource = "model"
     ) -> None:
         block = self._get_block_by_idx(idx)
+        self._ensure_not_pair_narrative(block, operation="Forget")
         if not confirm and block.pin is not None:
             raise ValueError(
                 (
@@ -629,6 +702,7 @@ class BlockManager:
     def pin_block(self, idx: int, reason: str) -> bool:
         """Returns True when the pin invalidates the prefix."""
         block = self._get_block_by_idx(idx)
+        self._ensure_not_pair_narrative(block, operation="Pin")
         new_pin = IRSemanticBlockPin(kind="block", reason=reason)
         if block.pin is not None and block.pin.kind == "block":
             raise ValueError(f"Block {idx} is already pinned!")
@@ -644,6 +718,7 @@ class BlockManager:
     def pin_facet(self, idx: int, facet_id: str, reason: str) -> bool:
         """Returns True when the pin invalidates the rendered prefix."""
         block = self._get_block_by_idx(idx)
+        self._ensure_not_pair_narrative(block, operation="Pin")
         artifact = self._summary_artifact(block)
         facet = next((facet for facet in artifact.facets if facet.id == facet_id), None)
         if facet is None:
@@ -666,6 +741,12 @@ class BlockManager:
     def recall_block(self, idx: int) -> str:
         # TODO: make this TTL or something like that
         block = self._get_block_by_idx(idx)
+        if block.mode == "pair_narrative":
+            chapter = self._pair_narrative_artifact(block).chapter_number
+            raise ValueError(
+                f"Block {idx} is rendered as chapter {chapter} pair narrative memory. "
+                f"Use Recall(chapter={chapter}) to recall the original source blocks."
+            )
         if block.mode == "full":
             raise ValueError(
                 f"Block {idx} is already entirely in context and cannot be recalled further."
@@ -676,6 +757,51 @@ class BlockManager:
             output.append(render_context_block(b, block_id))
 
         return "\n".join(output)
+
+    def recall_chapter(self, chapter_number: int) -> str:
+        if chapter_number < 1:
+            raise ValueError(f"Chapter number must be positive: {chapter_number}.")
+        first_idx = (chapter_number - 1) * 2
+        second_idx = first_idx + 1
+        if second_idx >= len(self.semantic_blocks):
+            raise ValueError(
+                f"Chapter {chapter_number} maps to blocks {first_idx}-{second_idx}, "
+                f"but there are only {len(self.semantic_blocks)} semantic blocks."
+            )
+
+        first = self._get_block_by_idx(first_idx)
+        second = self._get_block_by_idx(second_idx)
+        output: list[str] = [
+            f"# Chapter {chapter_number:02d} source blocks",
+            "",
+            f'## Block {first.idx} - "{first.title}"',
+            "",
+        ]
+        for block_id, context_block in enumerate(
+            self._context_blocks_in_block(first),
+            start=first.range.start_block,
+        ):
+            output.append(render_context_block(context_block, block_id))
+
+        output.extend(["", f'## Block {second.idx} - "{second.title}"', ""])
+        for block_id, context_block in enumerate(
+            self._context_blocks_in_block(second),
+            start=second.range.start_block,
+        ):
+            output.append(render_context_block(context_block, block_id))
+
+        return "\n".join(output)
+
+    def _ensure_not_pair_narrative(
+        self, block: IRSemanticBlock, *, operation: str
+    ) -> None:
+        if block.mode != "pair_narrative":
+            return
+        artifact = self._pair_narrative_artifact(block)
+        raise ValueError(
+            f"{operation} cannot operate on block {block.idx} because it is part "
+            f"of chapter {artifact.chapter_number} pair narrative memory."
+        )
 
     def _get_block_by_idx(self, idx: int) -> IRSemanticBlock:
         if not -1 < idx < len(self.semantic_blocks):
@@ -787,6 +913,11 @@ class BlockManager:
                 artifact = next(a for a in block.artifacts if a.mode == "summary")
                 new_block = block.model_copy(
                     update={"mode": "summary", "toks": artifact.toks}
+                )
+            case "pair_narrative":
+                artifact = self._pair_narrative_artifact(block)
+                new_block = block.model_copy(
+                    update={"mode": "pair_narrative", "toks": artifact.toks}
                 )
             case _:
                 raise NotImplementedError(

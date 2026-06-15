@@ -397,7 +397,7 @@ class IRSemanticBlockRange(BaseModel, frozen=True):
         return self
 
 
-SemanticBlockMode = Literal["full", "summary"]
+SemanticBlockMode = Literal["full", "summary", "pair_narrative"]
 
 
 class IRSemanticBlockFacet(BaseModel, frozen=True):
@@ -423,7 +423,77 @@ class IRSemanticBlockSummary(BaseModel, frozen=True):
     toks: IRTokenRangeCount | None
 
 
-IRSemanticBlockArtifact = Annotated[IRSemanticBlockSummary, Field(discriminator="type")]
+def _zero_token_count() -> IRTokenRangeCount:
+    return IRTokenRangeCount(tokens=0, method="empty", exact=True)
+
+
+class IRSemanticBlockPairNarrative(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=lambda: f"pair_narrative_{uuid4().hex}")
+    type: Literal["pair_narrative"] = "pair_narrative"
+    mode: SemanticBlockMode = "pair_narrative"
+    role: Literal["parent"] = "parent"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    narrative_id: str
+    pair: tuple[int, int]
+    chapter_number: int
+    title: str
+    blocks: list[IRBlock]
+    toks: IRTokenRangeCount | None
+    source_chapter_path: str | None = None
+    compiled_json_path: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        _validate_pair_narrative_pair(self.pair, self.chapter_number)
+        if not self.blocks:
+            raise ValueError("Pair narrative parent artifact must contain blocks.")
+        return self
+
+
+class IRSemanticBlockPairNarrativeChild(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=lambda: f"pair_narrative_child_{uuid4().hex}")
+    type: Literal["pair_narrative_child"] = "pair_narrative_child"
+    mode: SemanticBlockMode = "pair_narrative"
+    role: Literal["child"] = "child"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    narrative_id: str
+    parent_block_idx: int
+    parent_block_id: str
+    pair: tuple[int, int]
+    chapter_number: int
+    toks: IRTokenRangeCount = Field(default_factory=_zero_token_count)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        _validate_pair_narrative_pair(self.pair, self.chapter_number)
+        if self.parent_block_idx != self.pair[0]:
+            raise ValueError("Pair narrative child must reference the pair parent.")
+        if self.toks.tokens != 0:
+            raise ValueError("Pair narrative child artifact must have zero tokens.")
+        return self
+
+
+def _validate_pair_narrative_pair(pair: tuple[int, int], chapter_number: int) -> None:
+    first, second = pair
+    if second != first + 1:
+        raise ValueError("Pair narrative artifacts must reference adjacent blocks.")
+    if first % 2 != 0:
+        raise ValueError("Pair narrative parent block must be the even block index.")
+    expected_chapter = first // 2 + 1
+    if chapter_number != expected_chapter:
+        raise ValueError(
+            f"Pair narrative chapter {chapter_number} does not match block pair {pair}."
+        )
+
+
+IRSemanticBlockArtifact = Annotated[
+    IRSemanticBlockSummary
+    | IRSemanticBlockPairNarrative
+    | IRSemanticBlockPairNarrativeChild,
+    Field(discriminator="type"),
+]
 
 
 def _default_semantic_block_modes() -> list[SemanticBlockMode]:

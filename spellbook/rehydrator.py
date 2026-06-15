@@ -247,7 +247,9 @@ class Rehydrator:
                         block.full_toks
                         if record.mode == "full"
                         else next(
-                            a for a in block.artifacts if a.mode == record.mode
+                            a
+                            for a in reversed(block.artifacts)
+                            if a.mode == record.mode
                         ).toks
                     )
                     new_block = block.model_copy(

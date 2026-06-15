@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Self
+
+from pydantic import BaseModel, Field, model_validator
 
 from spellbook.ir_types import IRToolTextBlock
 from spellbook.tools.common import (
@@ -193,19 +195,39 @@ async def exec_pin(meta: ToolMetadata, input: PinInput) -> ToolExecutionResult:
 class RecallInput(BaseModel):
     """Recall content from a compacted semantic block back into your awareness."""
 
-    block_idx: int = Field(
+    block_idx: int | None = Field(
+        default=None,
         description=(
             "The index of the block to recall, as shown in the opening tag of the summary, "
             "or in `Reflect` output."
-        )
+        ),
     )
+
+    chapter: int | None = Field(
+        default=None,
+        description=(
+            "The dream chapter number to recall. Mutually exclusive with block_idx; "
+            "recalls the original source content for both blocks in the chapter pair."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> Self:
+        if (self.block_idx is None) == (self.chapter is None):
+            raise ValueError("Recall needs exactly one of block_idx or chapter.")
+        return self
 
 
 async def exec_recall(meta: ToolMetadata, input: RecallInput) -> ToolExecutionResult:
     if meta.homunculus is None:
         raise ToolError("Recall is unavailable because this session has no Homunculus.")
     try:
-        text = await meta.homunculus.recall(input.block_idx)
+        if input.chapter is not None:
+            text = await meta.homunculus.recall_chapter(input.chapter)
+        elif input.block_idx is not None:
+            text = await meta.homunculus.recall(input.block_idx)
+        else:  # Pydantic validates this, but keep mypy honest.
+            raise ValueError("Recall needs exactly one of block_idx or chapter.")
     except ValueError as e:
         raise ToolError(str(e)) from e
     return ToolExecutionResult(content=[IRToolTextBlock(text=text)])

@@ -33,9 +33,13 @@ from spellbook.ir_types import (
     IRImageURLSource,
     IRRecord,
     IRRuntimeConfigRecord,
+    IRSemanticBlockArtifactRecord,
+    IRSemanticBlockPairNarrative,
+    IRSemanticBlockPairNarrativeChild,
     IRSemanticBlockRange,
     IRSessionRecord,
     IRSkillCatalog,
+    IRTokenRangeCount,
     IRStreamTextDeltaEvent,
     IRStreamThinkingEndEvent,
     IRStreamThinkingStartEvent,
@@ -459,6 +463,46 @@ class TestIRRecordDiscrimination:
         assert parsed.namespace == "tool_result_ttl"
         assert parsed.updates == {"ttl_turns": 2}
         assert parsed.effective["char_threshold"] == 4000
+
+    def test_pair_narrative_artifacts_round_trip_through_ir_record_union(self) -> None:
+        adapter = TypeAdapter(IRRecord)
+        parent = IRSemanticBlockArtifactRecord(
+            session_id="s1",
+            block_id="block_parent",
+            artifact=IRSemanticBlockPairNarrative(
+                narrative_id="narrative_01",
+                pair=(0, 1),
+                chapter_number=1,
+                title="Chapter 01",
+                blocks=[IRUserTextBlock(text="narrative", origin="memory")],
+                toks=IRTokenRangeCount(tokens=25, method="api", exact=True),
+            ),
+            turn=1,
+            turn_id="t1",
+        )
+        child = IRSemanticBlockArtifactRecord(
+            session_id="s1",
+            block_id="block_child",
+            artifact=IRSemanticBlockPairNarrativeChild(
+                narrative_id="narrative_01",
+                parent_block_idx=0,
+                parent_block_id="block_parent",
+                pair=(0, 1),
+                chapter_number=1,
+            ),
+            turn=1,
+            turn_id="t1",
+        )
+
+        parsed_parent = adapter.validate_json(parent.model_dump_json())
+        parsed_child = adapter.validate_json(child.model_dump_json())
+
+        assert isinstance(parsed_parent, IRSemanticBlockArtifactRecord)
+        assert isinstance(parsed_parent.artifact, IRSemanticBlockPairNarrative)
+        assert parsed_parent.artifact.mode == "pair_narrative"
+        assert isinstance(parsed_child, IRSemanticBlockArtifactRecord)
+        assert isinstance(parsed_child.artifact, IRSemanticBlockPairNarrativeChild)
+        assert parsed_child.artifact.toks.tokens == 0
 
     def test_ir_record_accepts_existing_record_variants(self, tmp_path) -> None:
         config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)

@@ -314,6 +314,9 @@ class Homunculus:
     async def recall(self, block_idx: int) -> str:
         return self._block_manager.recall_block(block_idx)
 
+    async def recall_chapter(self, chapter: int) -> str:
+        return self._block_manager.recall_chapter(chapter)
+
     async def forget_tool_result(self, call_id: str) -> str:
         block = self._resolve_tool_result(call_id)
         state = self._ttl_registry.forget(block)

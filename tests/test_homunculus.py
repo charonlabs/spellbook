@@ -26,6 +26,8 @@ from spellbook.ir_types import (
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockFacet,
+    IRSemanticBlockPairNarrative,
+    IRSemanticBlockPairNarrativeChild,
     IRSemanticBlockPin,
     IRSemanticBlockRange,
     IRSemanticBlockSummary,
@@ -43,6 +45,7 @@ from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult, Rehydrator
 from spellbook.round_lifecycle import RoundContext
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
+from spellbook.tools.self_work import RecallInput
 
 pytestmark = pytest.mark.asyncio
 
@@ -105,6 +108,70 @@ def _summary_block(
         available_modes=["full", "summary"],
         artifacts=[summary],
     )
+
+
+def _pair_narrative_semantic_blocks(
+    *,
+    active: bool = True,
+    child_active: bool = True,
+) -> list[IRSemanticBlock]:
+    first_range = IRSemanticBlockRange(
+        title="First source block",
+        start_block=0,
+        end_block=0,
+        completed=True,
+    )
+    second_range = IRSemanticBlockRange(
+        title="Second source block",
+        start_block=1,
+        end_block=1,
+        completed=True,
+    )
+    parent = IRSemanticBlock(
+        id="block_parent",
+        idx=0,
+        title="First source block",
+        range=first_range,
+        mode="pair_narrative" if active else "full",
+        toks=_count(20),
+        full_toks=_count(100),
+        available_modes=["full", "pair_narrative"],
+        artifacts=[
+            IRSemanticBlockPairNarrative(
+                narrative_id="narrative_01",
+                pair=(0, 1),
+                chapter_number=1,
+                title="Chapter 01",
+                blocks=[
+                    IRUserTextBlock(text="Narrative memory opener.", origin="memory"),
+                    IRAssistantTextBlock(text="Narrative assistant beat."),
+                ],
+                toks=_count(20),
+                source_chapter_path="/tmp/chapter-01.md",
+                compiled_json_path="/tmp/chapter-01.compiled.json",
+            )
+        ],
+    )
+    child = IRSemanticBlock(
+        id="block_child",
+        idx=1,
+        title="Second source block",
+        range=second_range,
+        mode="pair_narrative" if child_active else "full",
+        toks=_count(0) if child_active else _count(80),
+        full_toks=_count(80),
+        available_modes=["full", "pair_narrative"],
+        artifacts=[
+            IRSemanticBlockPairNarrativeChild(
+                narrative_id="narrative_01",
+                parent_block_idx=0,
+                parent_block_id="block_parent",
+                pair=(0, 1),
+                chapter_number=1,
+            )
+        ],
+    )
+    return [parent, child]
 
 
 def _rehydrated(
@@ -284,6 +351,107 @@ async def test_pin_summary_block_invalidates_and_rerenders_between_rounds(
     await HomunculusRoundLifecycle(homunculus).between_rounds(ctx)
 
     assert ctx.blocks == [full_block, tail_block]
+
+
+async def test_pair_narrative_renders_parent_blocks_and_empty_child(
+    tmp_path: Path,
+) -> None:
+    source_a = _user("Original block zero.")
+    source_b = IRAssistantTextBlock(text="Original block one.", origin="model")
+    tail = _user("Tail stays live.")
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[source_a, source_b, tail],
+            semantic_blocks=_pair_narrative_semantic_blocks(),
+        )
+    )
+
+    rendered = await homunculus.render_context([])
+
+    assert len(rendered) == 3
+    assert isinstance(rendered[0], IRUserTextBlock)
+    assert rendered[0].origin == "memory"
+    assert rendered[0].text == "Narrative memory opener."
+    assert isinstance(rendered[1], IRAssistantTextBlock)
+    assert rendered[1].text == "Narrative assistant beat."
+    assert rendered[2] == tail
+
+
+async def test_pair_narrative_render_fails_closed_when_child_not_active(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[
+                _user("Original block zero."),
+                IRAssistantTextBlock(text="Original block one.", origin="model"),
+            ],
+            semantic_blocks=_pair_narrative_semantic_blocks(child_active=False),
+        )
+    )
+
+    with pytest.raises(ValueError, match="pair narrative is active"):
+        await homunculus.render_context([])
+
+
+async def test_pair_narrative_recall_chapter_returns_original_source_pair(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[
+                _user("Original block zero."),
+                IRAssistantTextBlock(text="Original block one.", origin="model"),
+            ],
+            semantic_blocks=_pair_narrative_semantic_blocks(),
+        )
+    )
+
+    recalled = await homunculus.recall_chapter(1)
+
+    assert "# Chapter 01 source blocks" in recalled
+    assert '## Block 0 - "First source block"' in recalled
+    assert '## Block 1 - "Second source block"' in recalled
+    assert "Original block zero." in recalled
+    assert "Original block one." in recalled
+
+
+async def test_pair_narrative_rejects_block_recall_forget_and_pin(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[
+                _user("Original block zero."),
+                IRAssistantTextBlock(text="Original block one.", origin="model"),
+            ],
+            semantic_blocks=_pair_narrative_semantic_blocks(),
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"Use Recall\(chapter=1\)"):
+        await homunculus.recall(0)
+    with pytest.raises(ValueError, match="Forget cannot operate"):
+        await homunculus.forget(0)
+    with pytest.raises(ValueError, match="Pin cannot operate"):
+        await homunculus.pin(0, "Keep this.")
+
+
+async def test_recall_input_requires_exactly_one_target() -> None:
+    assert RecallInput(block_idx=1).block_idx == 1
+    assert RecallInput(chapter=2).chapter == 2
+    with pytest.raises(ValueError, match="exactly one"):
+        RecallInput()
+    with pytest.raises(ValueError, match="exactly one"):
+        RecallInput(block_idx=1, chapter=1)
 
 
 async def test_reflect_shows_pin_reason(tmp_path: Path) -> None:

@@ -33,6 +33,8 @@ from spellbook.ir_types import (
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockMetricsRecord,
+    IRSemanticBlockPairNarrative,
+    IRSemanticBlockPairNarrativeChild,
     IRSemanticBlockPin,
     IRSemanticBlockPinRecord,
     IRSemanticBlockRange,
@@ -404,6 +406,86 @@ class TestSemanticBlockModeRecords:
         ]
         assert len(records) == 1
         assert records[0].source == "model"
+
+    def test_pair_narrative_artifacts_rehydrate_current_modes(self, tmp_path) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn(
+            "t1",
+            [
+                IRUserTextBlock(text="first full block", origin="human"),
+                IRAssistantTextBlock(text="second full block", origin="model"),
+            ],
+        )
+        first_range = IRSemanticBlockRange(
+            title="First block",
+            start_block=0,
+            end_block=0,
+            completed=True,
+        )
+        second_range = IRSemanticBlockRange(
+            title="Second block",
+            start_block=1,
+            end_block=1,
+            completed=True,
+        )
+        parent_block = IRSemanticBlock(
+            id="block_parent",
+            idx=0,
+            title="First block",
+            range=first_range,
+            toks=IRTokenRangeCount(tokens=40, method="prefix_delta", exact=True),
+            full_toks=IRTokenRangeCount(tokens=40, method="prefix_delta", exact=True),
+        )
+        child_block = IRSemanticBlock(
+            id="block_child",
+            idx=1,
+            title="Second block",
+            range=second_range,
+            toks=IRTokenRangeCount(tokens=60, method="prefix_delta", exact=True),
+            full_toks=IRTokenRangeCount(tokens=60, method="prefix_delta", exact=True),
+        )
+        parent_toks = IRTokenRangeCount(tokens=25, method="api", exact=True)
+        parent_artifact = IRSemanticBlockPairNarrative(
+            narrative_id="narrative_01",
+            pair=(0, 1),
+            chapter_number=1,
+            title="Chapter 01",
+            blocks=[IRUserTextBlock(text="chapter narrative", origin="memory")],
+            toks=parent_toks,
+        )
+        child_artifact = IRSemanticBlockPairNarrativeChild(
+            narrative_id="narrative_01",
+            parent_block_idx=0,
+            parent_block_id=parent_block.id,
+            pair=(0, 1),
+            chapter_number=1,
+        )
+        recorder.detect_blocks(
+            BlockDetectorResult(
+                completed=[first_range, second_range],
+                still_buffered=[],
+            )
+        )
+        recorder.write_semantic_block(parent_block)
+        recorder.write_semantic_block(child_block)
+        recorder.write_block_artifact(parent_artifact, parent_block.id)
+        recorder.write_block_artifact(child_artifact, child_block.id)
+        recorder.apply_semantic_block_mode("pair_narrative", parent_block.id, "model")
+        recorder.apply_semantic_block_mode("pair_narrative", child_block.id, "model")
+        recorder.end_turn()
+
+        result = Rehydrator(transcript).run()
+
+        parent, child = result.semantic_blocks
+        assert parent.mode == "pair_narrative"
+        assert child.mode == "pair_narrative"
+        assert parent.toks == parent_toks
+        assert child.toks == IRTokenRangeCount(tokens=0, method="empty", exact=True)
+        assert parent.available_modes == ["full", "pair_narrative"]
+        assert child.available_modes == ["full", "pair_narrative"]
+        assert isinstance(parent.artifacts[0], IRSemanticBlockPairNarrative)
+        assert isinstance(child.artifacts[0], IRSemanticBlockPairNarrativeChild)
 
 
 class TestContextPlanProposalRecords:
