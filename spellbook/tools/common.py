@@ -83,6 +83,7 @@ class ToolMetadata:
 class BlockDetectorToolMetadata(ToolMetadata):
     prev_semantic_blocks: list[IRSemanticBlockRange] = field(default_factory=list)
     full_context_blocks: list[IRBlock] = field(default_factory=list)
+    full_context_start_id: int = 0
     context_block_buffer: list[IRBlock] = field(default_factory=list)
     context_block_start_id: int = 0
     semantic_block_buffer: list[IRSemanticBlockRange] = field(default_factory=list)
@@ -146,6 +147,11 @@ def build_tool_metadata(
                 homunculus=homunculus,
                 prev_semantic_blocks=fork_config.prev_semantic_blocks,
                 full_context_blocks=fork_config.full_context_blocks,
+                full_context_start_id=(
+                    fork_config.full_context_start_id
+                    if fork_config.full_context_start_id is not None
+                    else fork_config.context_block_start_id
+                ),
                 context_block_buffer=fork_config.context_block_buffer,
                 context_block_start_id=fork_config.context_block_start_id,
                 semantic_block_buffer=fork_config.semantic_block_buffer,

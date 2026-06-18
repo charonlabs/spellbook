@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Sequence, cast
 
 import pytest
 
@@ -30,6 +30,8 @@ from spellbook.ir_types import (
 )
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
+from spellbook.tools.common import BlockDetectorToolMetadata
+from spellbook.tools.homunculus import block_detector as detector_tools
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
 
 
@@ -40,7 +42,12 @@ def _prepared(result: BlockDetectorResult, fork_id: str = "detector_test"):
     return PreparedFork(coro=_run(), fork_id=fork_id)
 
 
-def _make_detector(tmp_path: Path, *, detect_interval: int = 100) -> BlockDetector:
+def _make_detector(
+    tmp_path: Path,
+    *,
+    detect_interval: int = 100,
+    context_projector: Any | None = None,
+) -> BlockDetector:
     config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)
     recorder = Recorder(
         config,
@@ -55,6 +62,7 @@ def _make_detector(tmp_path: Path, *, detect_interval: int = 100) -> BlockDetect
         config=HomunculusConfig(detect_interval=detect_interval),
         fork_runner=cast(ForkRunner, fake_runner),
         recorder=recorder,
+        context_projector=context_projector,
     )
 
 
@@ -64,6 +72,22 @@ def _user(text: str) -> IRUserTextBlock:
 
 def _assistant(text: str) -> IRAssistantTextBlock:
     return IRAssistantTextBlock(text=text, origin="model")
+
+
+def _collapse_tool_results(blocks: Sequence[Any]) -> list[Any]:
+    projected = []
+    for block in blocks:
+        if isinstance(block, IRToolResultBlock):
+            projected.append(
+                block.model_copy(
+                    update={
+                        "content": [IRToolTextBlock(text="[collapsed tool result]")]
+                    }
+                )
+            )
+        else:
+            projected.append(block)
+    return projected
 
 
 class TestBuildContextBuffer:
@@ -217,6 +241,97 @@ class TestMaybeDetect:
         assert detector._start_block_id == 3
         assert detector._context_buffer == []
         assert detector._counter == 0
+
+    @pytest.mark.asyncio
+    async def test_detection_fork_uses_projected_blocks_but_keeps_raw_state(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(
+            tmp_path,
+            detect_interval=2,
+            context_projector=_collapse_tool_results,
+        )
+        seen: dict[str, BlockDetectorConfig] = {}
+
+        async def _run_fork(*, fork_config: BlockDetectorConfig) -> PreparedFork:
+            seen["fork_config"] = fork_config
+            return _prepared(BlockDetectorResult(completed=[], still_buffered=[]))
+
+        cast(Any, detector._fork_runner).run_fork = _run_fork
+
+        full_output = "FULL TOOL OUTPUT\n" * 100
+        tool_result = IRToolResultBlock(
+            call_id="toolu_big",
+            tool="Read",
+            content=[IRToolTextBlock(text=full_output)],
+        )
+        blocks = [_user("read this"), tool_result]
+
+        prepared = await detector.maybe_detect(blocks, first_block_id=0)
+
+        assert prepared is not None
+        fork_config = seen["fork_config"]
+        assert detector._accumulated == blocks
+        assert isinstance(fork_config.full_context_blocks[1], IRToolResultBlock)
+        assert fork_config.full_context_blocks[1].content == [
+            IRToolTextBlock(text="[collapsed tool result]")
+        ]
+        assert isinstance(fork_config.context_block_buffer[1], IRToolResultBlock)
+        assert fork_config.context_block_buffer[1].content == [
+            IRToolTextBlock(text="[collapsed tool result]")
+        ]
+        assert "[collapsed tool result]" in fork_config.inbound_block.text
+        assert "FULL TOOL OUTPUT" not in fork_config.inbound_block.text
+        await prepared.coro
+
+    @pytest.mark.asyncio
+    async def test_detection_fork_reports_distinct_full_context_start(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path, detect_interval=1)
+        blocks = [_user("done"), _assistant("raw before append")]
+        completed = [IRSemanticBlockRange(title="Done", start_block=0, end_block=0)]
+        rehydrated = RehydrationResult(
+            session_id="session_test",
+            records=[],
+            blocks=blocks,
+            config=SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path),
+            tools=[],
+            last_completed_turn=1,
+            pending_footers={},
+            completed_semantic_block_ranges=completed,
+            buffered_semantic_block_ranges=[],
+            semantic_blocks=[],
+            plan_proposal=None,
+            skill_catalog=IRSkillCatalog(),
+        )
+        detector.rehydrate(rehydrated)
+        seen: dict[str, BlockDetectorConfig] = {}
+
+        async def _run_fork(*, fork_config: BlockDetectorConfig) -> PreparedFork:
+            seen["fork_config"] = fork_config
+            return _prepared(BlockDetectorResult(completed=[], still_buffered=[]))
+
+        cast(Any, detector._fork_runner).run_fork = _run_fork
+
+        prepared = await detector.maybe_detect(
+            [_assistant("new raw")], first_block_id=2
+        )
+
+        assert prepared is not None
+        fork_config = seen["fork_config"]
+        assert fork_config.full_context_start_id == 0
+        assert fork_config.context_block_start_id == 1
+        assert [block.text for block in fork_config.full_context_blocks] == [
+            "done",
+            "raw before append",
+            "new raw",
+        ]
+        assert [block.text for block in fork_config.context_block_buffer] == [
+            "raw before append",
+            "new raw",
+        ]
+        await prepared.coro
 
     @pytest.mark.asyncio
     async def test_global_indexing_survives_multi_batch_threshold_crossing(
@@ -412,6 +527,30 @@ class TestRehydrate:
         assert detector._accumulated_start_block_id is None
         assert detector._counter == 0
         assert detector._context_buffer == []
+
+
+class TestDetectorToolMetadata:
+    def test_full_context_helpers_use_full_context_start_id(
+        self, tmp_path: Path
+    ) -> None:
+        meta = BlockDetectorToolMetadata(
+            cwd=tmp_path,
+            transcript_path=tmp_path / "transcript.jsonl",
+            full_context_blocks=[
+                _user("completed"),
+                _assistant("buffered"),
+                _user("remaining"),
+            ],
+            full_context_start_id=10,
+            context_block_buffer=[_user("remaining")],
+            context_block_start_id=12,
+        )
+
+        assert detector_tools._full_context_last_block(meta) == 12
+        sliced = detector_tools._context_slice_from_block_id(meta, 12)
+        assert len(sliced) == 1
+        assert isinstance(sliced[0], IRUserTextBlock)
+        assert sliced[0].text == "remaining"
 
 
 class TestInboundRendering:

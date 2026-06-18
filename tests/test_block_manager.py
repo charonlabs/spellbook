@@ -206,6 +206,7 @@ class _FakeSummarizer:
     def __init__(self) -> None:
         self.integrated_forks: list[str] = []
         self.calls: list[str] = []
+        self.received_slices: list[list[IRBlock]] = []
 
     async def summarize(
         self,
@@ -215,6 +216,7 @@ class _FakeSummarizer:
         prev_semantic_blocks: list[IRSemanticBlock],
     ) -> PreparedFork:
         self.calls.append(semantic_block.id)
+        self.received_slices.append(list(context_block_slice))
 
         async def _run() -> BlockSummarizerResult:
             return BlockSummarizerResult(
@@ -241,7 +243,10 @@ class _FakeForkRunner:
         self.integrated_forks.append(fork_id)
 
 
-def _manager() -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunner]:
+def _manager(
+    *,
+    context_projector: Any | None = None,
+) -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunner]:
     recorder = _FakeRecorder()
     footer = _FakeFooter()
     fork_runner = _FakeForkRunner()
@@ -252,6 +257,7 @@ def _manager() -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunne
         nursery=Nursery(config=SpellbookConfig(cwd=Path.cwd())),
         recorder=cast(Recorder, recorder),
         token_meter=cast(TokenMeter, _FakeMeter()),
+        context_projector=context_projector,
     )
     return manager, recorder, footer, fork_runner
 
@@ -293,8 +299,9 @@ def _rehydrate_manager(
     *,
     blocks: list[IRBlock],
     semantic_blocks: list[IRSemanticBlock],
+    context_projector: Any | None = None,
 ) -> BlockManager:
-    manager, _, _, _ = _manager()
+    manager, _, _, _ = _manager(context_projector=context_projector)
     manager.context_blocks = blocks
     manager.rehydrate(
         _rehydrated(
@@ -755,6 +762,37 @@ async def test_generated_summary_adds_summary_available_mode(tmp_path: Path) -> 
     )
     assert summarizer.integrated_forks == ["summarizer_0"]
     assert summarizer.calls == [manager.semantic_blocks[0].id]
+
+
+@pytest.mark.asyncio
+async def test_generated_summary_uses_projected_context_slice(tmp_path: Path) -> None:
+    blocks = _user_blocks("raw tool result")
+    semantic_blocks = [
+        _semantic_block(idx=0, start=0, end=0, title="First"),
+    ]
+
+    def _project(blocks: Sequence[IRBlock]) -> list[IRBlock]:
+        return [_user("collapsed tool result") for _ in blocks]
+
+    manager = _rehydrate_manager(
+        tmp_path,
+        blocks=blocks,
+        semantic_blocks=semantic_blocks,
+        context_projector=_project,
+    )
+    summarizer = _FakeSummarizer()
+    manager._summarizer = cast(Any, summarizer)  # noqa: SLF001 - test swaps collaborator
+
+    await manager.generate_next_summary()
+    await _settle()
+    await manager.check_nursery()
+
+    assert len(summarizer.received_slices) == 1
+    received = summarizer.received_slices[0]
+    assert len(received) == 1
+    assert isinstance(received[0], IRUserTextBlock)
+    assert received[0].text == "collapsed tool result"
+    assert manager.context_blocks == blocks
 
 
 @pytest.mark.asyncio

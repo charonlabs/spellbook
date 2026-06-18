@@ -31,13 +31,13 @@ def _remaining_buffer_start(meta: BlockDetectorToolMetadata) -> int:
 
 
 def _full_context_last_block(meta: BlockDetectorToolMetadata) -> int:
-    return meta.context_block_start_id + len(meta.full_context_blocks) - 1
+    return meta.full_context_start_id + len(meta.full_context_blocks) - 1
 
 
 def _context_slice_from_block_id(
     meta: BlockDetectorToolMetadata, start_block: int
 ) -> list[IRBlock]:
-    offset = start_block - meta.context_block_start_id
+    offset = start_block - meta.full_context_start_id
     return meta.full_context_blocks[offset:]
 
 

@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
@@ -50,12 +51,19 @@ class BlockManager:
         nursery: Nursery,
         recorder: Recorder,
         token_meter: TokenMeter,
+        context_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
+        enable_block_metrics: bool = True,
     ):
         """Manager for semantic and context blocks. Public instance vars can be
         read and mutated in the Homunculus itself. At present, `context_blocks` and
         `next_block_id` are both directly mutated externally."""
+        self._context_projector = context_projector or _identity_context_projector
+        self._enable_block_metrics = enable_block_metrics
         self._detector = BlockDetector(
-            config=config, fork_runner=fork_runner, recorder=recorder
+            config=config,
+            fork_runner=fork_runner,
+            recorder=recorder,
+            context_projector=self._context_projector,
         )
         self._fork_runner = fork_runner
         self._meter = token_meter
@@ -518,20 +526,21 @@ class BlockManager:
                 source="detector",
                 key=new_block.id,
             )
-            key = f"metrics:{new_block.id}"
-            if self._nursery.get_by_key(key) is not None:
-                continue
-            coro = self._count_semantic_block(block=new_block.range)
-            self._nursery.submit(
-                coro=coro,
-                kind="block_metrics",
-                source="block_manager",
-                key=key,
-                metadata={
-                    "block_id": new_block.id,
-                    "block_idx": new_block.idx,
-                },
-            )
+            if self._enable_block_metrics:
+                key = f"metrics:{new_block.id}"
+                if self._nursery.get_by_key(key) is not None:
+                    continue
+                coro = self._count_semantic_block(block=new_block.range)
+                self._nursery.submit(
+                    coro=coro,
+                    kind="block_metrics",
+                    source="block_manager",
+                    key=key,
+                    metadata={
+                        "block_id": new_block.id,
+                        "block_idx": new_block.idx,
+                    },
+                )
         if new_blocks:
             await self.generate_next_summary()
 
@@ -662,7 +671,9 @@ class BlockManager:
                     return
                 prepared = await self._summarizer.summarize(
                     semantic_block=block,
-                    context_block_slice=self._context_blocks_in_block(block),
+                    context_block_slice=self._project_blocks(
+                        self._context_blocks_in_block(block)
+                    ),
                     prev_semantic_blocks=prev,
                 )
                 self._nursery.submit(
@@ -938,6 +949,12 @@ class BlockManager:
         )
         return count
 
+    def _project_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
+        projected = self._context_projector(blocks)
+        if len(projected) != len(blocks):
+            raise ValueError("Context projector must preserve block count.")
+        return projected
+
     def _validate_semantic_blocks(
         self, semantic_blocks: Sequence[IRSemanticBlock] | None = None
     ) -> None:
@@ -963,3 +980,7 @@ class BlockManager:
                     f"but there are only {len(self.context_blocks)} context blocks."
                 )
             expected_start = block.range.end_block + 1
+
+
+def _identity_context_projector(blocks: Sequence[IRBlock]) -> list[IRBlock]:
+    return list(blocks)

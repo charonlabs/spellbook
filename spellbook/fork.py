@@ -64,10 +64,9 @@ class BlockDetectorConfig(BaseModel, frozen=True):
     type: Literal["block_detector"] = "block_detector"
     prev_semantic_blocks: list[IRSemanticBlockRange]
     full_context_blocks: list[IRBlock]
+    full_context_start_id: int | None = None
     context_block_buffer: list[IRBlock]
-    context_block_start_id: (
-        int  # The number of the first context block in the full context slice
-    )
+    context_block_start_id: int
     semantic_block_buffer: list[IRSemanticBlockRange]
     inbound_block: IRUserTextBlock
     detector_model: str | None = DEFAULT_DETECTOR_MODEL

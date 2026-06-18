@@ -29,9 +29,9 @@ The detector currently relies on global block ids threaded in from Homunculus so
 that semantic ranges remain stable across batches.
 """
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html import escape
-from typing import Sequence
 
 from spellbook.config import HomunculusConfig
 from spellbook.fork import (
@@ -48,6 +48,8 @@ from spellbook.ir_types import (
 )
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
+
+ContextProjector = Callable[[Sequence[IRBlock]], list[IRBlock]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,11 +71,13 @@ class BlockDetector:
         config: HomunculusConfig,
         fork_runner: ForkRunner,
         recorder: Recorder,
+        context_projector: ContextProjector | None = None,
     ):
         self._config = config
         self._detect_interval = config.detect_interval
         self._fork_runner = fork_runner
         self._recorder = recorder
+        self._context_projector = context_projector or _identity_context_projector
         self._counter = 0
         self.completed_blocks: list[IRSemanticBlockRange] = []
         self._accumulated: list[IRBlock] = []
@@ -125,10 +129,16 @@ class BlockDetector:
         return await self._run_detection_fork(finalize=finalize)
 
     async def _run_detection_fork(self, *, finalize: bool) -> PreparedFork:
+        full_context_start_id = (
+            self._accumulated_start_block_id
+            if self._accumulated_start_block_id is not None
+            else self._start_block_id
+        )
         fc = BlockDetectorConfig(
             prev_semantic_blocks=list(self.completed_blocks),
-            full_context_blocks=list(self._accumulated),
-            context_block_buffer=list(self._context_buffer),
+            full_context_blocks=self._project_blocks(self._accumulated),
+            full_context_start_id=full_context_start_id,
+            context_block_buffer=self._project_blocks(self._context_buffer),
             context_block_start_id=self._start_block_id,
             semantic_block_buffer=list(self._semantic_buffer),
             inbound_block=self.build_inbound_block(finalize=finalize),
@@ -324,7 +334,7 @@ Blocks proposed or amended in this detector session still cannot be completed un
         if not self._context_buffer:
             return "<context_block_buffer />"
         rendered = ["<context_block_buffer>"]
-        for i, block in enumerate(self._context_buffer):
+        for i, block in enumerate(self._project_blocks(self._context_buffer)):
             block_id = self._start_block_id + i
             rendered.append(render_context_block(block, block_id))
         rendered.append("</context_block_buffer>")
@@ -340,7 +350,16 @@ Blocks proposed or amended in this detector session still cannot be completed un
         if start_offset < 0 or end_offset < start_offset:
             return []
         sliced = self._accumulated[start_offset : end_offset + 1]
-        return [(start_block + i, block) for i, block in enumerate(sliced)]
+        projected = self._project_blocks(sliced)
+        return [(start_block + i, block) for i, block in enumerate(projected)]
+
+    def _project_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
+        projected = self._context_projector(blocks)
+        if len(projected) != len(blocks):
+            raise ValueError(
+                "Block detector context projector must preserve block count."
+            )
+        return projected
 
     def build_context_buffer(self) -> None:
         if self._semantic_buffer:
@@ -364,3 +383,7 @@ Blocks proposed or amended in this detector session still cannot be completed un
             return
 
         self._context_buffer = self._accumulated[accumulated_offset:]
+
+
+def _identity_context_projector(blocks: Sequence[IRBlock]) -> list[IRBlock]:
+    return list(blocks)

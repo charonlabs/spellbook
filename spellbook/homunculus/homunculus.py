@@ -67,6 +67,7 @@ class Homunculus:
             nursery=nursery,
             recorder=recorder,
             token_meter=self._token_meter,
+            context_projector=self._ttl_registry.collapse_blocks,
         )
         self._fork_config = fork_config
         self._should_rerender: bool = False
