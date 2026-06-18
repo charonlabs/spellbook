@@ -249,10 +249,13 @@ class Homunculus:
                 f"({'verbose' if verbose else 'default'} view)."
             )
         )
+        large_label = "above threshold"
+        if any(s.images for s in statuses):
+            large_label = "token-relevant"
         lines.append(
             (
                 f"Tracked: {pending} pending, {collapsed} collapsed. "
-                f"Untracked: {untracked} ({large_untracked} above threshold)."
+                f"Untracked: {untracked} ({large_untracked} {large_label})."
             )
         )
         if not verbose:
@@ -265,14 +268,7 @@ class Homunculus:
         if not shown:
             lines.append("No token-relevant active tool results are waiting on TTL.")
         else:
-            total_chars = sum(s.chars or 0 for s in shown)
-            total_lines = sum(s.lines or 0 for s in shown)
-            lines.append(
-                (
-                    f"Total shown: {total_chars:,} chars / {total_lines:,} lines "
-                    f"(~{self._approx_tokens(total_chars):,} tokens)."
-                )
-            )
+            lines.append(f"Total shown: {self._format_tool_result_size(shown)}.")
             lines.append("")
             for status in shown:
                 lines.extend(self._render_tool_result_status(status))
@@ -490,7 +486,9 @@ class Homunculus:
         if status.label:
             heading += f" ({status.label})"
         lines = [heading]
-        if status.chars is None or status.lines is None:
+        if status.images:
+            lines.append(f"  size: {self._format_tool_result_size([status])}")
+        elif status.chars is None or status.lines is None:
             lines.append("  size: non-text output")
         else:
             lines.append(f"  size: {status.chars:,} chars / {status.lines:,} lines")
@@ -511,6 +509,35 @@ class Homunculus:
 
     def _approx_tokens(self, chars: int) -> int:
         return chars // 4
+
+    def _format_tool_result_size(self, statuses: Sequence[ToolResultTTLStatus]) -> str:
+        total_chars = sum(s.chars or 0 for s in statuses)
+        total_lines = sum(s.lines or 0 for s in statuses)
+        total_images = sum(s.images for s in statuses)
+        known_image_bytes = [
+            s.image_bytes for s in statuses if s.images and s.image_bytes is not None
+        ]
+        parts: list[str] = []
+        if total_chars or total_lines or not total_images:
+            parts.append(
+                (
+                    f"{total_chars:,} chars / {total_lines:,} lines "
+                    f"(~{self._approx_tokens(total_chars):,} tokens)"
+                )
+            )
+        if total_images:
+            image_part = f"{total_images:,} image{'s' if total_images != 1 else ''}"
+            if len(known_image_bytes) == total_images:
+                image_part += f" / {self._format_bytes(sum(known_image_bytes))}"
+            parts.append(image_part)
+        return " + ".join(parts)
+
+    def _format_bytes(self, size: int) -> str:
+        if size < 1024:
+            return f"{size}B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f}KB"
+        return f"{size / (1024 * 1024):.1f}MB"
 
     def _render_ttl_settings(self) -> list[str]:
         settings = self._ttl_registry.settings

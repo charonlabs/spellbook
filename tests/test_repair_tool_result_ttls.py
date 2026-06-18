@@ -8,6 +8,8 @@ from pydantic import TypeAdapter
 from scripts.repair_tool_result_ttls import repair_tool_result_ttls
 from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.ir_types import (
+    IRImageBase64Source,
+    IRImageBlock,
     IRRecord,
     IRSkillCatalog,
     IRToolCallBlock,
@@ -47,6 +49,32 @@ def _tool_result(
         tool=tool,
         content=[IRToolTextBlock(text=text)],
         display=display or {},
+    )
+
+
+def _image_tool_result(
+    tmp_path: Path,
+    call_id: str,
+    *,
+    blob_name: str = "capture.png",
+    image_bytes: bytes = b"image-data",
+    display: dict | None = None,
+) -> IRToolResultBlock:
+    blob_path = Path("blobs") / blob_name
+    full_blob_path = tmp_path / blob_path
+    full_blob_path.parent.mkdir(parents=True, exist_ok=True)
+    full_blob_path.write_bytes(image_bytes)
+    return IRToolResultBlock(
+        call_id=call_id,
+        tool="Read",
+        content=[
+            IRImageBlock(
+                origin="tool",
+                source=IRImageBase64Source(media_type="image/png", data="aW1hZ2U="),
+                blob_path=str(blob_path),
+            )
+        ],
+        display=display or {"kind": "text", "title": "Read Image"},
     )
 
 
@@ -147,6 +175,59 @@ def test_repair_tool_result_ttls_appends_records_and_saves_outputs(
     assert ttl_record.turn_id == "turn_1"
     assert ttl_record.output_ref == "tool-outputs/toolu_big.txt"
     assert isinstance(records[-1], IRToolResultTTLRecord)
+
+
+def test_repair_tool_result_ttls_handles_image_results(tmp_path: Path) -> None:
+    recorder, transcript = _recorder(tmp_path)
+    recorder.start_turn("turn_1", [IRUserTextBlock(text="capture it", origin="human")])
+    recorder.write_block(IRToolCallBlock(call_id="toolu_image", tool="Read", input={}))
+    recorder.write_block(
+        _image_tool_result(
+            tmp_path,
+            "toolu_image",
+            image_bytes=b"historical-image",
+            display={
+                "kind": "text",
+                "title": "Read Image",
+                "body": "historical UI capture",
+            },
+        )
+    )
+    recorder.end_turn()
+
+    report = repair_tool_result_ttls(
+        transcript,
+        apply=True,
+        backup=False,
+        ttl_turns=1,
+        write_report=False,
+    )
+
+    assert report.records_appended == 1
+    candidate = report.candidates[0]
+    assert candidate.call_id == "toolu_image"
+    assert candidate.chars == 0
+    assert candidate.lines == 0
+    assert candidate.images == 1
+    assert candidate.image_bytes == len(b"historical-image")
+    assert candidate.image_refs == ("blobs/capture.png",)
+    assert (
+        candidate.replace_content
+        == "[Read Image: 1 image / 16B. Image stored at blobs/capture.png. Details saved to tool-outputs/toolu_image.txt]"
+    )
+    manifest = (tmp_path / "tool-outputs" / "toolu_image.txt").read_text()
+    assert "historical UI capture" in manifest
+    assert "image 1: ref=blobs/capture.png, source=blob" in manifest
+    assert "size=16B" in manifest
+    records = _read_records(transcript)
+    ttl_records = [
+        record for record in records if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert len(ttl_records) == 1
+    assert ttl_records[0].call_id == "toolu_image"
+    assert ttl_records[0].source == "repair"
+    assert ttl_records[0].ttl == 1
+    assert ttl_records[0].output_ref == "tool-outputs/toolu_image.txt"
 
 
 def test_repair_tool_result_ttls_skips_existing_small_errors_and_skill_tools(

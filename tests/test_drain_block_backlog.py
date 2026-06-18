@@ -27,6 +27,8 @@ from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
+    IRImageBase64Source,
+    IRImageBlock,
     IRSemanticBlock,
     IRSemanticBlockRange,
     IRSemanticBlockSummary,
@@ -55,6 +57,25 @@ def _user(text: str) -> IRUserTextBlock:
 
 def _assistant(text: str) -> IRAssistantTextBlock:
     return IRAssistantTextBlock(text=text)
+
+
+def _image_result(tmp_path: Path, call_id: str) -> IRToolResultBlock:
+    blob_path = Path("blobs") / "capture.png"
+    full_blob_path = tmp_path / blob_path
+    full_blob_path.parent.mkdir(parents=True, exist_ok=True)
+    full_blob_path.write_bytes(b"image-data")
+    return IRToolResultBlock(
+        call_id=call_id,
+        tool="Read",
+        content=[
+            IRImageBlock(
+                origin="tool",
+                source=IRImageBase64Source(media_type="image/png", data="aW1hZ2U="),
+                blob_path=str(blob_path),
+            )
+        ],
+        display={"kind": "text", "title": "Read Image"},
+    )
 
 
 def _write_source_transcript(
@@ -313,6 +334,29 @@ async def test_drain_block_backlog_rejects_large_untracked_tool_result(
                 tool="Read",
                 content=[IRToolTextBlock(text="large output\n" * 4)],
             ),
+        ],
+        ttl_threshold=20,
+    )
+
+    with pytest.raises(ValueError, match="large tool result"):
+        await drain_block_backlog(
+            transcript_path=transcript,
+            apply=True,
+            backup=False,
+            show_progress=False,
+            write_report=False,
+            runtime_builder=_runtime_builder,
+        )
+
+
+async def test_drain_block_backlog_rejects_untracked_image_tool_result(
+    tmp_path: Path,
+) -> None:
+    transcript = _write_source_transcript(
+        tmp_path,
+        blocks=[
+            _user("done"),
+            _image_result(tmp_path, "toolu_image"),
         ],
         ttl_threshold=20,
     )

@@ -37,7 +37,7 @@ from spellbook.homunculus.token_meter import TokenMeter
 from spellbook.homunculus.tool_result_ttl import (
     AUTO_TTL_SKIP_TOOLS,
     ToolResultTTLRegistry,
-    tool_result_text_content,
+    tool_result_ttl_content,
 )
 from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
@@ -87,6 +87,8 @@ class LargeUntrackedToolResult:
     tool: str
     chars: int
     lines: int
+    images: int = 0
+    image_bytes: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -95,6 +97,8 @@ class LargeUntrackedToolResult:
             "tool": self.tool,
             "chars": self.chars,
             "lines": self.lines,
+            "images": self.images,
+            "image_bytes": self.image_bytes,
         }
 
 
@@ -255,6 +259,7 @@ async def drain_block_backlog(
     )
     large_untracked = _large_untracked_tool_results(
         source,
+        transcript_path=transcript_path,
         start_block=start_block,
         target_end_block=target_end,
     )
@@ -720,6 +725,7 @@ def _target_end_block(
 def _large_untracked_tool_results(
     source: RehydrationResult,
     *,
+    transcript_path: Path,
     start_block: int,
     target_end_block: int,
 ) -> list[LargeUntrackedToolResult]:
@@ -737,16 +743,21 @@ def _large_untracked_tool_results(
             or block.tool in AUTO_TTL_SKIP_TOOLS
         ):
             continue
-        output = tool_result_text_content(block)
-        if output is None or len(output) < threshold:
+        content = tool_result_ttl_content(
+            block,
+            transcript_path=transcript_path,
+        )
+        if not content.should_auto_register(threshold):
             continue
         results.append(
             LargeUntrackedToolResult(
                 block_idx=idx,
                 call_id=block.call_id,
                 tool=block.tool,
-                chars=len(output),
-                lines=_line_count(output),
+                chars=content.chars or 0,
+                lines=content.lines or 0,
+                images=content.image_count,
+                image_bytes=content.image_bytes,
             )
         )
     return results
@@ -899,12 +910,6 @@ def _delta(start: int, final: int | None) -> str:
     change = final - start
     sign = "+" if change >= 0 else ""
     return f"{final:,} ({sign}{change:,})"
-
-
-def _line_count(text: str) -> int:
-    if text == "":
-        return 0
-    return len(text.splitlines()) or 1
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

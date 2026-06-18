@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal, Sequence
 
 from spellbook.config import HomunculusConfig
+from spellbook.image_blobs import resolve_blob_path
 from spellbook.ir_types import (
+    IMAGE_MEDIA_TYPES,
     IRBlock,
     IRExecution,
+    IRImageBase64Source,
+    IRImageBlobSource,
+    IRImageBlock,
+    IRImageURLSource,
     IRRuntimeConfigRecord,
     IRToolResultBlock,
     IRToolResultTTLRecord,
@@ -100,6 +107,9 @@ class ToolResultTTLStatus:
     lines: int | None
     kind: ToolResultTTLStatusKind
     status: str
+    images: int = 0
+    image_bytes: int | None = None
+    image_refs: tuple[str, ...] = ()
     output_ref: str | None = None
     delivered_turn: int | None = None
     age_turns: int | None = None
@@ -109,6 +119,48 @@ class ToolResultTTLStatus:
     @property
     def show_by_default(self) -> bool:
         return self.kind in {"pending", "large_untracked"}
+
+
+@dataclass(frozen=True)
+class ToolResultImageRef:
+    ref: str
+    source_kind: Literal["blob", "url", "base64"]
+    media_type: str | None = None
+    bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class ToolResultTTLContent:
+    text: str | None
+    images: tuple[ToolResultImageRef, ...]
+
+    @property
+    def chars(self) -> int | None:
+        return len(self.text) if self.text is not None else None
+
+    @property
+    def lines(self) -> int | None:
+        return _line_count(self.text) if self.text is not None else None
+
+    @property
+    def image_count(self) -> int:
+        return len(self.images)
+
+    @property
+    def image_bytes(self) -> int | None:
+        sizes = [image.bytes for image in self.images]
+        if not sizes or any(size is None for size in sizes):
+            return None
+        return sum(size for size in sizes if size is not None)
+
+    @property
+    def has_ttl_content(self) -> bool:
+        return self.text is not None or bool(self.images)
+
+    def should_auto_register(self, char_threshold: int) -> bool:
+        if self.images:
+            return True
+        return self.text is not None and len(self.text) >= char_threshold
 
 
 class ToolResultTTLRegistry:
@@ -237,23 +289,29 @@ class ToolResultTTLRegistry:
         if existing is not None and existing.remaining <= 0:
             return existing
 
-        output = tool_result_text_content(block)
-        if output is None:
+        content = tool_result_ttl_content(
+            block,
+            transcript_path=self._recorder.transcript_path,
+        )
+        if not content.has_ttl_content:
             raise ValueError(
-                f"Tool result `{block.call_id}` has no textual output to forget."
+                f"Tool result `{block.call_id}` has no text or image output to forget."
             )
 
         output_ref = existing.output_ref if existing is not None else None
         if output_ref is None:
-            output_ref = self._save_output(block.call_id, output)
+            output_ref = self._save_output(
+                block.call_id,
+                build_tool_result_ttl_saved_output(block, content),
+            )
         replace_content = (
             existing.replace_content
             if existing is not None
             else build_tool_result_ttl_replacement(
                 tool=block.tool,
-                output=output,
                 display=block.display,
                 output_ref=output_ref,
+                content=content,
             )
         )
         return self.register(
@@ -283,9 +341,15 @@ class ToolResultTTLRegistry:
     def status_for_block(
         self, block: IRToolResultBlock, *, current_turn: int
     ) -> ToolResultTTLStatus:
-        output = tool_result_text_content(block)
-        chars = len(output) if output is not None else None
-        lines = _line_count(output) if output is not None else None
+        content = tool_result_ttl_content(
+            block,
+            transcript_path=self._recorder.transcript_path,
+        )
+        chars = content.chars
+        lines = content.lines
+        image_count = content.image_count
+        image_bytes = content.image_bytes
+        image_refs = tuple(image.ref for image in content.images)
         label = tool_result_label(block)
         state = self._ttls.get(block.call_id)
         if state is not None:
@@ -299,6 +363,9 @@ class ToolResultTTLRegistry:
                     lines=lines,
                     kind="collapsed",
                     status="collapsed",
+                    images=image_count,
+                    image_bytes=image_bytes,
+                    image_refs=image_refs,
                     output_ref=state.output_ref,
                     delivered_turn=state.delivered_turn,
                     age_turns=age_turns,
@@ -315,6 +382,9 @@ class ToolResultTTLRegistry:
                 lines=lines,
                 kind="pending",
                 status=f"pending TTL, {state.remaining} {unit}{plural} remaining",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
                 output_ref=state.output_ref,
                 delivered_turn=state.delivered_turn,
                 age_turns=age_turns,
@@ -331,6 +401,9 @@ class ToolResultTTLRegistry:
                 lines=lines,
                 kind="error",
                 status="untracked, error result",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
             )
         if block.tool in AUTO_TTL_SKIP_TOOLS:
             return ToolResultTTLStatus(
@@ -341,8 +414,11 @@ class ToolResultTTLRegistry:
                 lines=lines,
                 kind="ignored",
                 status="ignored, tool is excluded from auto-TTL",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
             )
-        if output is None:
+        if not content.has_ttl_content:
             return ToolResultTTLStatus(
                 call_id=block.call_id,
                 tool=block.tool,
@@ -350,9 +426,26 @@ class ToolResultTTLRegistry:
                 chars=chars,
                 lines=lines,
                 kind="non_text",
-                status="untracked, no textual output",
+                status="untracked, no text or image output",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
             )
-        if len(output) < self._settings.char_threshold:
+        if content.images:
+            return ToolResultTTLStatus(
+                call_id=block.call_id,
+                tool=block.tool,
+                label=label,
+                chars=chars,
+                lines=lines,
+                kind="large_untracked",
+                status="untracked, image result",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
+            )
+        text = content.text or ""
+        if len(text) < self._settings.char_threshold:
             return ToolResultTTLStatus(
                 call_id=block.call_id,
                 tool=block.tool,
@@ -361,6 +454,9 @@ class ToolResultTTLRegistry:
                 lines=lines,
                 kind="small_untracked",
                 status="untracked, below TTL threshold",
+                images=image_count,
+                image_bytes=image_bytes,
+                image_refs=image_refs,
             )
         return ToolResultTTLStatus(
             call_id=block.call_id,
@@ -370,6 +466,9 @@ class ToolResultTTLRegistry:
             lines=lines,
             kind="large_untracked",
             status="untracked, above TTL threshold",
+            images=image_count,
+            image_bytes=image_bytes,
+            image_refs=image_refs,
         )
 
     def _collapse_block(self, block: IRBlock) -> IRBlock:
@@ -388,18 +487,22 @@ class ToolResultTTLRegistry:
         if block.tool in AUTO_TTL_SKIP_TOOLS:
             return
 
-        output = tool_result_text_content(block)
-        if output is None:
-            return
-        if len(output) < self._settings.char_threshold:
+        content = tool_result_ttl_content(
+            block,
+            transcript_path=self._recorder.transcript_path,
+        )
+        if not content.should_auto_register(self._settings.char_threshold):
             return
 
-        output_ref = self._save_output(block.call_id, output)
+        output_ref = self._save_output(
+            block.call_id,
+            build_tool_result_ttl_saved_output(block, content),
+        )
         replace_content = build_tool_result_ttl_replacement(
             tool=block.tool,
-            output=output,
             display=block.display,
             output_ref=output_ref,
+            content=content,
         )
         self.register(
             call_id=block.call_id,
@@ -443,6 +546,65 @@ def tool_result_text_content(block: IRToolResultBlock) -> str | None:
     return "\n".join(parts)
 
 
+def tool_result_ttl_content(
+    block: IRToolResultBlock,
+    *,
+    transcript_path: Path | None = None,
+) -> ToolResultTTLContent:
+    return ToolResultTTLContent(
+        text=tool_result_text_content(block),
+        images=tuple(
+            _image_ref(content, transcript_path=transcript_path)
+            for content in block.content
+            if isinstance(content, IRImageBlock)
+        ),
+    )
+
+
+def build_tool_result_ttl_manifest(
+    block: IRToolResultBlock,
+    content: ToolResultTTLContent | None = None,
+) -> str:
+    content = content or tool_result_ttl_content(block)
+    parts = [
+        f"Tool result: {block.tool}",
+        f"call_id: {block.call_id}",
+    ]
+    label = tool_result_label(block)
+    if label:
+        parts.append(f"label: {label}")
+
+    if block.display:
+        parts.extend(["", "Display metadata:"])
+        for key, value in sorted(block.display.items()):
+            parts.append(f"- {key}: {value}")
+
+    if content.text is not None:
+        parts.extend(["", "Text output:", content.text])
+
+    if content.images:
+        parts.extend(["", "Images:"])
+        for idx, image in enumerate(content.images, start=1):
+            details = [f"ref={image.ref}", f"source={image.source_kind}"]
+            if image.media_type is not None:
+                details.append(f"media_type={image.media_type}")
+            if image.bytes is not None:
+                details.append(f"size={_format_bytes(image.bytes)}")
+            parts.append(f"- image {idx}: " + ", ".join(details))
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def build_tool_result_ttl_saved_output(
+    block: IRToolResultBlock,
+    content: ToolResultTTLContent | None = None,
+) -> str:
+    content = content or tool_result_ttl_content(block)
+    if not content.images and content.text is not None:
+        return content.text
+    return build_tool_result_ttl_manifest(block, content)
+
+
 def tool_result_label(block: IRToolResultBlock) -> str | None:
     display = block.display
     kind = display.get("kind")
@@ -459,19 +621,93 @@ def tool_result_label(block: IRToolResultBlock) -> str | None:
             target = display.get("target_block")
             value = f"block {target}" if target is not None else "context"
         case _:
-            value = None
+            value = display.get("title") or display.get("path") or display.get("body")
     if value is None:
         return None
     return _clip(str(value), 120)
 
 
+def _image_ref(
+    block: IRImageBlock,
+    *,
+    transcript_path: Path | None,
+) -> ToolResultImageRef:
+    source = block.source
+    media_type: str | None = None
+    ref: str
+    source_kind: Literal["blob", "url", "base64"]
+    size: int | None = None
+
+    if block.blob_path is not None:
+        ref = block.blob_path
+        source_kind = "blob"
+        media_type = _image_media_type(block)
+        size = _blob_size(block.blob_path, transcript_path)
+    elif isinstance(source, IRImageURLSource):
+        ref = source.url
+        source_kind = "url"
+    elif isinstance(source, IRImageBase64Source):
+        ref = f"<base64:{source.media_type}>"
+        source_kind = "base64"
+        media_type = source.media_type
+        size = _approx_base64_bytes(source.data)
+    elif isinstance(source, IRImageBlobSource):
+        ref = f"<blob:{block.blob_path}>"
+        source_kind = "blob"
+        media_type = _image_media_type(block)
+    else:
+        raise TypeError(f"Unsupported image source: {type(source)}")
+
+    return ToolResultImageRef(
+        ref=ref,
+        source_kind=source_kind,
+        media_type=media_type,
+        bytes=size,
+    )
+
+
+def _image_media_type(block: IRImageBlock) -> str | None:
+    source = block.source
+    if isinstance(source, IRImageBase64Source):
+        return source.media_type
+    if block.blob_path is not None:
+        suffix = Path(block.blob_path).suffix.lower()
+        return IMAGE_MEDIA_TYPES.get(suffix)
+    return None
+
+
+def _blob_size(blob_path: str, transcript_path: Path | None) -> int | None:
+    if transcript_path is None:
+        return None
+    try:
+        return resolve_blob_path(blob_path, transcript_path).stat().st_size
+    except OSError:
+        return None
+
+
+def _approx_base64_bytes(data: str) -> int | None:
+    if not data:
+        return 0
+    padding = data.count("=")
+    return max(0, (len(data) * 3 // 4) - padding)
+
+
 def build_tool_result_ttl_replacement(
     *,
     tool: str,
-    output: str,
     display: dict,
     output_ref: str,
+    output: str | None = None,
+    content: ToolResultTTLContent | None = None,
 ) -> str:
+    if content is not None and content.images:
+        return _build_image_tool_result_ttl_replacement(
+            tool=tool,
+            display=display,
+            output_ref=output_ref,
+            content=content,
+        )
+    output = output if output is not None else (content.text if content else "")
     line_count = _line_count(output)
     char_count = len(output)
     kind = display.get("kind")
@@ -536,3 +772,55 @@ def build_tool_result_ttl_replacement(
                 f"[{tool}: {line_count} lines, {char_count} chars. "
                 f"Full output saved to {output_ref}]"
             )
+
+
+def _build_image_tool_result_ttl_replacement(
+    *,
+    tool: str,
+    display: dict,
+    output_ref: str,
+    content: ToolResultTTLContent,
+) -> str:
+    label = _image_tool_result_label(tool, display)
+    parts: list[str] = []
+    if content.text is not None:
+        line_count = content.lines or 0
+        text_part = f"{line_count} line{'s' if line_count != 1 else ''} text"
+        parts.append(text_part)
+    image_part = f"{content.image_count} image{'s' if content.image_count != 1 else ''}"
+    if content.image_bytes is not None:
+        image_part += f" / {_format_bytes(content.image_bytes)}"
+    parts.append(image_part)
+
+    refs = [image.ref for image in content.images]
+    if len(refs) == 1:
+        image_ref = f"Image stored at {refs[0]}."
+    elif refs:
+        preview = ", ".join(refs[:3])
+        if len(refs) > 3:
+            preview += ", ..."
+        image_ref = f"Images stored at {preview}."
+    else:
+        image_ref = ""
+
+    return f"[{label}: {' + '.join(parts)}. {image_ref} Details saved to {output_ref}]"
+
+
+def _image_tool_result_label(tool: str, display: dict) -> str:
+    title = display.get("title")
+    if title:
+        return _clip(str(title), 80)
+    kind = display.get("kind")
+    if kind == "read" and display.get("path") is not None:
+        return f"Read image {display['path']}"
+    if kind and kind != "text":
+        return f"{tool} {kind}"
+    return f"{tool} image result"
+
+
+def _format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size}B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f}KB"
+    return f"{size / (1024 * 1024):.1f}MB"

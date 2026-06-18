@@ -14,7 +14,8 @@ from typing import Sequence
 from spellbook.homunculus.tool_result_ttl import (
     AUTO_TTL_SKIP_TOOLS,
     build_tool_result_ttl_replacement,
-    tool_result_text_content,
+    build_tool_result_ttl_saved_output,
+    tool_result_ttl_content,
 )
 from spellbook.ir_types import (
     IRBlockRecord,
@@ -35,6 +36,9 @@ class ToolResultTTLRepairCandidate:
     seq: int
     chars: int
     lines: int
+    images: int
+    image_bytes: int | None
+    image_refs: tuple[str, ...]
     output_ref: str
     replace_content: str
 
@@ -47,6 +51,9 @@ class ToolResultTTLRepairCandidate:
             "seq": self.seq,
             "chars": self.chars,
             "lines": self.lines,
+            "images": self.images,
+            "image_bytes": self.image_bytes,
+            "image_refs": list(self.image_refs),
             "output_ref": self.output_ref,
             "replace_content": self.replace_content,
         }
@@ -181,11 +188,11 @@ def _find_candidates(
             skipped["memory_or_skill_tool"] += 1
             continue
 
-        output = tool_result_text_content(block)
-        if output is None:
-            skipped["non_text_result"] += 1
+        content = tool_result_ttl_content(block, transcript_path=transcript_path)
+        if not content.has_ttl_content:
+            skipped["empty_result"] += 1
             continue
-        if len(output) < min_chars:
+        if not content.should_auto_register(min_chars):
             skipped["below_threshold"] += 1
             continue
 
@@ -202,14 +209,17 @@ def _find_candidates(
                 turn=record.turn,
                 turn_id=turn_id,
                 seq=record.seq,
-                chars=len(output),
-                lines=_line_count(output),
+                chars=content.chars or 0,
+                lines=content.lines or 0,
+                images=content.image_count,
+                image_bytes=content.image_bytes,
+                image_refs=tuple(image.ref for image in content.images),
                 output_ref=output_ref,
                 replace_content=build_tool_result_ttl_replacement(
                     tool=block.tool,
-                    output=output,
                     display=block.display,
                     output_ref=output_ref,
+                    content=content,
                 ),
             )
         )
@@ -280,11 +290,11 @@ def _write_tool_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     for candidate in candidates:
         block = records_by_call_id[candidate.call_id]
-        output = tool_result_text_content(block)
-        if output is None:
-            continue
         (transcript_path.parent / candidate.output_ref).write_text(
-            output,
+            build_tool_result_ttl_saved_output(
+                block,
+                tool_result_ttl_content(block, transcript_path=transcript_path),
+            ),
             encoding="utf-8",
         )
 
@@ -327,12 +337,6 @@ def _write_report(report: ToolResultTTLRepairReport, report_path: Path) -> None:
         json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-
-
-def _line_count(text: str) -> int:
-    if text == "":
-        return 0
-    return len(text.splitlines()) or 1
 
 
 def _safe_filename(value: str) -> str:

@@ -21,6 +21,8 @@ from spellbook.ir_types import (
     IRExecution,
     IRFooterQueueRecord,
     IRGeneration,
+    IRImageBase64Source,
+    IRImageBlock,
     IRRecord,
     IRRuntimeConfigRecord,
     IRSemanticBlock,
@@ -77,6 +79,33 @@ def _tool_result(call_id: str, text: str, *, tool: str = "Read") -> IRToolResult
         call_id=call_id,
         tool=tool,
         content=[IRToolTextBlock(text=text)],
+    )
+
+
+def _image_tool_result(
+    tmp_path: Path,
+    call_id: str,
+    *,
+    tool: str = "Read",
+    blob_name: str = "capture.png",
+    image_bytes: bytes = b"image-data",
+    display: dict | None = None,
+) -> IRToolResultBlock:
+    blob_path = Path("blobs") / blob_name
+    full_blob_path = tmp_path / blob_path
+    full_blob_path.parent.mkdir(parents=True, exist_ok=True)
+    full_blob_path.write_bytes(image_bytes)
+    return IRToolResultBlock(
+        call_id=call_id,
+        tool=tool,
+        content=[
+            IRImageBlock(
+                origin="tool",
+                source=IRImageBase64Source(media_type="image/png", data="aW1hZ2U="),
+                blob_path=str(blob_path),
+            )
+        ],
+        display=display or {"kind": "text", "title": "Read Image"},
     )
 
 
@@ -816,6 +845,71 @@ async def test_large_tool_result_auto_ttl_persists_and_collapses_after_turn(
     assert ttl_records[0].delivered_turn == 1
 
 
+async def test_image_tool_result_auto_ttl_persists_and_collapses_after_turn(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_turns=1,
+            tool_result_ttl_char_threshold=10_000,
+        ),
+    )
+    call = IRToolCallBlock(call_id="toolu_image", tool="Read", input={})
+    result = _image_tool_result(
+        tmp_path,
+        "toolu_image",
+        image_bytes=b"image-data",
+        display={"kind": "text", "title": "Read Image", "body": "captured UI"},
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+
+    await homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[call],
+            stop_reason="tool_use",
+            usage=None,
+        )
+    )
+    await homunculus.integrate_execution(IRExecution(blocks=[result]))
+    before_tick = await homunculus.render_context([])
+    ctx = RoundContext(
+        blocks=before_tick,
+        round_number=1,
+        cancel_token=CancelToken(),
+        blocks_this_round=[],
+    )
+
+    await HomunculusRoundLifecycle(homunculus).on_loop_exit(ctx, "end_turn")
+    after_tick = await homunculus.render_context([])
+
+    assert before_tick == [call, result]
+    assert after_tick[0] == call
+    assert isinstance(after_tick[1], IRToolResultBlock)
+    collapsed_text = after_tick[1].content[0]
+    assert isinstance(collapsed_text, IRToolTextBlock)
+    assert (
+        collapsed_text.text
+        == "[Read Image: 1 image / 10B. Image stored at blobs/capture.png. Details saved to tool-outputs/toolu_image.txt]"
+    )
+    manifest = (tmp_path / "tool-outputs" / "toolu_image.txt").read_text()
+    assert "Tool result: Read" in manifest
+    assert "image 1: ref=blobs/capture.png, source=blob" in manifest
+    assert "size=10B" in manifest
+
+    ttl_records = [
+        record
+        for record in _read_records(transcript)
+        if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert len(ttl_records) == 1
+    assert ttl_records[0].call_id == "toolu_image"
+    assert ttl_records[0].ttl == 1
+    assert ttl_records[0].source == "auto"
+
+
 async def test_small_tool_result_does_not_auto_register_ttl(tmp_path: Path) -> None:
     transcript = tmp_path / "transcript.jsonl"
     homunculus = _homunculus(
@@ -872,6 +966,60 @@ async def test_reflect_tool_results_default_shows_pending_ttls_only(
     assert "saved: tool-outputs/toolu_big.txt" in text
     assert "toolu_small" not in text
     assert "toolu_skill" not in text
+
+
+async def test_reflect_tool_results_shows_image_sizes(tmp_path: Path) -> None:
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(
+            tool_result_ttl_turns=2,
+            tool_result_ttl_char_threshold=10_000,
+        ),
+    )
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+    image = _image_tool_result(
+        tmp_path,
+        "toolu_capture",
+        image_bytes=b"image-data",
+        display={"kind": "text", "title": "Capture", "body": "UI screenshot"},
+    )
+
+    await homunculus.integrate_execution(IRExecution(blocks=[image]))
+    text, display = homunculus.render_tool_results()
+
+    assert display["shown"] == 1
+    assert display["pending"] == 1
+    assert "Tracked: 1 pending, 0 collapsed. Untracked: 0 (0 token-relevant)." in text
+    assert "toolu_capture Read (Capture)" in text
+    assert "size: 1 image / 10B" in text
+    assert "status: pending TTL, 2 turns remaining" in text
+    assert "saved: tool-outputs/toolu_capture.txt" in text
+
+
+async def test_reflect_tool_results_default_shows_untracked_images(
+    tmp_path: Path,
+) -> None:
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(tool_result_ttl_char_threshold=10_000),
+    )
+    image = _image_tool_result(
+        tmp_path,
+        "toolu_old_capture",
+        image_bytes=b"old-image",
+        display={"kind": "text", "title": "Old Capture"},
+    )
+    await homunculus.rehydrate(
+        _rehydrated(tmp_path, blocks=[image], semantic_blocks=[])
+    )
+
+    text, display = homunculus.render_tool_results()
+
+    assert display["shown"] == 1
+    assert display["large_untracked"] == 1
+    assert "toolu_old_capture Read (Old Capture)" in text
+    assert "size: 1 image / 9B" in text
+    assert "status: untracked, image result" in text
 
 
 async def test_reflect_tool_results_verbose_includes_untracked_and_ignored(
@@ -966,6 +1114,62 @@ async def test_forget_tool_result_registers_manual_ttl_and_rerenders(
     ]
     assert len(ttl_records) == 1
     assert ttl_records[0].call_id == "toolu_big_manual"
+    assert ttl_records[0].ttl == 0
+    assert ttl_records[0].source == "manual"
+
+
+async def test_forget_tool_result_handles_image_results(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(
+        tmp_path,
+        HomunculusConfig(tool_result_ttl_char_threshold=10_000),
+    )
+    call = IRToolCallBlock(call_id="toolu_image_manual", tool="Read", input={})
+    result = _image_tool_result(
+        tmp_path,
+        "toolu_image_manual",
+        image_bytes=b"manual-image",
+        display={"kind": "text", "title": "Read Image", "body": "manual UI capture"},
+    )
+    await homunculus.rehydrate(
+        _rehydrated(
+            tmp_path,
+            blocks=[call, result],
+            semantic_blocks=[],
+        )
+    )
+
+    message = await homunculus.forget_tool_result("toolu_image")
+    ctx = RoundContext(
+        blocks=[call, result],
+        round_number=1,
+        cancel_token=CancelToken(),
+        blocks_this_round=[],
+    )
+    await HomunculusRoundLifecycle(homunculus).between_rounds(ctx)
+
+    assert "Tool result toolu_image_manual successfully forgotten." in message
+    assert "Image stored at blobs/capture.png" in message
+    assert "Details saved to tool-outputs/toolu_image_manual.txt" in message
+    manifest = (tmp_path / "tool-outputs" / "toolu_image_manual.txt").read_text()
+    assert "manual UI capture" in manifest
+    assert "size=12B" in manifest
+    assert ctx.blocks[0] == call
+    collapsed = ctx.blocks[1]
+    assert isinstance(collapsed, IRToolResultBlock)
+    assert collapsed.content == [
+        IRToolTextBlock(
+            text="[Read Image: 1 image / 12B. Image stored at blobs/capture.png. Details saved to tool-outputs/toolu_image_manual.txt]"
+        )
+    ]
+
+    ttl_records = [
+        record
+        for record in _read_records(transcript)
+        if isinstance(record, IRToolResultTTLRecord)
+    ]
+    assert len(ttl_records) == 1
+    assert ttl_records[0].call_id == "toolu_image_manual"
     assert ttl_records[0].ttl == 0
     assert ttl_records[0].source == "manual"
 
