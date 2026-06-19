@@ -74,6 +74,22 @@ def _assistant(text: str) -> IRAssistantTextBlock:
     return IRAssistantTextBlock(text=text, origin="model")
 
 
+def _tool_call(call_id: str, tool: str = "Bash") -> IRToolCallBlock:
+    return IRToolCallBlock(call_id=call_id, tool=tool, input={})
+
+
+def _tool_result(
+    call_id: str,
+    tool: str = "Bash",
+    text: str = "ok",
+) -> IRToolResultBlock:
+    return IRToolResultBlock(
+        call_id=call_id,
+        tool=tool,
+        content=[IRToolTextBlock(text=text)],
+    )
+
+
 def _collapse_tool_results(blocks: Sequence[Any]) -> list[Any]:
     projected = []
     for block in blocks:
@@ -527,6 +543,180 @@ class TestRehydrate:
         assert detector._accumulated_start_block_id is None
         assert detector._counter == 0
         assert detector._context_buffer == []
+
+
+class TestToolPairBoundaryNormalization:
+    def test_completed_range_expands_over_split_tool_result(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path)
+        detector._accumulated = [
+            _user("start"),
+            _tool_call("toolu_1"),
+            _tool_result("toolu_1"),
+            _assistant("after"),
+        ]
+        detector._accumulated_start_block_id = 0
+
+        integration = detector.simulate_result(
+            BlockDetectorResult(
+                completed=[
+                    IRSemanticBlockRange(
+                        title="call side",
+                        start_block=0,
+                        end_block=1,
+                    ),
+                    IRSemanticBlockRange(
+                        title="result side",
+                        start_block=2,
+                        end_block=3,
+                    ),
+                ],
+                still_buffered=[],
+            )
+        )
+
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.completed
+        ] == [
+            ("call side", 0, 2),
+            ("result side", 3, 3),
+        ]
+        assert integration.result.still_buffered == []
+
+    def test_completed_range_expands_into_raw_tail(self, tmp_path: Path) -> None:
+        detector = _make_detector(tmp_path)
+        detector._accumulated = [
+            _user("start"),
+            _tool_call("toolu_tail"),
+            _tool_result("toolu_tail"),
+        ]
+        detector._accumulated_start_block_id = 0
+
+        integration = detector.simulate_result(
+            BlockDetectorResult(
+                completed=[
+                    IRSemanticBlockRange(
+                        title="needs tail",
+                        start_block=0,
+                        end_block=1,
+                    )
+                ],
+                still_buffered=[],
+            )
+        )
+
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.completed
+        ] == [("needs tail", 0, 2)]
+
+    def test_completed_range_absorbs_split_buffered_result(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path)
+        detector._accumulated = [
+            _user("start"),
+            _tool_call("toolu_buffered"),
+            _tool_result("toolu_buffered"),
+            _assistant("after"),
+        ]
+        detector._accumulated_start_block_id = 0
+
+        integration = detector.simulate_result(
+            BlockDetectorResult(
+                completed=[
+                    IRSemanticBlockRange(
+                        title="completed call side",
+                        start_block=0,
+                        end_block=1,
+                    )
+                ],
+                still_buffered=[
+                    IRSemanticBlockRange(
+                        title="buffered result side",
+                        start_block=2,
+                        end_block=3,
+                    )
+                ],
+            )
+        )
+
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.completed
+        ] == [("completed call side", 0, 2)]
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.result.still_buffered
+        ] == [("buffered result side", 3, 3)]
+
+    def test_parallel_tool_call_batch_closes_to_all_results(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path)
+        detector._accumulated = [
+            _user("start"),
+            _tool_call("toolu_a"),
+            _tool_call("toolu_b"),
+            _tool_call("toolu_c"),
+            _tool_result("toolu_a"),
+            _tool_result("toolu_b"),
+            _tool_result("toolu_c"),
+            _assistant("after"),
+        ]
+        detector._accumulated_start_block_id = 0
+
+        integration = detector.simulate_result(
+            BlockDetectorResult(
+                completed=[
+                    IRSemanticBlockRange(
+                        title="first call only",
+                        start_block=0,
+                        end_block=1,
+                    ),
+                    IRSemanticBlockRange(
+                        title="rest",
+                        start_block=2,
+                        end_block=7,
+                    ),
+                ],
+                still_buffered=[],
+            )
+        )
+
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.completed
+        ] == [
+            ("first call only", 0, 6),
+            ("rest", 7, 7),
+        ]
+
+    def test_open_tool_call_is_not_finalized(self, tmp_path: Path) -> None:
+        detector = _make_detector(tmp_path)
+        detector._accumulated = [_user("start"), _tool_call("toolu_open")]
+        detector._accumulated_start_block_id = 0
+
+        integration = detector.simulate_result(
+            BlockDetectorResult(
+                completed=[
+                    IRSemanticBlockRange(
+                        title="open call",
+                        start_block=0,
+                        end_block=1,
+                    )
+                ],
+                still_buffered=[],
+            )
+        )
+
+        assert integration.completed == []
+        assert [
+            (block.title, block.start_block, block.end_block)
+            for block in integration.result.still_buffered
+        ] == [("open call", 0, 1)]
 
 
 class TestDetectorToolMetadata:

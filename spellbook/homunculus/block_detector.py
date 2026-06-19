@@ -44,6 +44,8 @@ from spellbook.homunculus.common import render_context_block
 from spellbook.ir_types import (
     IRBlock,
     IRSemanticBlockRange,
+    IRToolCallBlock,
+    IRToolResultBlock,
     IRUserTextBlock,
 )
 from spellbook.recorder import Recorder
@@ -155,6 +157,10 @@ class BlockDetector:
         completed = self._sort_ranges(result.completed)
         still_buffered = self._sort_ranges(result.still_buffered)
         self._validate_ranges_in_known_context([*completed, *still_buffered])
+        completed, still_buffered = self._normalize_tool_pair_ranges(
+            completed,
+            still_buffered,
+        )
 
         accepted, deferred = self._split_completed_prefix(completed)
         buffer_start = self._next_block_after(accepted)
@@ -231,6 +237,108 @@ class BlockDetector:
                     f"{first}-{last}."
                 )
 
+    def _normalize_tool_pair_ranges(
+        self,
+        completed: Sequence[IRSemanticBlockRange],
+        still_buffered: Sequence[IRSemanticBlockRange],
+    ) -> tuple[list[IRSemanticBlockRange], list[IRSemanticBlockRange]]:
+        if not completed and not still_buffered:
+            return [], []
+
+        call_positions, result_positions = self._tool_pair_positions()
+        normalized_completed: list[IRSemanticBlockRange] = []
+        normalized_buffered: list[IRSemanticBlockRange] = []
+        previous_end: int | None = None
+
+        draft_ranges: list[tuple[IRSemanticBlockRange, str]] = [
+            *((block, "completed") for block in completed),
+            *((block, "buffered") for block in still_buffered),
+        ]
+
+        for block, source in sorted(
+            draft_ranges, key=lambda item: (item[0].start_block, item[0].end_block)
+        ):
+            start_block = block.start_block
+            end_block = block.end_block
+            if previous_end is not None and start_block <= previous_end:
+                start_block = previous_end + 1
+            if start_block > end_block:
+                continue
+
+            end_block, has_open_pair = self._close_tool_pair_range(
+                start_block,
+                end_block,
+                call_positions=call_positions,
+                result_positions=result_positions,
+            )
+            normalized = block.model_copy(
+                update={
+                    "start_block": start_block,
+                    "end_block": end_block,
+                }
+            )
+            if source == "completed" and has_open_pair:
+                normalized_buffered.append(normalized)
+            elif source == "completed":
+                normalized_completed.append(normalized)
+            else:
+                normalized_buffered.append(normalized)
+            previous_end = end_block
+
+        return normalized_completed, normalized_buffered
+
+    def _tool_pair_positions(self) -> tuple[dict[str, int], dict[str, int]]:
+        call_positions: dict[str, int] = {}
+        result_positions: dict[str, int] = {}
+        if self._accumulated_start_block_id is None:
+            return call_positions, result_positions
+
+        for offset, block in enumerate(self._accumulated):
+            block_id = self._accumulated_start_block_id + offset
+            if isinstance(block, IRToolCallBlock):
+                call_positions[block.call_id] = block_id
+            elif isinstance(block, IRToolResultBlock):
+                result_positions[block.call_id] = block_id
+        return call_positions, result_positions
+
+    def _close_tool_pair_range(
+        self,
+        start_block: int,
+        end_block: int,
+        *,
+        call_positions: dict[str, int],
+        result_positions: dict[str, int],
+    ) -> tuple[int, bool]:
+        has_open_pair = False
+
+        while True:
+            changed = False
+            for _block_id, block in self._iter_raw_blocks_for_range(
+                start_block,
+                end_block,
+            ):
+                if isinstance(block, IRToolCallBlock):
+                    result_block = result_positions.get(block.call_id)
+                    if result_block is None:
+                        has_open_pair = True
+                    elif result_block > end_block:
+                        end_block = result_block
+                        changed = True
+                    elif result_block < start_block:
+                        has_open_pair = True
+                elif isinstance(block, IRToolResultBlock):
+                    call_block = call_positions.get(block.call_id)
+                    if call_block is None:
+                        has_open_pair = True
+                    elif call_block > end_block:
+                        end_block = call_block
+                        changed = True
+                    elif call_block < start_block:
+                        has_open_pair = True
+
+            if not changed:
+                return end_block, has_open_pair
+
     def _split_completed_prefix(
         self, completed: Sequence[IRSemanticBlockRange]
     ) -> tuple[list[IRSemanticBlockRange], list[IRSemanticBlockRange]]:
@@ -293,6 +401,8 @@ Completed semantic blocks are finalized history.
 Buffered semantic blocks are draft groupings from the current detection window and may be amended or completed.
 Context block buffer contains the remaining ungrouped context blocks.
 Use block ids and ranges exactly as rendered.
+Never put a semantic block boundary between a tool call and its matching tool result.
+Treat parallel tool-call batches and their result batches as indivisible until every call/result pair is contained in the same semantic range.
 """
         if finalize:
             instructions += """This is an EOF finalization pass for an offline replay artifact.
@@ -343,6 +453,17 @@ Blocks proposed or amended in this detector session still cannot be completed un
     def _iter_blocks_for_range(
         self, start_block: int, end_block: int
     ) -> list[tuple[int, IRBlock]]:
+        raw_blocks = self._iter_raw_blocks_for_range(start_block, end_block)
+        if not raw_blocks:
+            return []
+        projected = self._project_blocks([block for _, block in raw_blocks])
+        return [
+            (block_id, block) for (block_id, _), block in zip(raw_blocks, projected)
+        ]
+
+    def _iter_raw_blocks_for_range(
+        self, start_block: int, end_block: int
+    ) -> list[tuple[int, IRBlock]]:
         if self._accumulated_start_block_id is None:
             return []
         start_offset = start_block - self._accumulated_start_block_id
@@ -350,8 +471,7 @@ Blocks proposed or amended in this detector session still cannot be completed un
         if start_offset < 0 or end_offset < start_offset:
             return []
         sliced = self._accumulated[start_offset : end_offset + 1]
-        projected = self._project_blocks(sliced)
-        return [(start_block + i, block) for i, block in enumerate(projected)]
+        return [(start_block + i, block) for i, block in enumerate(sliced)]
 
     def _project_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
         projected = self._context_projector(blocks)
