@@ -30,6 +30,7 @@ from spellbook.ir_types import (
     IRSemanticBlockRange,
     IRSkillCatalog,
     IRSkillCatalogUpdateRecord,
+    IRTurnEndRecord,
     IRToolCallBlock,
     IRToolResultBlock,
     IRToolTextBlock,
@@ -38,7 +39,7 @@ from spellbook.ir_types import (
     StopReason,
 )
 from spellbook.nursery import Nursery
-from spellbook.recorder import Recorder
+from spellbook.recorder import Recorder, RecordingRoundLifecycle
 from spellbook.rehydrator import RehydrationResult, Rehydrator
 from spellbook.round_lifecycle import (
     CompositeRoundLifecycle,
@@ -114,6 +115,24 @@ class _FakeGenerator:
         if not self._queue:
             raise RuntimeError("FakeGenerator ran out of responses")
         return self._queue.pop(0)
+
+
+class _CancelAwareGenerator:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def run(
+        self,
+        blocks: list[IRBlock],
+        cancel_token: CancelToken,
+        lifecycle: RoundLifecycle,
+    ) -> IRGeneration:
+        self.started.set()
+        await cancel_token.wait_cancelled()
+        return _gen(
+            blocks=[IRAssistantTextBlock(text="partial", origin="model")],
+            stop_reason="cancelled",
+        )
 
 
 class _FakeExecutor:
@@ -453,6 +472,42 @@ class TestInboundQueueSemantics:
         assert lifecycle.events[0] == ("on_enter_idle", None)
         assert ("on_shutdown", None) in lifecycle.events
         assert ("on_exit_idle", "shutdown") in lifecycle.events
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_active_turn_and_records_cancelled_end(
+        self, tmp_path: Path
+    ) -> None:
+        generator = _CancelAwareGenerator()
+        manager = _make_manager(
+            tmp_path,
+            generator=cast(Generator, generator),
+        )
+        manager.round_lifecycle = RecordingRoundLifecycle(manager.recorder)
+        await manager.submit_message(_user_msg("hello"))
+
+        task = asyncio.create_task(manager.run())
+        await asyncio.wait_for(generator.started.wait(), timeout=1)
+
+        await manager.shutdown()
+        await asyncio.wait_for(task, timeout=1)
+
+        rehydrated = Rehydrator(manager.transcript_path).run()
+        block_records = [
+            record for record in rehydrated.records if isinstance(record, IRBlockRecord)
+        ]
+        turn_ends = [
+            record
+            for record in rehydrated.records
+            if isinstance(record, IRTurnEndRecord)
+        ]
+        texts: list[str] = []
+        for record in block_records:
+            assert isinstance(record.event, (IRUserTextBlock, IRAssistantTextBlock))
+            texts.append(record.event.text)
+
+        assert manager.state == "suspended"
+        assert texts == ["hello", "partial"]
+        assert turn_ends[-1].stop_reason == "cancelled"
 
 
 class TestInboundInjectionRoundLifecycle:

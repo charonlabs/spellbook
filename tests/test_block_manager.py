@@ -1219,3 +1219,25 @@ async def test_stale_summary_result_is_discarded_but_fork_is_shutdown(
         "Already summarized"
     ]
     assert summarizer.integrated_forks == ["summarizer_0"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_nursery_records_cancelled_fork_shutdown() -> None:
+    manager, _, _, fork_runner = _manager()
+    never = asyncio.Event()
+
+    async def _wait_forever() -> BlockDetectorResult:
+        await never.wait()
+        return BlockDetectorResult(completed=[], still_buffered=[])
+
+    manager._nursery.submit(  # noqa: SLF001 - verifies shutdown owner behavior
+        _wait_forever(),
+        kind="detect_blocks",
+        source="block_manager",
+        metadata={"fork_id": "detector_shutdown"},
+    )
+
+    await manager.shutdown_nursery()
+
+    assert fork_runner.integrated_forks == ["detector_shutdown"]
+    assert manager._nursery.jobs() == []  # noqa: SLF001

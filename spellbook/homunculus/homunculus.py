@@ -411,6 +411,9 @@ class Homunculus:
     async def check_nursery(self) -> None:
         await self._block_manager.check_nursery()
 
+    async def shutdown(self) -> None:
+        await self._block_manager.shutdown_nursery()
+
     async def check_planner(self) -> None:
         if self._gas_gauge.input_tokens is None:
             return  # invalid, wait for next round

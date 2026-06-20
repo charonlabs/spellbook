@@ -4,7 +4,9 @@ import logging
 from pathlib import Path
 from typing import cast
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from spellbook.app.event_bus import AppEventBus
 from spellbook.app.protocol import (
     AwarenessResponse,
@@ -61,6 +63,7 @@ class _FakeRuntime:
         self.bus = AppEventBus()
         self.started = False
         self.shutdown_called = False
+        self.shutdown_calls = 0
         self.interrupt_called = False
         self.submitted: list[IRInboundMessage] = []
         self.conduits: list[dict] = []
@@ -73,6 +76,7 @@ class _FakeRuntime:
 
     async def shutdown(self) -> None:
         self.shutdown_called = True
+        self.shutdown_calls += 1
         self.bus.close()
 
     def build_health(self) -> HealthResponse:
@@ -143,7 +147,11 @@ class _FakeRuntime:
         return True
 
 
-def _make_app(tmp_path: Path) -> tuple[TestClient, _FakeRuntime]:
+def _make_app(
+    tmp_path: Path,
+    *,
+    shutdown_requester=None,
+) -> tuple[TestClient, _FakeRuntime]:
     runtime = _FakeRuntime(tmp_path)
 
     def _factory(
@@ -157,6 +165,7 @@ def _make_app(tmp_path: Path) -> tuple[TestClient, _FakeRuntime]:
         transcript_path=tmp_path / "transcript.jsonl",
         config=_config(tmp_path),
         runtime_factory=_factory,
+        shutdown_requester=shutdown_requester,
         log_level=None,
     )
     return TestClient(app), runtime
@@ -322,6 +331,26 @@ def test_health_catchup_message_and_interrupt_routes(tmp_path: Path) -> None:
     assert runtime.submitted[0].source_metadata == {"source": "web"}
 
 
+def test_shutdown_route_stops_runtime_and_requests_process_shutdown(
+    tmp_path: Path,
+) -> None:
+    shutdown_requests: list[str] = []
+    client, runtime = _make_app(
+        tmp_path,
+        shutdown_requester=lambda: shutdown_requests.append("requested"),
+    )
+
+    with client:
+        response = client.post("/shutdown")
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "shutdown"
+    assert response.json()["shutdown"] is True
+    assert runtime.shutdown_called is True
+    assert runtime.shutdown_calls >= 1
+    assert shutdown_requests == ["requested"]
+
+
 def test_message_rejects_empty_and_unknown_fields(tmp_path: Path) -> None:
     client, runtime = _make_app(tmp_path)
 
@@ -443,3 +472,21 @@ def test_websocket_can_skip_catchup(tmp_path: Path) -> None:
 
     assert runtime.full_catchup_calls == 0
     assert runtime.lite_catchup_calls == 0
+
+
+def test_shutdown_route_closes_websocket_subscriptions(tmp_path: Path) -> None:
+    shutdown_requests: list[str] = []
+    client, runtime = _make_app(
+        tmp_path,
+        shutdown_requester=lambda: shutdown_requests.append("requested"),
+    )
+
+    with client:
+        with client.websocket_connect("/ws?catchup=none") as ws:
+            response = client.post("/shutdown")
+            assert response.status_code == 200
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+    assert runtime.shutdown_called is True
+    assert shutdown_requests == ["requested"]

@@ -181,6 +181,13 @@ class InterruptResponse(BaseModel, frozen=True):
     interrupted: bool
 
 
+class ShutdownResponse(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["shutdown"] = "shutdown"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    shutdown: bool = True
+
+
 class ConduitResponse(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["conduit"] = "conduit"

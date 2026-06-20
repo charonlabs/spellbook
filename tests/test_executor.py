@@ -8,6 +8,7 @@ blocks — never exceptions bubbling out of run().
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -314,3 +315,66 @@ class TestOneToOneInvariant:
         # Every result's call_id matches its corresponding call
         for call, block in zip(calls, result.blocks):
             assert call.call_id == block.call_id
+
+
+class TestCancellation:
+    @pytest.mark.asyncio
+    async def test_cancels_running_tool_and_marks_remaining_calls(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        never = asyncio.Event()
+
+        class _WaitInput(BaseModel):
+            pass
+
+        async def _exec_wait(
+            meta: ToolMetadata, input: _WaitInput
+        ) -> ToolExecutionResult:
+            started.set()
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return ToolExecutionResult(content=[IRToolTextBlock(text="late")])
+
+        wait_tool: Tool[_WaitInput] = Tool(
+            name="Wait",
+            input_model=_WaitInput,
+            exec=_exec_wait,
+            category="filesystem",
+        )
+        executor = _make_executor(wait_tool, ECHO_TOOL)
+        token = CancelToken()
+        task = asyncio.create_task(
+            executor.run(
+                [
+                    IRToolCallBlock(
+                        origin="model",
+                        call_id="toolu_wait",
+                        tool="Wait",
+                        input={},
+                    ),
+                    IRToolCallBlock(
+                        origin="model",
+                        call_id="toolu_echo",
+                        tool="Echo",
+                        input={"message": "after"},
+                    ),
+                ],
+                token,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        token.cancel()
+        result = await asyncio.wait_for(task, timeout=1)
+
+        assert cancelled.is_set()
+        assert result.cancelled_early is True
+        assert [block.call_id for block in result.blocks] == [
+            "toolu_wait",
+            "toolu_echo",
+        ]
+        assert all(block.is_error for block in result.blocks)
+        assert "interrupted" in _result_text(result.blocks[0])

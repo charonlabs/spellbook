@@ -104,6 +104,7 @@ class SessionManager:
             if not self._shutdown_requested:
                 await self._running_phase()
         self.state = "suspended"
+        await self.homunculus.shutdown()
         await self.session_lifecycle.on_shutdown(self._ctx)
 
     async def _shutdown_from_idle(self) -> None:
@@ -151,8 +152,9 @@ class SessionManager:
 
     async def shutdown(self) -> None:
         self._shutdown_requested = True
+        if self.cancel_token is not None:
+            self.cancel_token.cancel()
         await self.inbound_queue.shutdown_queue()
-        await self.nursery.shutdown(cancel=True)
 
     async def get_tool_meta(self) -> ToolMetadata:
         return self.executor.meta

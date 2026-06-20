@@ -63,6 +63,8 @@ class CoreAppRuntime:
         self._session: SessionManager | None = None
         self._session_task: asyncio.Task[None] | None = None
         self._command_lock = asyncio.Lock()
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
         self._last_active_surface: str | None = None
         self._last_surface_time: datetime | None = None
         self._last_reported_surface: str | None = None
@@ -456,23 +458,28 @@ class CoreAppRuntime:
 
     async def shutdown(self) -> None:
         """Stop the session loop and close live subscriptions."""
-        session = self._session
-        task = self._session_task
-        self._session_task = None
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
 
-        if session is not None:
-            await session.shutdown()
+            session = self._session
+            task = self._session_task
+            self._session_task = None
 
-        if task is not None:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                self.bus.close()
-                raise
+            if session is not None:
+                await session.shutdown()
 
-        self.bus.close()
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    self.bus.close()
+                    raise
+
+            self.bus.close()
+            self._shutdown_complete = True
 
     def _on_session_task_done(self, task: asyncio.Task[None]) -> None:
         if self._session_task is not task:

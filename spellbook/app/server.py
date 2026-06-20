@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
+import signal
 import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import AsyncIterator, Callable, Literal, cast
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 
 from spellbook.app.protocol import (
@@ -20,6 +29,7 @@ from spellbook.app.protocol import (
     ConduitResponse,
     HealthResponse,
     InterruptResponse,
+    ShutdownResponse,
     SubmitMessageBody,
     SubmitMessageResponse,
     WebSocketCatchupMode,
@@ -32,6 +42,7 @@ from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 RuntimeFactory = Callable[
     [Path, SpellbookConfig | None, CustomSurface | None], CoreAppRuntime
 ]
+ShutdownRequester = Callable[[], None]
 AppLogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 APP_LOGGER_NAME = "spellbook"
 APP_LOG_HANDLER_NAME = "spellbook-core-app-stderr"
@@ -55,6 +66,10 @@ def _default_runtime_factory(
     return CoreAppRuntime(
         transcript_path=transcript_path, config=config, custom_surface=custom_surface
     )
+
+
+def _request_process_shutdown() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _enable_faulthandler() -> None:
@@ -114,6 +129,7 @@ def create_app(
     config: SpellbookConfig | None = None,
     custom_surface: CustomSurface | None = None,
     runtime_factory: RuntimeFactory = _default_runtime_factory,
+    shutdown_requester: ShutdownRequester | None = _request_process_shutdown,
     log_level: AppLogLevel | int | None = "info",
 ) -> FastAPI:
     """Create a FastAPI app around one `CoreAppRuntime`."""
@@ -228,6 +244,18 @@ def create_app(
         interrupted = await _runtime_from_request(request).interrupt()
         logger.info("interrupt.routed interrupted=%s", interrupted)
         return InterruptResponse(interrupted=interrupted)
+
+    @app.post("/shutdown")
+    async def handle_shutdown(
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ) -> ShutdownResponse:
+        logger.info("shutdown.received")
+        await _runtime_from_request(request).shutdown()
+        logger.info("shutdown.runtime_complete")
+        if shutdown_requester is not None:
+            background_tasks.add_task(shutdown_requester)
+        return ShutdownResponse()
 
     @app.websocket("/ws")
     async def handle_ws(websocket: WebSocket) -> None:

@@ -76,6 +76,7 @@ class BlockManager:
         self.semantic_blocks: list[IRSemanticBlock] = []  # This should stay ordered
         self.context_blocks: list[IRBlock] = []
         self.next_block_id = 0
+        self._accept_background_work = True
 
     @property
     def proposed_semantic_blocks(self) -> list[IRSemanticBlockRange]:
@@ -526,7 +527,7 @@ class BlockManager:
                 source="detector",
                 key=new_block.id,
             )
-            if self._enable_block_metrics:
+            if self._accept_background_work and self._enable_block_metrics:
                 key = f"metrics:{new_block.id}"
                 if self._nursery.get_by_key(key) is not None:
                     continue
@@ -541,7 +542,7 @@ class BlockManager:
                         "block_idx": new_block.idx,
                     },
                 )
-        if new_blocks:
+        if self._accept_background_work and new_blocks:
             await self.generate_next_summary()
 
     def _semantic_blocks_for_completed(
@@ -615,6 +616,8 @@ class BlockManager:
         return True
 
     def _submit_detection(self, prepared: PreparedFork) -> None:
+        if not self._accept_background_work:
+            return
         self._nursery.submit(
             prepared.coro,
             kind="detect_blocks",
@@ -661,6 +664,8 @@ class BlockManager:
 
     async def generate_next_summary(self) -> None:
         """Generate summary for the next completed block without a summary artifact."""
+        if not self._accept_background_work:
+            return
         prev: list[IRSemanticBlock] = []
         for block in self.semantic_blocks:
             if "summary" in block.available_modes:
@@ -831,6 +836,12 @@ class BlockManager:
 
         ready = self._nursery.collect_ready(source="block_manager")
         for result in ready:
+            await self._integrate_nursery_result(result)
+
+    async def shutdown_nursery(self) -> None:
+        self._accept_background_work = False
+        results = await self._nursery.shutdown(cancel=True)
+        for result in results:
             await self._integrate_nursery_result(result)
 
     async def _wait_for_jobs(self) -> None:

@@ -385,6 +385,11 @@ async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult
         await proc.wait()
         partial_output = b"".join(collected).decode(errors="replace").rstrip()
         raise ToolError(f"Command timed out after {timeout_s:.0f}s\n{partial_output}")
+    except asyncio.CancelledError:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     duration_ms = int((perf_counter() - start) * 1000)
     output = b"".join(collected).decode(errors="replace").rstrip()
     if proc.returncode != 0:

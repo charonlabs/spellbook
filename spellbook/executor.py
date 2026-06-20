@@ -19,6 +19,8 @@ threaded into tool execution itself.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,7 +70,14 @@ class Executor:
         results for calls that didn't run will include an error reporting execution was interrupted
         before running, kind of like the existing interrupt error result path."""
         result_blocks: list[IRToolResultBlock] = []
-        for call in calls:
+        cancelled_early = False
+        for idx, call in enumerate(calls):
+            if cancel_token.cancelled:
+                cancelled_early = True
+                result_blocks.extend(
+                    self._cancelled_result_block(pending) for pending in calls[idx:]
+                )
+                break
             try:
                 tool = self._registry.get(call.tool)
                 if tool is None:
@@ -79,7 +88,27 @@ class Executor:
                     raise ToolError(
                         f"Error validation tool input arguments:\n{str(e)}"
                     ) from e
-                exec_result = await tool.exec(self.meta, validated_input)
+                exec_task = asyncio.ensure_future(tool.exec(self.meta, validated_input))
+                cancel_task = asyncio.create_task(cancel_token.wait_cancelled())
+                done, _ = await asyncio.wait(
+                    {exec_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if exec_task in done:
+                    cancel_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await cancel_task
+                    exec_result = exec_task.result()
+                else:
+                    cancelled_early = True
+                    exec_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await exec_task
+                    result_blocks.append(self._cancelled_result_block(call))
+                    result_blocks.extend(
+                        self._cancelled_result_block(pending)
+                        for pending in calls[idx + 1 :]
+                    )
+                    break
                 result_blocks.append(
                     IRToolResultBlock(
                         call_id=call.call_id,
@@ -98,4 +127,12 @@ class Executor:
                     )
                 )
 
-        return IRExecution(blocks=result_blocks)
+        return IRExecution(blocks=result_blocks, cancelled_early=cancelled_early)
+
+    def _cancelled_result_block(self, call: IRToolCallBlock) -> IRToolResultBlock:
+        return IRToolResultBlock(
+            call_id=call.call_id,
+            tool=call.tool,
+            content=[IRToolTextBlock(text="Tool execution interrupted by shutdown.")],
+            is_error=True,
+        )
