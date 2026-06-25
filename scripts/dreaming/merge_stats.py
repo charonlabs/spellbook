@@ -226,7 +226,11 @@ def _display_title(block: IRSemanticBlock) -> str:
 
 def _summary_artifact(block: IRSemanticBlock) -> IRSemanticBlockSummary | None:
     return next(
-        (artifact for artifact in block.artifacts if artifact.type == "summary"),
+        (
+            artifact
+            for artifact in block.artifacts
+            if isinstance(artifact, IRSemanticBlockSummary)
+        ),
         None,
     )
 

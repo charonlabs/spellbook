@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from scripts.dreaming.drain_block_backlog import (
@@ -17,6 +17,7 @@ from spellbook.fork import (
     BlockSummarizerConfig,
     BlockSummarizerResult,
     ForkConfig,
+    ForkRunner,
     ForkResult,
     PreparedFork,
 )
@@ -210,7 +211,7 @@ def _runtime_builder(
     fork_runner = _FakeForkRunner(recorder, transcript_path)
     manager = BlockManager(
         config=config.hom_config,
-        fork_runner=fork_runner,  # type: ignore[arg-type]
+        fork_runner=cast(ForkRunner, fork_runner),
         footer_c=FooterController(
             inbound_queue=InboundMessageQueue(),
             recorder=recorder,

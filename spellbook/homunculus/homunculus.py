@@ -32,6 +32,7 @@ from ..ir_types import (
     IRCompactBlockIntent,
     IRExecution,
     IRGeneration,
+    IRSemanticBlockSummary,
     IRToolResultBlock,
     SemanticBlockApplyModeSource,
     StopReason,
@@ -170,7 +171,10 @@ class Homunculus:
             )
             if b.pin is not None:
                 block_displays.append(f"- pinned: {b.pin.reason}")
-            summary = next((a for a in b.artifacts if a.type == "summary"), None)
+            summary = next(
+                (a for a in b.artifacts if isinstance(a, IRSemanticBlockSummary)),
+                None,
+            )
             if summary is not None and summary.facets:
                 facet_pins = {
                     pin.facet_id: pin

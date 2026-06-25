@@ -23,7 +23,7 @@ from scripts.dreaming.merge_stats import (
 from spellbook.backends import infer_provider_for_model
 from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.custom import CustomSurface
-from spellbook.ir_types import IRToolTextBlock
+from spellbook.ir_types import IRSemanticBlockSummary, IRToolTextBlock
 from spellbook.rehydrator import RehydrationResult, Rehydrator
 from spellbook.sdk import Spell
 from spellbook.tools.common import Tool, ToolExecutionResult, ToolMetadata
@@ -410,7 +410,11 @@ def _summaries_markdown(rehydrated: RehydrationResult, pair: Pair) -> str:
         if block is None:
             raise ValueError(f"Semantic block {block_idx} not found.")
         summary = next(
-            (artifact for artifact in block.artifacts if artifact.type == "summary"),
+            (
+                artifact
+                for artifact in block.artifacts
+                if isinstance(artifact, IRSemanticBlockSummary)
+            ),
             None,
         )
         if summary is None:

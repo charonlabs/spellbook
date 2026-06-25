@@ -754,8 +754,10 @@ async def test_generated_summary_adds_summary_available_mode(tmp_path: Path) -> 
 
     assert manager.semantic_blocks[0].available_modes == ["full", "summary"]
     assert "summmary" not in manager.semantic_blocks[0].available_modes
-    assert manager.semantic_blocks[0].artifacts[0].headline == "Summary for First"
-    assert manager.semantic_blocks[0].artifacts[0].toks == IRTokenRangeCount(
+    artifact = manager.semantic_blocks[0].artifacts[0]
+    assert isinstance(artifact, IRSemanticBlockSummary)
+    assert artifact.headline == "Summary for First"
+    assert artifact.toks == IRTokenRangeCount(
         tokens=10,
         method="api",
         exact=True,
@@ -1215,9 +1217,12 @@ async def test_stale_summary_result_is_discarded_but_fork_is_shutdown(
     await _settle()
     await manager.check_nursery()
 
-    assert [artifact.headline for artifact in manager.semantic_blocks[0].artifacts] == [
-        "Already summarized"
+    summaries = [
+        artifact
+        for artifact in manager.semantic_blocks[0].artifacts
+        if isinstance(artifact, IRSemanticBlockSummary)
     ]
+    assert [artifact.headline for artifact in summaries] == ["Already summarized"]
     assert summarizer.integrated_forks == ["summarizer_0"]
 
 

@@ -21,6 +21,7 @@ from spellbook.config import SpellbookConfig
 from spellbook.fork import BlockDetectorResult
 from spellbook.ir_types import (
     IRAssistantTextBlock,
+    IRBlock,
     IRSemanticBlock,
     IRSemanticBlockFacet,
     IRSemanticBlockPin,
@@ -321,7 +322,7 @@ async def test_run_compile_writes_json_and_markdown_with_fake_sanity(
         encoding="utf-8",
     )
 
-    async def fake_count(blocks: list[object]) -> int:
+    async def fake_count(blocks: list[IRBlock]) -> int:
         tool_result_texts = [
             content.text
             for block in blocks
@@ -371,7 +372,8 @@ async def test_run_compile_writes_json_and_markdown_with_fake_sanity(
     assert data["compiled"]["ir_blocks"][0]["origin"] == "memory"
     raw_json = json.dumps(data["compiled"]["ir_blocks"])
     assert "large pinned output" in raw_json
-    preview = result.preview_path.read_text(encoding="utf-8")  # type: ignore[union-attr]
+    assert result.preview_path is not None
+    preview = result.preview_path.read_text(encoding="utf-8")
     assert "Pinned user" in preview
     assert "[Read: pinned output collapsed by TTL]" in preview
     assert "large pinned output" not in preview
@@ -397,7 +399,7 @@ async def test_run_compile_reports_unmatched_pin_with_nearby_lines(
         encoding="utf-8",
     )
 
-    async def fake_count(blocks: list[object]) -> int:
+    async def fake_count(blocks: list[IRBlock]) -> int:
         return len(blocks)
 
     report = await run_compile(

@@ -250,7 +250,7 @@ async def _run_results_with_progress(
     description: str,
     show_progress: bool,
 ) -> list[RestoreResult]:
-    tasks = [asyncio.create_task(coro) for coro in coros]
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
     results: list[RestoreResult | None] = [None] * len(plans)
     if not tasks:
         return []

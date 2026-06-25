@@ -147,7 +147,7 @@ async def test_run_restore_with_fake_edit_runner(
     chapter.write_text("# Chapter\n\nBody.\n\n## Anchors\n", encoding="utf-8")
 
     async def fake_merge_stats(**kwargs: object) -> MergeStatsReport:
-        render_path = Path(kwargs["render_path"])
+        render_path = Path(str(kwargs["render_path"]))
         render_path.parent.mkdir(parents=True, exist_ok=True)
         render_path.write_text("# Render\n\nsource blocks", encoding="utf-8")
         return _stats(transcript, render_path.resolve())
@@ -201,7 +201,7 @@ async def test_run_restore_flags_write_usage(tmp_path: Path) -> None:
     chapter.write_text("# Chapter\n", encoding="utf-8")
 
     async def fake_merge_stats(**kwargs: object) -> MergeStatsReport:
-        render_path = Path(kwargs["render_path"])
+        render_path = Path(str(kwargs["render_path"]))
         render_path.parent.mkdir(parents=True, exist_ok=True)
         render_path.write_text("# Render\n", encoding="utf-8")
         return _stats(transcript, render_path.resolve())

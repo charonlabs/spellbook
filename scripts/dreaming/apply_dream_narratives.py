@@ -8,7 +8,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import TypeAdapter
 from scripts.dreaming.dream_merge import DEFAULT_DREAM_CHAPTER_DIR
@@ -375,7 +375,7 @@ def _load_compiled(path: Path) -> dict[str, object]:
         raise ValueError(f"Compiled chapter JSON is invalid: {path}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Compiled chapter JSON must be an object: {path}")
-    return data
+    return cast(dict[str, object], data)
 
 
 def _validate_compiled_target(
@@ -385,15 +385,16 @@ def _validate_compiled_target(
     pair: tuple[int, int],
 ) -> None:
     chapter_obj = compiled.get("chapter")
-    if (
-        not isinstance(chapter_obj, dict)
-        or int(chapter_obj.get("number", -1)) != chapter
-    ):
+    if not isinstance(chapter_obj, dict):
+        raise ValueError(f"Compiled chapter number does not match chapter {chapter}.")
+    chapter_obj = cast(dict[str, object], chapter_obj)
+    if _int_value(chapter_obj.get("number"), default=-1) != chapter:
         raise ValueError(f"Compiled chapter number does not match chapter {chapter}.")
 
     target = compiled.get("target")
     if not isinstance(target, dict):
         raise ValueError(f"Compiled chapter {chapter} has no target metadata.")
+    target = cast(dict[str, object], target)
     raw_pair = target.get("pair")
     if not isinstance(raw_pair, list | tuple) or tuple(raw_pair) != pair:
         raise ValueError(
@@ -405,6 +406,7 @@ def _compiled_ir_blocks(compiled: dict[str, object]) -> list[IRBlock]:
     compiled_obj = compiled.get("compiled")
     if not isinstance(compiled_obj, dict):
         raise ValueError("Compiled chapter has no compiled payload.")
+    compiled_obj = cast(dict[str, object], compiled_obj)
     raw_blocks = compiled_obj.get("ir_blocks")
     if not isinstance(raw_blocks, list):
         raise ValueError("Compiled chapter payload has no ir_blocks list.")
@@ -449,17 +451,16 @@ def _compiled_token_count(compiled: dict[str, object]) -> int | None:
     compiled_obj = compiled.get("compiled")
     if not isinstance(compiled_obj, dict):
         return None
+    compiled_obj = cast(dict[str, object], compiled_obj)
     value = compiled_obj.get("token_count")
-    try:
-        return None if value is None else int(value)
-    except (TypeError, ValueError):
-        return None
+    return _int_value(value)
 
 
 def _source_chapter_path(compiled: dict[str, object]) -> str | None:
     chapter_obj = compiled.get("chapter")
     if not isinstance(chapter_obj, dict):
         return None
+    chapter_obj = cast(dict[str, object], chapter_obj)
     value = chapter_obj.get("source_path")
     return str(value) if value is not None else None
 
@@ -467,10 +468,22 @@ def _source_chapter_path(compiled: dict[str, object]) -> str | None:
 def _compiled_title(compiled: dict[str, object], chapter: int) -> str:
     chapter_obj = compiled.get("chapter")
     if isinstance(chapter_obj, dict):
+        chapter_obj = cast(dict[str, object], chapter_obj)
         title = chapter_obj.get("title")
         if title:
             return str(title)
     return f"Dream Chapter {chapter:02d}"
+
+
+def _int_value(value: object, *, default: int | None = None) -> int | None:
+    if value is None:
+        return default
+    if not isinstance(value, int | float | str):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def _token_count(tokens: int | None) -> IRTokenRangeCount | None:

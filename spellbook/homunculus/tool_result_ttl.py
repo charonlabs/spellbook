@@ -707,7 +707,7 @@ def build_tool_result_ttl_replacement(
             output_ref=output_ref,
             content=content,
         )
-    output = output if output is not None else (content.text if content else "")
+    output = output if output is not None else (content.text if content else "") or ""
     line_count = _line_count(output)
     char_count = len(output)
     kind = display.get("kind")

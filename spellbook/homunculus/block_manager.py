@@ -210,7 +210,10 @@ class BlockManager:
         return rendered
 
     def _summary_artifact(self, block: IRSemanticBlock) -> IRSemanticBlockSummary:
-        artifact = next((a for a in block.artifacts if a.type == "summary"), None)
+        artifact = next(
+            (a for a in block.artifacts if isinstance(a, IRSemanticBlockSummary)),
+            None,
+        )
         if artifact is None:
             raise ValueError(f"Block {block.idx} has no summary artifact.")
         return artifact

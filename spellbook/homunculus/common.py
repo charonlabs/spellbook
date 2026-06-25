@@ -15,6 +15,7 @@ from spellbook.ir_types import (
     IRImageBlock,
     IRImageURLSource,
     IRSemanticBlock,
+    IRSemanticBlockSummary,
     IRSemanticBlockRange,
     IRThinkingBlock,
     IRToolCallBlock,
@@ -73,7 +74,7 @@ def render_context_block(block: IRBlock, block_id: int | None = None) -> str:
 
 
 def render_summary(block: IRSemanticBlock) -> IRUserTextBlock:
-    artifact = next(a for a in block.artifacts if a.type == "summary")
+    artifact = next(a for a in block.artifacts if isinstance(a, IRSemanticBlockSummary))
 
     parts: list[str] = []
     parts.append(
@@ -153,7 +154,7 @@ def estimate_intent_savings(
                 (
                     artifact
                     for artifact in block.artifacts
-                    if artifact.mode == "summary"
+                    if isinstance(artifact, IRSemanticBlockSummary)
                 ),
                 None,
             )

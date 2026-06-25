@@ -15,6 +15,7 @@ from spellbook.ir_types import (
     IRSemanticBlock,
     IRSemanticBlockPin,
     IRSemanticBlockPinRecord,
+    IRSemanticBlockSummary,
     IRTurnEndRecord,
     IRTurnStartRecord,
 )
@@ -158,7 +159,7 @@ def _resolve_facet_prefix(
     matches: list[FacetPinResolution] = []
     for block in blocks:
         for artifact in block.artifacts:
-            if artifact.type != "summary":
+            if not isinstance(artifact, IRSemanticBlockSummary):
                 continue
             for facet in artifact.facets:
                 if not facet.id.startswith(requested):
@@ -266,7 +267,7 @@ def _facet_candidates(blocks: list[IRSemanticBlock]) -> str:
     lines: list[str] = []
     for block in blocks:
         for artifact in block.artifacts:
-            if artifact.type != "summary":
+            if not isinstance(artifact, IRSemanticBlockSummary):
                 continue
             for facet in artifact.facets:
                 lines.append(

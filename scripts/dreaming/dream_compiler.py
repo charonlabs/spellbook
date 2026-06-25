@@ -754,7 +754,7 @@ async def _run_results_with_progress(
     description: str,
     show_progress: bool,
 ) -> list[ChapterRunResult]:
-    tasks = [asyncio.create_task(coro) for coro in coros]
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
     results: list[ChapterRunResult | None] = [None] * len(chapters)
     if not tasks:
         return []

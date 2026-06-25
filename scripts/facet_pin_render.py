@@ -29,6 +29,7 @@ from spellbook.ir_types import (
     IRBlock,
     IRImageBlock,
     IRSemanticBlock,
+    IRSemanticBlockSummary,
     IRThinkingBlock,
     IRToolCallBlock,
     IRToolResultBlock,
@@ -198,7 +199,10 @@ def _find_facet(
     for block in rehydrated.semantic_blocks:
         if block_idx is not None and block.idx != block_idx:
             continue
-        summary = next((a for a in block.artifacts if a.type == "summary"), None)
+        summary = next(
+            (a for a in block.artifacts if isinstance(a, IRSemanticBlockSummary)),
+            None,
+        )
         if summary is None:
             continue
         for facet in summary.facets:
@@ -223,7 +227,10 @@ def _find_facet(
 def _facet_candidates(rehydrated: RehydrationResult) -> str:
     lines: list[str] = []
     for block in rehydrated.semantic_blocks:
-        summary = next((a for a in block.artifacts if a.type == "summary"), None)
+        summary = next(
+            (a for a in block.artifacts if isinstance(a, IRSemanticBlockSummary)),
+            None,
+        )
         if summary is None:
             continue
         for facet in summary.facets:

@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -416,7 +416,7 @@ async def _run_phase_with_progress(
     description: str,
     show_progress: bool,
 ) -> list[PairRun]:
-    tasks = [asyncio.create_task(coro) for coro in coros]
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
     results: list[PairRun | None] = [None] * len(pair_runs)
     if not tasks:
         return []
@@ -476,10 +476,14 @@ async def _run_director_task(task: DirectorTask) -> DirectorResult:
         unmatched = ()
         unused = ()
         if isinstance(pin_expansion, dict):
+            pin_expansion = cast(dict[str, object], pin_expansion)
             unmatched = tuple(
-                str(item) for item in pin_expansion.get("unmatched_markers", [])
+                str(item)
+                for item in _object_sequence(pin_expansion.get("unmatched_markers"))
             )
-            unused = tuple(str(item) for item in pin_expansion.get("unused_pins", []))
+            unused = tuple(
+                str(item) for item in _object_sequence(pin_expansion.get("unused_pins"))
+            )
         return DirectorResult(
             status="reviewed",
             verdict=report.review.verdict,
@@ -641,14 +645,18 @@ def _written_chapter_paths_from_transcript(pair_run: PairRun) -> list[Path]:
 def _write_result_paths(event: dict[str, object]) -> list[Path]:
     paths: list[Path] = []
     display = event.get("display")
-    if isinstance(display, dict) and display.get("path"):
-        paths.append(Path(str(display["path"])).expanduser().resolve())
+    if isinstance(display, dict):
+        display = cast(dict[str, object], display)
+        path = display.get("path")
+        if path:
+            paths.append(Path(str(path)).expanduser().resolve())
 
     content = event.get("content")
     if isinstance(content, list):
         for item in content:
             if not isinstance(item, dict):
                 continue
+            item = cast(dict[str, object], item)
             match = re.search(r"Successfully wrote to (.+)$", str(item.get("text", "")))
             if match:
                 paths.append(Path(match.group(1)).expanduser().resolve())
@@ -803,14 +811,16 @@ def _count_json(tokens: int, exact: bool, method: str) -> dict[str, object]:
     return {"tokens": tokens, "exact": exact, "method": method}
 
 
+def _object_sequence(value: object) -> tuple[object, ...]:
+    if isinstance(value, list | tuple):
+        return tuple(value)
+    return ()
+
+
 def _count_from_json(data: object) -> IRTokenRangeCount:
     if not isinstance(data, dict):
         raise ValueError(f"Invalid token count JSON: {data!r}")
-    return IRTokenRangeCount(
-        tokens=int(data["tokens"]),
-        exact=bool(data["exact"]),
-        method=str(data["method"]),
-    )
+    return IRTokenRangeCount.model_validate(data)
 
 
 def _pins_markdown(pins: list[PinCount]) -> str:

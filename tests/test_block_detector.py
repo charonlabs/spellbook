@@ -18,6 +18,7 @@ from spellbook.fork import (
 from spellbook.homunculus.block_detector import BlockDetector
 from spellbook.ir_types import (
     IRAssistantTextBlock,
+    IRBlock,
     IRImageBase64Source,
     IRImageBlock,
     IRSemanticBlockRange,
@@ -72,6 +73,14 @@ def _user(text: str) -> IRUserTextBlock:
 
 def _assistant(text: str) -> IRAssistantTextBlock:
     return IRAssistantTextBlock(text=text, origin="model")
+
+
+def _text_values(blocks: Sequence[IRBlock]) -> list[str]:
+    values: list[str] = []
+    for block in blocks:
+        assert isinstance(block, IRUserTextBlock | IRAssistantTextBlock)
+        values.append(block.text)
+    return values
 
 
 def _tool_call(call_id: str, tool: str = "Bash") -> IRToolCallBlock:
@@ -305,7 +314,7 @@ class TestMaybeDetect:
         self, tmp_path: Path
     ) -> None:
         detector = _make_detector(tmp_path, detect_interval=1)
-        blocks = [_user("done"), _assistant("raw before append")]
+        blocks: list[IRBlock] = [_user("done"), _assistant("raw before append")]
         completed = [IRSemanticBlockRange(title="Done", start_block=0, end_block=0)]
         rehydrated = RehydrationResult(
             session_id="session_test",
@@ -338,12 +347,12 @@ class TestMaybeDetect:
         fork_config = seen["fork_config"]
         assert fork_config.full_context_start_id == 0
         assert fork_config.context_block_start_id == 1
-        assert [block.text for block in fork_config.full_context_blocks] == [
+        assert _text_values(fork_config.full_context_blocks) == [
             "done",
             "raw before append",
             "new raw",
         ]
-        assert [block.text for block in fork_config.context_block_buffer] == [
+        assert _text_values(fork_config.context_block_buffer) == [
             "raw before append",
             "new raw",
         ]

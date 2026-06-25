@@ -21,6 +21,7 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
@@ -191,7 +192,7 @@ class _DrainEventPrinter:
         for block in blocks:
             self.printed_block_ids.add(block.id)
             for artifact in block.artifacts:
-                if artifact.type == "summary":
+                if isinstance(artifact, IRSemanticBlockSummary):
                     self.printed_summary_ids.add(artifact.id)
 
     def emit_new(self, manager: BlockManager) -> None:
@@ -206,7 +207,7 @@ class _DrainEventPrinter:
 
         for block in manager.semantic_blocks:
             for artifact in block.artifacts:
-                if artifact.type != "summary":
+                if not isinstance(artifact, IRSemanticBlockSummary):
                     continue
                 if artifact.id in self.printed_summary_ids:
                     continue
@@ -490,9 +491,9 @@ async def _run_drain_loop(
     chunk_size: int,
     max_finalize_passes: int,
     progress: Progress | None,
-    backlog_task: int | None,
-    detector_task: int | None,
-    summary_task: int | None,
+    backlog_task: TaskID | None,
+    detector_task: TaskID | None,
+    summary_task: TaskID | None,
     event_printer: "_DrainEventPrinter | None",
 ) -> None:
     manager = runtime.block_manager
@@ -595,7 +596,7 @@ async def _drain_summaries(
     manager: BlockManager,
     nursery: Nursery,
     progress: Progress | None,
-    summary_task: int | None,
+    summary_task: TaskID | None,
     event_printer: "_DrainEventPrinter | None",
 ) -> None:
     while True:
@@ -661,7 +662,7 @@ async def _collect_ready_jobs(
 
 def _update_summary_progress(
     progress: Progress | None,
-    summary_task: int | None,
+    summary_task: TaskID | None,
     manager: BlockManager,
 ) -> None:
     if progress is None or summary_task is None:

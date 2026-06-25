@@ -198,7 +198,7 @@ class ReplayMarkdownRenderer:
         self, record: IRSemanticBlockArtifactRecord
     ) -> None:
         artifact = record.artifact
-        if artifact.type != "summary":
+        if not isinstance(artifact, IRSemanticBlockSummary):
             return
 
         self.summaries += 1

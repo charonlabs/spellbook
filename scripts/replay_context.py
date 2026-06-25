@@ -267,7 +267,10 @@ class _ReplayRecordPrinter:
         self, record: IRSemanticBlockArtifactRecord, *, emit: bool
     ) -> None:
         artifact = record.artifact
-        if artifact.type != "summary" or artifact.id in self.printed_summary_ids:
+        if (
+            not isinstance(artifact, IRSemanticBlockSummary)
+            or artifact.id in self.printed_summary_ids
+        ):
             return
 
         block = self.semantic_blocks_by_id.get(record.block_id)
