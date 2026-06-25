@@ -4,22 +4,21 @@ import argparse
 from pathlib import Path
 
 import pytest
-
-from core_scripts.dream_director import Pair
-from core_scripts.dream_merge import (
+from scripts.dreaming.dream_director import Pair
+from scripts.dreaming.dream_merge import (
+    QUANTUM_DICE_CONTRACT,
     DirectorResult,
     DirectorTask,
     DreamMergeOptions,
     DreamTask,
-    QUANTUM_DICE_CONTRACT,
     _clone_transcript_workspace,
     _dream_user_message,
     _parse_pairs,
     _write_stats_files,
     run_dream_merge,
 )
-from core_scripts.mdtoks import MarkdownTokenReport
-from core_scripts.merge_stats import BlockLine, MergeStatsReport, PinCount
+from scripts.dreaming.mdtoks import MarkdownTokenReport
+from scripts.dreaming.merge_stats import BlockLine, MergeStatsReport, PinCount
 from spellbook.ir_types import IRTokenRangeCount
 
 
@@ -260,7 +259,7 @@ async def test_run_dream_merge_can_reuse_preflight_stats(tmp_path: Path) -> None
 
 
 def _pair_run_for_test(tmp_path: Path, *, render_path: Path):
-    from core_scripts.dream_merge import PairRun
+    from scripts.dreaming.dream_merge import PairRun
 
     pair = Pair(first=0, second=1)
     stats = _stats(tmp_path / "transcript.jsonl", render_path=render_path)

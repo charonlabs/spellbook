@@ -4,12 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-
-from core_scripts.apply_dream_narratives import (
+from scripts.dreaming.apply_dream_narratives import (
     _parse_chapters,
     apply_dream_narratives,
 )
-from core_scripts.merge_stats import _build_block_manager
+from scripts.dreaming.merge_stats import _build_block_manager
 from spellbook.config import SpellbookConfig
 from spellbook.fork import BlockDetectorResult
 from spellbook.ir_types import (

@@ -4,11 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
-
-from core_scripts.dream_triage import (
+from scripts.dreaming.dream_triage import (
     TriageClassification,
-    _load_missing_items,
     _item_batches,
+    _load_missing_items,
     _triage_json,
     _triage_user_message,
     _validate_classifications,

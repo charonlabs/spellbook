@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-
-from core_scripts.dream_compiler import (
+from scripts.dreaming.dream_compiler import (
     ChapterBeat,
     CompileOptions,
     SanityCheckInput,

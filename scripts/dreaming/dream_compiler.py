@@ -16,10 +16,13 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
-from core_scripts.dream_director import DEFAULT_DREAM_REVIEW_DIR, DEFAULT_ENV_PATH, Pair
-from core_scripts.dream_merge import DEFAULT_DREAM_CHAPTER_DIR, _progress
-from core_scripts.merge_stats import (
+from scripts.dreaming.dream_director import (
+    DEFAULT_DREAM_REVIEW_DIR,
+    DEFAULT_ENV_PATH,
+    Pair,
+)
+from scripts.dreaming.dream_merge import DEFAULT_DREAM_CHAPTER_DIR, _progress
+from scripts.dreaming.merge_stats import (
     DEFAULT_TRANSCRIPT,
     _apply_tool_result_ttls,
     _block_by_idx,

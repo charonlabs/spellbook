@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core_scripts.dream_director import (
+from scripts.dreaming.dream_director import (
     DirectorReviewInput,
     DirectorReviewReport,
     DirectorReviewRequest,
@@ -13,7 +13,7 @@ from core_scripts.dream_director import (
     _source_blocks_from_render,
     _summaries_markdown,
 )
-from core_scripts.merge_stats import MergeStatsReport
+from scripts.dreaming.merge_stats import MergeStatsReport
 from spellbook.config import SpellbookConfig
 from spellbook.fork import BlockDetectorResult
 from spellbook.ir_types import (

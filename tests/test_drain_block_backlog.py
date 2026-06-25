@@ -4,8 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from core_scripts.drain_block_backlog import (
+from scripts.dreaming.drain_block_backlog import (
     DrainRuntime,
     drain_block_backlog,
 )
@@ -42,7 +41,6 @@ from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import Rehydrator
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
-
 
 pytestmark = pytest.mark.asyncio
 

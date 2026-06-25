@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import TypeAdapter
-
-from core_scripts.dream_merge import DEFAULT_DREAM_CHAPTER_DIR
-from core_scripts.merge_stats import (
+from scripts.dreaming.dream_merge import DEFAULT_DREAM_CHAPTER_DIR
+from scripts.dreaming.merge_stats import (
     DEFAULT_TRANSCRIPT,
     _apply_tool_result_ttls,
     _build_block_manager,

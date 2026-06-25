@@ -26,8 +26,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-
-from core_scripts.merge_stats import DEFAULT_ENV_PATH, DEFAULT_TRANSCRIPT
+from scripts.dreaming.merge_stats import DEFAULT_ENV_PATH, DEFAULT_TRANSCRIPT
 from spellbook.backends import build_backend
 from spellbook.config import SpellbookConfig
 from spellbook.footer import FooterController
@@ -54,7 +53,6 @@ from spellbook.rehydrator import RehydrationResult, Rehydrator
 from spellbook.session_manager import SessionManager
 from spellbook.surface_builder import RequestSurfaceBuilder
 from spellbook.tools.registry import ToolRegistry
-
 
 RuntimeBuilder = Callable[
     [SpellbookConfig, Path, Recorder, Callable[[Sequence[IRBlock]], list[IRBlock]]],

@@ -5,8 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-
-from core_scripts.dream_restore import (
+from scripts.dreaming.dream_restore import (
     KeepItem,
     RestoreOptions,
     RestoreTask,
@@ -17,7 +16,7 @@ from core_scripts.dream_restore import (
     _restore_user_message,
     run_restore,
 )
-from core_scripts.merge_stats import BlockLine, MergeStatsReport
+from scripts.dreaming.merge_stats import BlockLine, MergeStatsReport
 from spellbook.ir_types import IRTokenRangeCount
 
 

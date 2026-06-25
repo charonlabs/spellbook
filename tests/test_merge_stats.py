@@ -4,8 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-
-from core_scripts.merge_stats import merge_stats
+from scripts.dreaming.merge_stats import merge_stats
 from spellbook.backends.model_backend import RequestSurface, TokenCounter
 from spellbook.config import SpellbookConfig
 from spellbook.fork import BlockDetectorResult

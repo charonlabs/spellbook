@@ -25,15 +25,14 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
-from core_scripts.dream_director import (
+from scripts.dreaming.dream_director import (
     DEFAULT_DIRECTOR_MODEL,
     DEFAULT_DREAM_REVIEW_DIR,
     Pair,
     run_director_review,
 )
-from core_scripts.mdtoks import MarkdownTokenReport, count_markdown_tokens
-from core_scripts.merge_stats import (
+from scripts.dreaming.mdtoks import MarkdownTokenReport, count_markdown_tokens
+from scripts.dreaming.merge_stats import (
     DEFAULT_ENV_PATH,
     DEFAULT_TRANSCRIPT,
     BlockLine,

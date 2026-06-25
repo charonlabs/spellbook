@@ -14,16 +14,19 @@ from typing import Literal
 from uuid import uuid4
 
 from dotenv import load_dotenv
-
-from core_scripts.dream_director import DEFAULT_ENV_PATH, Pair
-from core_scripts.dream_merge import (
+from scripts.dreaming.dream_director import DEFAULT_ENV_PATH, Pair
+from scripts.dreaming.dream_merge import (
     DEFAULT_DREAM_CHAPTER_DIR,
     _progress,
     _resolve_chapter_path,
     _stats_console_output,
 )
-from core_scripts.dream_triage import DEFAULT_TRIAGE_OUTPUT
-from core_scripts.merge_stats import DEFAULT_TRANSCRIPT, MergeStatsReport, merge_stats
+from scripts.dreaming.dream_triage import DEFAULT_TRIAGE_OUTPUT
+from scripts.dreaming.merge_stats import (
+    DEFAULT_TRANSCRIPT,
+    MergeStatsReport,
+    merge_stats,
+)
 from spellbook.backends import infer_provider_for_model
 from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.sdk import Spell

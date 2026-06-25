@@ -14,9 +14,8 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
-from core_scripts.mdtoks import count_markdown_tokens
-from core_scripts.merge_stats import (
+from scripts.dreaming.mdtoks import count_markdown_tokens
+from scripts.dreaming.merge_stats import (
     DEFAULT_TRANSCRIPT,
     MergeStatsReport,
     merge_stats,

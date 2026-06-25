@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from core_scripts.mdtoks import DEFAULT_MODEL, count_markdown_tokens
+from scripts.dreaming.mdtoks import DEFAULT_MODEL, count_markdown_tokens
 from spellbook.backends.model_backend import RequestSurface
 from spellbook.ir_types import IRBlock, IRUserTextBlock
 

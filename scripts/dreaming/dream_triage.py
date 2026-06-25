@@ -13,8 +13,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
-from core_scripts.dream_director import DEFAULT_DREAM_REVIEW_DIR, DEFAULT_ENV_PATH
+from scripts.dreaming.dream_director import DEFAULT_DREAM_REVIEW_DIR, DEFAULT_ENV_PATH
 from spellbook.backends import infer_provider_for_model
 from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.custom import CustomSurface
