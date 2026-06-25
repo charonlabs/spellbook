@@ -406,9 +406,9 @@ At minimum, changes in `spellbook/` should preserve or extend focused coverage i
 Before committing core source changes, run:
 
 ```bash
-uv run ruff check spellbook tests
-uv run ruff format --check spellbook tests
-uv run ty check spellbook tests
+uv run ruff check
+uv run ruff format --check
+uv run ty check
 ```
 
 Current useful areas include:
