@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -60,6 +60,7 @@ RuntimeBuilder = Callable[
     [SpellbookConfig, Path, Recorder, Callable[[Sequence[IRBlock]], list[IRBlock]]],
     "DrainRuntime",
 ]
+BufferedPolicy = Literal["discard", "preserve"]
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,7 @@ class DrainBacklogReport:
     transcript_path: Path
     backup_path: Path | None
     dry_run: bool
+    buffered_policy: BufferedPolicy
     source_blocks: int
     start_block: int
     target_end_block: int
@@ -115,6 +117,7 @@ class DrainBacklogReport:
     starting_semantic_blocks: int
     starting_summaries: int
     starting_buffered_blocks: int
+    ignored_buffered_blocks: int
     processed_blocks: int = 0
     detector_passes: int = 0
     finalization_passes: int = 0
@@ -148,6 +151,7 @@ class DrainBacklogReport:
             "transcript_path": str(self.transcript_path),
             "backup_path": str(self.backup_path) if self.backup_path else None,
             "dry_run": self.dry_run,
+            "buffered_policy": self.buffered_policy,
             "source_blocks": self.source_blocks,
             "start_block": self.start_block,
             "target_end_block": self.target_end_block,
@@ -157,6 +161,7 @@ class DrainBacklogReport:
             "starting_semantic_blocks": self.starting_semantic_blocks,
             "starting_summaries": self.starting_summaries,
             "starting_buffered_blocks": self.starting_buffered_blocks,
+            "ignored_buffered_blocks": self.ignored_buffered_blocks,
             "processed_blocks": self.processed_blocks,
             "detector_passes": self.detector_passes,
             "finalization_passes": self.finalization_passes,
@@ -180,6 +185,7 @@ class DrainRuntime:
 @dataclass
 class _DrainEventPrinter:
     console: Console
+    progress: Progress | None = None
     printed_block_ids: set[str] = field(default_factory=set)
     printed_summary_ids: set[str] = field(default_factory=set)
 
@@ -197,7 +203,7 @@ class _DrainEventPrinter:
             if block.id not in self.printed_block_ids
         ]
         if new_blocks:
-            self.console.print(_render_completed_blocks(new_blocks))
+            self._print(_render_completed_blocks(new_blocks))
             self.printed_block_ids.update(block.id for block in new_blocks)
 
         for block in manager.semantic_blocks:
@@ -206,8 +212,19 @@ class _DrainEventPrinter:
                     continue
                 if artifact.id in self.printed_summary_ids:
                     continue
-                self.console.print(_render_summary(block, artifact))
+                self._print(_render_summary(block, artifact))
                 self.printed_summary_ids.add(artifact.id)
+
+    def _print(self, renderable: object) -> None:
+        if self.progress is None:
+            self.console.print(renderable)
+            return
+
+        self.progress.stop()
+        try:
+            self.console.print(renderable)
+        finally:
+            self.progress.start()
 
 
 async def drain_block_backlog(
@@ -221,6 +238,7 @@ async def drain_block_backlog(
     backup: bool = True,
     allow_unfinished: bool = False,
     allow_large_untracked: bool = False,
+    buffered_policy: BufferedPolicy = "discard",
     show_progress: bool = True,
     stream_events: bool = True,
     report_json: Path | None = None,
@@ -237,6 +255,8 @@ async def drain_block_backlog(
         raise ValueError("max_blocks must be greater than or equal to zero.")
     if max_finalize_passes < 0:
         raise ValueError("max_finalize_passes must be greater than or equal to zero.")
+    if buffered_policy not in ("discard", "preserve"):
+        raise ValueError("buffered_policy must be 'discard' or 'preserve'.")
 
     transcript_path = transcript_path.expanduser().resolve()
     if not transcript_path.exists():
@@ -251,7 +271,7 @@ async def drain_block_backlog(
 
     drain_interval = interval or source.config.hom_config.detect_interval
     drain_chunk_size = chunk_size or drain_interval
-    start_block = _append_start_block(source)
+    start_block = _append_start_block(source, buffered_policy=buffered_policy)
     target_end = _target_end_block(
         source_blocks=len(source.blocks),
         start_block=start_block,
@@ -268,6 +288,7 @@ async def drain_block_backlog(
         transcript_path=transcript_path,
         backup_path=None,
         dry_run=not apply,
+        buffered_policy=buffered_policy,
         source_blocks=len(source.blocks),
         start_block=start_block,
         target_end_block=target_end,
@@ -276,6 +297,11 @@ async def drain_block_backlog(
         starting_semantic_blocks=len(source.semantic_blocks),
         starting_summaries=_summary_count(source.semantic_blocks),
         starting_buffered_blocks=len(source.buffered_semantic_block_ranges),
+        ignored_buffered_blocks=(
+            len(source.buffered_semantic_block_ranges)
+            if buffered_policy == "discard"
+            else 0
+        ),
         large_untracked=large_untracked,
     )
 
@@ -327,7 +353,18 @@ async def drain_block_backlog(
     manager = runtime.block_manager
     manager.context_blocks = list(source.blocks[:start_block])
     manager.next_block_id = start_block
-    manager.rehydrate(source.model_copy(update={"blocks": source.blocks[:start_block]}))
+    manager.rehydrate(
+        source.model_copy(
+            update={
+                "blocks": source.blocks[:start_block],
+                "buffered_semantic_block_ranges": (
+                    []
+                    if buffered_policy == "discard"
+                    else source.buffered_semantic_block_ranges
+                ),
+            }
+        )
+    )
 
     try:
         await _run_drain(
@@ -390,6 +427,7 @@ async def _run_drain(
     with progress:
         if event_printer is not None:
             event_printer.console = progress.console
+            event_printer.progress = progress
         backlog_task = progress.add_task(
             "Backlog",
             total=max(0, target_end - start_block),
@@ -703,8 +741,12 @@ def _build_recorder(
     return recorder
 
 
-def _append_start_block(source: RehydrationResult) -> int:
-    if source.buffered_semantic_block_ranges:
+def _append_start_block(
+    source: RehydrationResult,
+    *,
+    buffered_policy: BufferedPolicy,
+) -> int:
+    if buffered_policy == "preserve" and source.buffered_semantic_block_ranges:
         return source.buffered_semantic_block_ranges[-1].end_block + 1
     if source.semantic_blocks:
         return source.semantic_blocks[-1].range.end_block + 1
@@ -885,6 +927,7 @@ def _print_report(report: DrainBacklogReport) -> None:
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     table.add_row("Transcript blocks", f"{report.source_blocks:,}")
+    table.add_row("Buffered policy", report.buffered_policy)
     table.add_row("Start block", f"{report.start_block:,}")
     table.add_row("Target blocks", f"{report.target_blocks:,}")
     table.add_row("Processed", f"{report.processed_blocks:,}")
@@ -898,6 +941,7 @@ def _print_report(report: DrainBacklogReport) -> None:
         "Summaries", _delta(report.starting_summaries, report.final_summaries)
     )
     table.add_row("Buffered ranges", str(report.final_buffered_blocks))
+    table.add_row("Ignored buffered ranges", f"{report.ignored_buffered_blocks:,}")
     table.add_row("Large untracked tools", f"{len(report.large_untracked):,}")
     if report.backup_path is not None:
         table.add_row("Backup", str(report.backup_path))
@@ -963,6 +1007,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Allow detector/summarizer prompts to include large tool results without TTLs.",
     )
     parser.add_argument(
+        "--buffered-policy",
+        choices=("discard", "preserve"),
+        default="discard",
+        help=(
+            "How to treat existing buffered detector proposals. "
+            "'discard' replays from the last completed semantic block; "
+            "'preserve' keeps the old behavior and starts after buffered proposals."
+        ),
+    )
+    parser.add_argument(
         "--no-backup",
         action="store_true",
         help="Do not create a transcript backup before applying.",
@@ -999,6 +1053,7 @@ async def _async_main(argv: list[str] | None = None) -> None:
         backup=not args.no_backup,
         allow_unfinished=args.allow_unfinished,
         allow_large_untracked=args.allow_large_untracked,
+        buffered_policy=args.buffered_policy,
         show_progress=not args.no_progress,
         stream_events=not args.no_stream,
         report_json=args.report_json,
