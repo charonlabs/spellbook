@@ -162,6 +162,14 @@ class _FakeFooter:
         self.queued.append(kwargs)
 
 
+class _FakeDebugEmitter:
+    def __init__(self) -> None:
+        self.alerts: list[dict[str, object]] = []
+
+    def alert(self, **kwargs: object) -> None:
+        self.alerts.append(kwargs)
+
+
 class _FakeDetector:
     def __init__(self, completed: list[IRSemanticBlockRange]):
         self.completed = completed
@@ -246,6 +254,7 @@ class _FakeForkRunner:
 def _manager(
     *,
     context_projector: Any | None = None,
+    debug_emitter: _FakeDebugEmitter | None = None,
 ) -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunner]:
     recorder = _FakeRecorder()
     footer = _FakeFooter()
@@ -258,6 +267,7 @@ def _manager(
         recorder=cast(Recorder, recorder),
         token_meter=cast(TokenMeter, _FakeMeter()),
         context_projector=context_projector,
+        debug_emitter=cast(Any, debug_emitter),
     )
     return manager, recorder, footer, fork_runner
 
@@ -514,7 +524,8 @@ async def test_out_of_order_detection_hole_defers_then_heals(caplog) -> None:
 @pytest.mark.asyncio
 async def test_gap_detection_that_never_heals_is_discarded(caplog) -> None:
     caplog.set_level(logging.ERROR, logger="spellbook.homunculus.block_manager")
-    manager, recorder, footer, fork_runner = _manager()
+    debug = _FakeDebugEmitter()
+    manager, recorder, footer, fork_runner = _manager(debug_emitter=debug)
     manager.context_blocks = _user_blocks("a", "b", "c")
     _prime_detector(manager)
     bad_result = BlockDetectorResult(
@@ -546,6 +557,11 @@ async def test_gap_detection_that_never_heals_is_discarded(caplog) -> None:
     assert any(
         "block_detector.result_rejected" in record.message for record in caplog.records
     )
+    assert len(debug.alerts) == 2
+    assert debug.alerts[0]["subsystem"] == "block_detector"
+    assert debug.alerts[0]["event"] == "result_rejected"
+    metadata = cast(dict[str, object], debug.alerts[0]["metadata"])
+    assert metadata["fork_id"] == "detector_gap_1"
 
 
 @pytest.mark.asyncio

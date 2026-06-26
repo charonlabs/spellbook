@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
@@ -38,6 +38,9 @@ from spellbook.nursery import Nursery, NurseryJob, NurseryJobResult
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
 
+if TYPE_CHECKING:
+    from spellbook.debug_visibility import DebugNoticeLevel, DebugEmitter
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +56,7 @@ class BlockManager:
         token_meter: TokenMeter,
         context_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
         enable_block_metrics: bool = True,
+        debug_emitter: "DebugEmitter | None" = None,
     ):
         """Manager for semantic and context blocks. Public instance vars can be
         read and mutated in the Homunculus itself. At present, `context_blocks` and
@@ -68,6 +72,7 @@ class BlockManager:
         self._fork_runner = fork_runner
         self._meter = token_meter
         self._recorder = recorder
+        self._debug = debug_emitter
         self._footer_c = footer_c
         self._nursery = nursery
         self._summarizer = BlockSummarizer(
@@ -511,6 +516,19 @@ class BlockManager:
                 len(integration.deferred_completed),
                 len(integration.discarded_ranges),
             )
+            self._alert_detection_failure(
+                fork_id=fork_id,
+                event="result_partially_deferred",
+                title="Block detector result was partially deferred",
+                level="warning",
+                metadata={
+                    "completed": len(result.completed),
+                    "still_buffered": len(result.still_buffered),
+                    "accepted": len(integration.completed),
+                    "deferred": len(integration.deferred_completed),
+                    "discarded": len(integration.discarded_ranges),
+                },
+            )
             self._footer_c.queue_footer(
                 text="a detection result failed validation and was partially deferred",
                 footer_type="notif",
@@ -578,6 +596,16 @@ class BlockManager:
             len(result.completed),
             len(result.still_buffered),
             error,
+        )
+        self._alert_detection_failure(
+            fork_id=fork_id,
+            event="result_rejected",
+            title="Block detector result was rejected",
+            error=error,
+            metadata={
+                "completed": len(result.completed),
+                "still_buffered": len(result.still_buffered),
+            },
         )
         self._detector.discard_result(fork_id)
         self._footer_c.queue_footer(
@@ -909,6 +937,45 @@ class BlockManager:
             )
         return block_idx
 
+    def _alert_detection_failure(
+        self,
+        *,
+        fork_id: str,
+        event: str,
+        title: str,
+        error: BaseException | None = None,
+        metadata: dict[str, Any] | None = None,
+        level: "DebugNoticeLevel" = "error",
+    ) -> None:
+        if self._debug is None:
+            return
+        event_metadata: dict[str, Any] = {
+            "fork_id": fork_id,
+            "error_type": type(error).__name__ if error is not None else None,
+            "error_message": str(error) if error is not None else None,
+        }
+        if metadata is not None:
+            event_metadata.update(metadata)
+        self._debug.alert(
+            subsystem="block_detector",
+            event=event,
+            title=title,
+            content=_render_detection_failure(
+                fork_id=fork_id,
+                event=event,
+                title=title,
+                error=error,
+                metadata=metadata or {},
+            ),
+            plaintext=_detection_failure_plaintext(
+                fork_id=fork_id,
+                title=title,
+                error=error,
+            ),
+            metadata=event_metadata,
+            level=level,
+        )
+
     def _get_block_id(self, job: NurseryJob[Any]) -> str:
         block_id = job.metadata.get("block_id")
         if not isinstance(block_id, str):
@@ -998,3 +1065,40 @@ class BlockManager:
 
 def _identity_context_projector(blocks: Sequence[IRBlock]) -> list[IRBlock]:
     return list(blocks)
+
+
+def _render_detection_failure(
+    *,
+    fork_id: str,
+    event: str,
+    title: str,
+    error: BaseException | None,
+    metadata: dict[str, Any],
+) -> str:
+    rows = [
+        f"# {title}",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Fork | `{fork_id}` |",
+        f"| Event | `{event}` |",
+    ]
+    for key, value in sorted(metadata.items()):
+        rows.append(f"| {key} | `{_escape_table(value)}` |")
+    if error is not None:
+        rows.append(
+            f"| Error | `{type(error).__name__}: {_escape_table(str(error))}` |"
+        )
+    return "\n".join(rows)
+
+
+def _detection_failure_plaintext(
+    *, fork_id: str, title: str, error: BaseException | None
+) -> str:
+    if error is None:
+        return f"{title}: {fork_id}."
+    return f"{title}: {fork_id}: {error}"
+
+
+def _escape_table(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")

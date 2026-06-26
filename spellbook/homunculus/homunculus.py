@@ -1,4 +1,4 @@
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 from uuid import uuid4
 
 from spellbook.backends.model_backend import TokenCounter
@@ -39,6 +39,9 @@ from ..ir_types import (
 )
 from ..rehydrator import RehydrationResult
 
+if TYPE_CHECKING:
+    from spellbook.debug_visibility import DebugEmitter
+
 
 class Homunculus:
     def __init__(
@@ -51,6 +54,7 @@ class Homunculus:
         nursery: Nursery,
         fork_runner: ForkRunner,
         fork_config: ForkConfig | None = None,
+        debug_emitter: "DebugEmitter | None" = None,
     ):
         self._config = config
         self._footer_c = footer_c
@@ -69,6 +73,7 @@ class Homunculus:
             recorder=recorder,
             token_meter=self._token_meter,
             context_projector=self._ttl_registry.collapse_blocks,
+            debug_emitter=debug_emitter,
         )
         self._fork_config = fork_config
         self._should_rerender: bool = False

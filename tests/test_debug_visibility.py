@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from spellbook.ir_types import (
     IRSkillCatalog,
     IRSystemResponseRecord,
 )
+from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import Rehydrator
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
@@ -107,3 +109,30 @@ def test_debug_visibility_rehydrates_from_operator_runtime_config() -> None:
     settings = settings_from_runtime_config_records(records)
 
     assert settings.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_nursery_job_failure_emits_always_on_debug_alert(tmp_path: Path) -> None:
+    recorder, transcript = _recorder(tmp_path)
+    lifecycle = _Lifecycle()
+    emitter = DebugEmitter(recorder=recorder, session_lifecycle=lifecycle)
+    emitter.bind_context(SessionContext(session_id="session_test", turn_idx=0))
+    nursery = Nursery(config=SpellbookConfig(cwd=tmp_path), debug_emitter=emitter)
+
+    async def _fail() -> str:
+        raise RuntimeError("background boom")
+
+    nursery.submit(_fail(), kind="bash", source="bash", key="bash:1")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await emitter.flush()
+
+    rehydrated = Rehydrator(transcript).run()
+    assert len(rehydrated.system_responses) == 1
+    response = rehydrated.system_responses[0]
+    assert response.command == "/debug"
+    assert response.metadata is not None
+    assert response.metadata["subsystem"] == "nursery"
+    assert response.metadata["event"] == "job_failed"
+    assert response.metadata["job_kind"] == "bash"
+    assert response.metadata["error_message"] == "background boom"

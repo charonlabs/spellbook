@@ -91,6 +91,14 @@ class _FakeRecorder:
         self.shutdowns.append(fork_id)
 
 
+class _FakeDebugEmitter:
+    def __init__(self) -> None:
+        self.alerts: list[dict[str, object]] = []
+
+    def alert(self, **kwargs: object) -> None:
+        self.alerts.append(kwargs)
+
+
 class TestForkDispatch:
     @pytest.mark.asyncio
     async def test_run_fork_dispatches_block_detector_config(
@@ -118,6 +126,36 @@ class TestForkDispatch:
 
         assert result is prepared
         prepared.coro.close()
+
+    @pytest.mark.asyncio
+    async def test_block_detector_build_failure_alerts_and_shutdowns_fork(
+        self, tmp_path: Path
+    ) -> None:
+        recorder = _FakeRecorder()
+        debug = _FakeDebugEmitter()
+
+        async def _build_session(**kwargs):
+            raise RuntimeError("build boom")
+
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=tmp_path / "parent.jsonl",
+            recorder=cast(Recorder, recorder),
+            session_builder=cast(Any, _build_session),
+            debug_emitter=cast(Any, debug),
+        )
+
+        with pytest.raises(RuntimeError, match="build boom"):
+            await runner._run_block_detector(_detector_config())  # noqa: SLF001
+
+        fork_id = recorder.summons[0][0]
+        assert recorder.shutdowns == [fork_id]
+        assert len(debug.alerts) == 1
+        assert debug.alerts[0]["subsystem"] == "fork"
+        assert debug.alerts[0]["event"] == "build_failed"
+        metadata = cast(dict[str, object], debug.alerts[0]["metadata"])
+        assert metadata["fork_id"] == fork_id
+        assert metadata["fork_type"] == "block_detector"
 
     def test_orientation_loader_reads_markdown_fork_orientation(
         self, tmp_path: Path

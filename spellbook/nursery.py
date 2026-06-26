@@ -8,12 +8,15 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Coroutine, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Coroutine, Generic, Literal, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from spellbook.config import SpellbookConfig
+
+if TYPE_CHECKING:
+    from spellbook.debug_visibility import DebugEmitter
 
 T = TypeVar("T")
 
@@ -73,8 +76,11 @@ class AwarenessNurserySnapshot(BaseModel, frozen=True):
 class Nursery:
     """Background async job manager."""
 
-    def __init__(self, config: SpellbookConfig):
+    def __init__(
+        self, config: SpellbookConfig, debug_emitter: "DebugEmitter | None" = None
+    ):
         self._config = config
+        self._debug = debug_emitter
         self._jobs_by_id: dict[str, NurseryJob[Any]] = {}
         self._ids_by_key: dict[str, str] = {}
         self._ready_ids: deque[str] = deque()
@@ -143,9 +149,37 @@ class Nursery:
             self._ids_by_key[key] = job.id
 
         task.add_done_callback(
-            lambda _task, ready_id=job.id: self._ready_ids.append(ready_id)
+            lambda task, done_job=job: self._on_task_done(task, done_job)
         )
         return job
+
+    def _on_task_done(self, task: asyncio.Task[Any], job: NurseryJob[Any]) -> None:
+        self._ready_ids.append(job.id)
+        if self._debug is None or task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except BaseException as exc:
+            error = exc
+        if error is None:
+            return
+        self._debug.alert(
+            subsystem="nursery",
+            event="job_failed",
+            title=f"Nursery job failed: {job.kind}",
+            content=_render_job_failure(job, error),
+            plaintext=f"Nursery job failed: {job.kind} {job.id}: {error}",
+            metadata={
+                "job_id": job.id,
+                "job_kind": job.kind,
+                "job_source": job.source,
+                "job_key": job.key,
+                "job_mode": job.mode,
+                "started_at": job.started_at.isoformat(),
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+            },
+        )
 
     def collect_ready(
         self,
@@ -256,3 +290,24 @@ class Nursery:
             return NurseryJobResult(job=job, result=job.task.result())
         except BaseException as e:
             return NurseryJobResult(job=job, error=e)
+
+
+def _render_job_failure(job: NurseryJob[Any], error: BaseException) -> str:
+    return "\n".join(
+        [
+            "# Nursery Job Failed",
+            "",
+            "| Field | Value |",
+            "| --- | --- |",
+            f"| Job | `{job.id}` |",
+            f"| Kind | `{job.kind}` |",
+            f"| Source | `{job.source}` |",
+            f"| Key | `{job.key or '-'}` |",
+            f"| Mode | `{job.mode}` |",
+            f"| Error | `{type(error).__name__}: {_escape_table(str(error))}` |",
+        ]
+    )
+
+
+def _escape_table(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")

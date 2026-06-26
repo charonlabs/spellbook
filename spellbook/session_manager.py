@@ -320,13 +320,27 @@ class SessionManager:
                     ),
                     turn_idx=recorder.current_turn_idx,
                 )
+        session_lifecycle = lifecycle or SessionLifecycle()
+        if config.session_type == "main":
+            assert timekeeper is not None
+            session_lifecycle = CompositeSessionLifecycle(
+                [TimekeeperSessionLifecycle(timekeeper), session_lifecycle]
+            )
+        debug_emitter = DebugEmitter(
+            recorder=recorder,
+            session_lifecycle=session_lifecycle,
+            settings=settings_from_runtime_config_records(
+                rehydrated.runtime_config_updates
+            ),
+        )
         fork_runner = ForkRunner(
             parent_config=config,
             parent_transcript_path=transcript_path,
             recorder=recorder,
             session_builder=cls.build,
+            debug_emitter=debug_emitter,
         )
-        nursery = Nursery(config=config)
+        nursery = Nursery(config=config, debug_emitter=debug_emitter)
         homunculus = Homunculus(
             config=config.hom_config,
             footer_c=footer_controller,
@@ -335,6 +349,7 @@ class SessionManager:
             nursery=nursery,
             fork_runner=fork_runner,
             fork_config=fork_config,
+            debug_emitter=debug_emitter,
         )
         await homunculus.rehydrate(rehydrated)
         custom_has_skills = (
@@ -392,19 +407,6 @@ class SessionManager:
             homunculus=homunculus,
             registry=tool_registry,
             fork_config=fork_config,
-        )
-        session_lifecycle = lifecycle or SessionLifecycle()
-        if config.session_type == "main":
-            assert timekeeper is not None
-            session_lifecycle = CompositeSessionLifecycle(
-                [TimekeeperSessionLifecycle(timekeeper), session_lifecycle]
-            )
-        debug_emitter = DebugEmitter(
-            recorder=recorder,
-            session_lifecycle=session_lifecycle,
-            settings=settings_from_runtime_config_records(
-                rehydrated.runtime_config_updates
-            ),
         )
         return cls(
             session_id=session_id,

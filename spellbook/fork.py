@@ -46,6 +46,7 @@ from spellbook.ir_types import (
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 
 if TYPE_CHECKING:
+    from spellbook.debug_visibility import DebugNoticeLevel, DebugEmitter
     from spellbook.recorder import Recorder
 
     from .session_manager import SessionBuilder
@@ -141,11 +142,13 @@ class ForkRunner:
         parent_transcript_path: Path,
         recorder: Recorder,
         session_builder: "SessionBuilder",
+        debug_emitter: DebugEmitter | None = None,
     ):
         self._parent_config = parent_config
         self._parent_path = parent_transcript_path
         self._recorder = recorder
         self._build_session = session_builder
+        self._debug = debug_emitter
 
     async def run_fork(self, fork_config: ForkConfig) -> PreparedFork:
         match fork_config:
@@ -186,13 +189,24 @@ class ForkRunner:
             fork_type="block_detector",
             child_transcript_path=str(child_transcript_path),
         )
-        fork_session = await self._build_session(
-            transcript_path=child_transcript_path,
-            config=child_config,
-            lifecycle=lifecycle,
-            fork_config=fork_config,
-            session_id=fork_id,
-        )
+        try:
+            fork_session = await self._build_session(
+                transcript_path=child_transcript_path,
+                config=child_config,
+                lifecycle=lifecycle,
+                fork_config=fork_config,
+                session_id=fork_id,
+            )
+        except Exception as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type="block_detector",
+                event="build_failed",
+                title="Block detector fork failed to build",
+                error=exc,
+            )
+            self.integrate_result(fork_id)
+            raise
 
         async def _run() -> BlockDetectorResult:
             child_task = asyncio.create_task(fork_session.run())
@@ -204,6 +218,7 @@ class ForkRunner:
                 await fork_session.submit_message(initial_msg)
                 await self._wait_for_turn_end_or_child_exit(
                     fork_id=fork_id,
+                    fork_type="block_detector",
                     lifecycle=lifecycle,
                     child_task=child_task,
                 )
@@ -220,7 +235,12 @@ class ForkRunner:
                     ],
                 )
             finally:
-                await self._shutdown_child_session(fork_session, child_task)
+                await self._shutdown_child_session(
+                    fork_id=fork_id,
+                    fork_type="block_detector",
+                    fork_session=fork_session,
+                    child_task=child_task,
+                )
 
         return PreparedFork(coro=_run(), fork_id=fork_id)
 
@@ -251,13 +271,24 @@ class ForkRunner:
             fork_type="block_summarizer",
             child_transcript_path=str(child_transcript_path),
         )
-        fork_session = await self._build_session(
-            transcript_path=child_transcript_path,
-            config=child_config,
-            lifecycle=lifecycle,
-            fork_config=fork_config,
-            session_id=fork_id,
-        )
+        try:
+            fork_session = await self._build_session(
+                transcript_path=child_transcript_path,
+                config=child_config,
+                lifecycle=lifecycle,
+                fork_config=fork_config,
+                session_id=fork_id,
+            )
+        except Exception as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type="block_summarizer",
+                event="build_failed",
+                title="Block summarizer fork failed to build",
+                error=exc,
+            )
+            self.integrate_result(fork_id)
+            raise
 
         async def _run() -> BlockSummarizerResult:
             child_task = asyncio.create_task(fork_session.run())
@@ -270,6 +301,7 @@ class ForkRunner:
                 await fork_session.submit_message(initial_msg)
                 await self._wait_for_turn_end_or_child_exit(
                     fork_id=fork_id,
+                    fork_type="block_summarizer",
                     lifecycle=lifecycle,
                     child_task=child_task,
                 )
@@ -279,7 +311,12 @@ class ForkRunner:
                 assert isinstance(final_meta, BlockSummarizerToolMetadata)
                 return BlockSummarizerResult(summary=final_meta.new_summary)
             finally:
-                await self._shutdown_child_session(fork_session, child_task)
+                await self._shutdown_child_session(
+                    fork_id=fork_id,
+                    fork_type="block_summarizer",
+                    fork_session=fork_session,
+                    child_task=child_task,
+                )
 
         return PreparedFork(coro=_run(), fork_id=fork_id)
 
@@ -287,6 +324,7 @@ class ForkRunner:
         self,
         *,
         fork_id: str,
+        fork_type: str,
         lifecycle: ForkSessionLifecycle,
         child_task: asyncio.Task[None],
     ) -> None:
@@ -298,7 +336,11 @@ class ForkRunner:
         instead of leaving a background job waiting forever.
         """
         if child_task.done() and not lifecycle.turn_end_event.is_set():
-            await self._raise_child_exit_before_turn_end(fork_id, child_task)
+            await self._raise_child_exit_before_turn_end(
+                fork_id=fork_id,
+                fork_type=fork_type,
+                child_task=child_task,
+            )
         if lifecycle.turn_end_event.is_set():
             return
 
@@ -308,7 +350,11 @@ class ForkRunner:
                 {turn_end_task, child_task}, return_when=asyncio.FIRST_COMPLETED
             )
             if child_task in done and not lifecycle.turn_end_event.is_set():
-                await self._raise_child_exit_before_turn_end(fork_id, child_task)
+                await self._raise_child_exit_before_turn_end(
+                    fork_id=fork_id,
+                    fork_type=fork_type,
+                    child_task=child_task,
+                )
         finally:
             if not turn_end_task.done():
                 turn_end_task.cancel()
@@ -316,26 +362,77 @@ class ForkRunner:
                     await turn_end_task
 
     async def _raise_child_exit_before_turn_end(
-        self, fork_id: str, child_task: asyncio.Task[None]
+        self, *, fork_id: str, fork_type: str, child_task: asyncio.Task[None]
     ) -> None:
         try:
             await child_task
         except asyncio.CancelledError as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type=fork_type,
+                event="child_cancelled_before_turn_end",
+                title="Fork child session was cancelled before turn end",
+                error=exc,
+            )
             raise RuntimeError(
                 f"Fork child session {fork_id} was cancelled before turn end."
             ) from exc
+        except Exception as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type=fork_type,
+                event="child_failed_before_turn_end",
+                title="Fork child session failed before turn end",
+                error=exc,
+            )
+            raise
+        self._alert_fork_failure(
+            fork_id=fork_id,
+            fork_type=fork_type,
+            event="child_exited_before_turn_end",
+            title="Fork child session exited before turn end",
+            error=None,
+        )
         raise RuntimeError(f"Fork child session {fork_id} exited before turn end.")
 
     async def _shutdown_child_session(
-        self, fork_session: ForkSession, child_task: asyncio.Task[None]
+        self,
+        *,
+        fork_id: str,
+        fork_type: str,
+        fork_session: ForkSession,
+        child_task: asyncio.Task[None],
     ) -> None:
-        await fork_session.shutdown()
+        try:
+            await fork_session.shutdown()
+        except Exception as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type=fork_type,
+                event="shutdown_failed",
+                title="Fork child session shutdown failed",
+                error=exc,
+            )
+            raise
+        was_done = child_task.done()
         if not child_task.done():
             await asyncio.sleep(0)
         if not child_task.done():
             child_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
+        try:
             await child_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            if not was_done:
+                self._alert_fork_failure(
+                    fork_id=fork_id,
+                    fork_type=fork_type,
+                    event="child_shutdown_failed",
+                    title="Fork child task failed during shutdown",
+                    error=exc,
+                    level="warning",
+                )
 
     def _get_orientation(self, fc: ForkConfig) -> str:
         orientation_path = self.ORIENTATION_PATH / fc.type
@@ -345,3 +442,76 @@ class ForkRunner:
         if markdown_orientation_path.is_file():
             return markdown_orientation_path.read_text()
         return ""
+
+    def _alert_fork_failure(
+        self,
+        *,
+        fork_id: str,
+        fork_type: str,
+        event: str,
+        title: str,
+        error: BaseException | None,
+        level: "DebugNoticeLevel" = "error",
+    ) -> None:
+        if self._debug is None:
+            return
+        self._debug.alert(
+            subsystem="fork",
+            event=event,
+            title=title,
+            content=_render_fork_failure(
+                fork_id=fork_id,
+                fork_type=fork_type,
+                event=event,
+                title=title,
+                error=error,
+            ),
+            plaintext=_fork_failure_plaintext(
+                fork_id=fork_id,
+                event=event,
+                title=title,
+                error=error,
+            ),
+            metadata={
+                "fork_id": fork_id,
+                "fork_type": fork_type,
+                "error_type": type(error).__name__ if error is not None else None,
+                "error_message": str(error) if error is not None else None,
+            },
+            level=level,
+        )
+
+
+def _render_fork_failure(
+    *,
+    fork_id: str,
+    fork_type: str,
+    event: str,
+    title: str,
+    error: BaseException | None,
+) -> str:
+    error_text = "-" if error is None else f"{type(error).__name__}: {error}"
+    return "\n".join(
+        [
+            f"# {title}",
+            "",
+            "| Field | Value |",
+            "| --- | --- |",
+            f"| Fork | `{fork_id}` |",
+            f"| Type | `{fork_type}` |",
+            f"| Event | `{event}` |",
+            f"| Error | `{_escape_table(error_text)}` |",
+        ]
+    )
+
+
+def _fork_failure_plaintext(
+    *, fork_id: str, event: str, title: str, error: BaseException | None
+) -> str:
+    if error is None:
+        return f"{title}: {fork_id} ({event})."
+    return f"{title}: {fork_id} ({event}): {error}"
+
+
+def _escape_table(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")

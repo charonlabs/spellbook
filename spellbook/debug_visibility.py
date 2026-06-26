@@ -117,12 +117,13 @@ class DebugEmitter:
         content: str | None = None,
         plaintext: str | None = None,
         metadata: dict[str, Any] | None = None,
+        level: DebugNoticeLevel = "error",
     ) -> None:
         self.emit(
             DebugNotice(
                 subsystem=subsystem,
                 event=event,
-                level="error",
+                level=level,
                 title=title,
                 content=content,
                 plaintext=plaintext,
