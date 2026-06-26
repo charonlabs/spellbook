@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import TypeAdapter
@@ -64,6 +64,14 @@ class _FakeTokenCounter:
 
     async def count_surface(self, surface: RequestSurface) -> int | None:
         return None
+
+
+class _FakeDebugEmitter:
+    def __init__(self) -> None:
+        self.debug_events: list[dict[str, object]] = []
+
+    def debug(self, **kwargs: object) -> None:
+        self.debug_events.append(kwargs)
 
 
 def _user(text: str) -> IRUserTextBlock:
@@ -238,13 +246,17 @@ def _read_records(path: Path) -> list[IRRecord]:
 
 
 def _homunculus(
-    tmp_path: Path, homunculus_config: HomunculusConfig | None = None
+    tmp_path: Path,
+    homunculus_config: HomunculusConfig | None = None,
+    *,
+    debug_emitter: _FakeDebugEmitter | None = None,
 ) -> Homunculus:
     return _homunculus_with_transcript(
         tmp_path,
         tmp_path / "transcript.jsonl",
         homunculus_config,
         initialize=True,
+        debug_emitter=debug_emitter,
     )
 
 
@@ -254,6 +266,7 @@ def _homunculus_with_transcript(
     homunculus_config: HomunculusConfig | None = None,
     *,
     initialize: bool,
+    debug_emitter: _FakeDebugEmitter | None = None,
 ) -> Homunculus:
     config = SpellbookConfig(cwd=tmp_path)
     recorder = Recorder(
@@ -274,8 +287,9 @@ def _homunculus_with_transcript(
         footer_c=footer_c,
         recorder=recorder,
         token_counter=cast(TokenCounter, _FakeTokenCounter()),
-        nursery=Nursery(config=config),
+        nursery=Nursery(config=config, debug_emitter=cast(Any, debug_emitter)),
         fork_runner=cast(ForkRunner, object()),
+        debug_emitter=cast(Any, debug_emitter),
     )
 
 
@@ -716,9 +730,11 @@ async def test_planner_proposal_records_plan_without_rerendering(
     transcript = tmp_path / "transcript.jsonl"
     full_block = _user("Full transcript text.")
     semantic_block = _summary_block(full_tokens=120, summary_tokens=15)
+    debug = _FakeDebugEmitter()
     homunculus = _homunculus(
         tmp_path,
         HomunculusConfig(soft_threshold=50, medium_threshold=100, hard_threshold=200),
+        debug_emitter=debug,
     )
     await homunculus.rehydrate(
         _rehydrated(
@@ -775,6 +791,12 @@ async def test_planner_proposal_records_plan_without_rerendering(
     assert len(compaction_records) == 1
     assert "new proposal" in compaction_records[0].footer.text
     assert "savings: ~105 tokens" in compaction_records[0].footer.text
+    planner_events = [
+        event for event in debug.debug_events if event["subsystem"] == "planner"
+    ]
+    assert planner_events[-1]["event"] == "proposal_generated"
+    metadata = cast(dict[str, object], planner_events[-1]["metadata"])
+    assert metadata["intent_count"] == 1
 
 
 async def test_large_tool_result_auto_ttl_persists_and_collapses_after_turn(

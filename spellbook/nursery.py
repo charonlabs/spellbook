@@ -130,6 +130,11 @@ class Nursery:
                 existing = self._jobs_by_id.get(existing_id)
                 if existing is not None:
                     existing.task.cancel()
+                    self._debug_job_event(
+                        "job_replaced",
+                        existing,
+                        title=f"Nursery job replaced: {existing.kind}",
+                    )
                 del self._ids_by_key[key]
 
         job_id = f"job_{uuid4().hex}"
@@ -148,6 +153,7 @@ class Nursery:
         if key is not None:
             self._ids_by_key[key] = job.id
 
+        self._debug_job_event("job_started", job, title=f"Nursery job started: {kind}")
         task.add_done_callback(
             lambda task, done_job=job: self._on_task_done(task, done_job)
         )
@@ -155,13 +161,25 @@ class Nursery:
 
     def _on_task_done(self, task: asyncio.Task[Any], job: NurseryJob[Any]) -> None:
         self._ready_ids.append(job.id)
-        if self._debug is None or task.cancelled():
+        if task.cancelled():
+            self._debug_job_event(
+                "job_cancelled",
+                job,
+                title=f"Nursery job cancelled: {job.kind}",
+            )
+            return
+        if self._debug is None:
             return
         try:
             error = task.exception()
         except BaseException as exc:
             error = exc
         if error is None:
+            self._debug_job_event(
+                "job_completed",
+                job,
+                title=f"Nursery job completed: {job.kind}",
+            )
             return
         self._debug.alert(
             subsystem="nursery",
@@ -198,10 +216,26 @@ class Nursery:
             if job is None:
                 continue
             if not self._matches(job, source=source, kind=kind, mode=mode):
+                self._debug_job_event(
+                    "job_deferred",
+                    job,
+                    title=f"Nursery job deferred: {job.kind}",
+                )
                 deferred.append(job_id)
                 continue
             self._forget(job)
-            results.append(self._result_for(job))
+            result = self._result_for(job)
+            self._debug_job_event(
+                "job_harvested",
+                job,
+                title=f"Nursery job harvested: {job.kind}",
+                metadata={
+                    "cancelled": result.cancelled,
+                    "has_error": result.error is not None,
+                    "has_result": result.result is not None,
+                },
+            )
+            results.append(result)
         self._ready_ids = deferred
         return results
 
@@ -291,6 +325,35 @@ class Nursery:
         except BaseException as e:
             return NurseryJobResult(job=job, error=e)
 
+    def _debug_job_event(
+        self,
+        event: str,
+        job: NurseryJob[Any],
+        *,
+        title: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self._debug is None:
+            return
+        event_metadata: dict[str, Any] = {
+            "job_id": job.id,
+            "job_kind": job.kind,
+            "job_source": job.source,
+            "job_key": job.key,
+            "job_mode": job.mode,
+            "started_at": job.started_at.isoformat(),
+        }
+        if metadata is not None:
+            event_metadata.update(metadata)
+        self._debug.debug(
+            subsystem="nursery",
+            event=event,
+            title=title,
+            content=_render_job_event(title=title, job=job, metadata=metadata or {}),
+            plaintext=f"{title}: {job.id}",
+            metadata=event_metadata,
+        )
+
 
 def _render_job_failure(job: NurseryJob[Any], error: BaseException) -> str:
     return "\n".join(
@@ -307,6 +370,25 @@ def _render_job_failure(job: NurseryJob[Any], error: BaseException) -> str:
             f"| Error | `{type(error).__name__}: {_escape_table(str(error))}` |",
         ]
     )
+
+
+def _render_job_event(
+    *, title: str, job: NurseryJob[Any], metadata: dict[str, Any]
+) -> str:
+    rows = [
+        f"# {title}",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Job | `{job.id}` |",
+        f"| Kind | `{job.kind}` |",
+        f"| Source | `{job.source}` |",
+        f"| Key | `{job.key or '-'}` |",
+        f"| Mode | `{job.mode}` |",
+    ]
+    for key, value in sorted(metadata.items()):
+        rows.append(f"| {key} | `{_escape_table(value)}` |")
+    return "\n".join(rows)
 
 
 def _escape_table(value: object) -> str:

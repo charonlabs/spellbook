@@ -61,7 +61,10 @@ class Homunculus:
         self._gas_gauge = GasGauge(config=config, footer_c=footer_c)
         self._recorder = recorder  # this is here cuz we'll need it later
         self._token_meter = TokenMeter(config=config, tok_counter=token_counter)
-        self._ttl_registry = ToolResultTTLRegistry(config=config, recorder=recorder)
+        self._debug = debug_emitter
+        self._ttl_registry = ToolResultTTLRegistry(
+            config=config, recorder=recorder, debug_emitter=debug_emitter
+        )
         self._nursery = nursery
         self._planner = Planner(config=config)
         self._fork_runner = fork_runner
@@ -301,7 +304,7 @@ class Homunculus:
         source: SemanticBlockApplyModeSource = "model",
     ) -> None:
         self._block_manager.forget_block(block_idx, confirm, source)
-        self._invalidate()
+        self._invalidate(reason=f"forget:{source}")
 
     async def pin(
         self, block_idx: int, reason: str, facet_id: str | None = None
@@ -313,9 +316,9 @@ class Homunculus:
             else self._block_manager.pin_block(block_idx, reason)
         )
         if should_invalidate:
-            self._invalidate()
+            self._invalidate(reason="pin")
         else:
-            self._planner.invalidate()
+            self._invalidate_planner(reason="pin")
 
     async def recall(self, block_idx: int) -> str:
         return self._block_manager.recall_block(block_idx)
@@ -326,7 +329,7 @@ class Homunculus:
     async def forget_tool_result(self, call_id: str) -> str:
         block = self._resolve_tool_result(call_id)
         state = self._ttl_registry.forget(block)
-        self._invalidate()
+        self._invalidate(reason="forget_tool_result")
         return (
             f"Tool result {block.call_id} successfully forgotten. "
             f"It will render as: {state.replace_content}"
@@ -424,24 +427,45 @@ class Homunculus:
         await self._block_manager.shutdown_nursery()
 
     async def check_planner(self) -> None:
-        if self._gas_gauge.input_tokens is None:
+        input_tokens = self._gas_gauge.input_tokens
+        if input_tokens is None:
+            self._debug_event(
+                subsystem="planner",
+                event="deferred",
+                title="Planner check deferred",
+                metadata={"reason": "input_tokens_unknown"},
+            )
             return  # invalid, wait for next round
-        result = self._planner.plan(
-            self._block_manager.semantic_blocks, self._gas_gauge.input_tokens
-        )
+        result = self._planner.plan(self._block_manager.semantic_blocks, input_tokens)
         if result is None:
             return  # no plan updates
         update_msgs: list[str] = []
         match result.kind:
             case "proposal":
                 self._recorder.propose_plan(result.plan)
+                self._debug_event(
+                    subsystem="planner",
+                    event="proposal_generated",
+                    title="Planner proposal generated",
+                    content="\n".join(
+                        [
+                            "# Planner Proposal Generated",
+                            "",
+                            render_plan(
+                                result.plan,
+                                self._block_manager.semantic_blocks,
+                            ),
+                        ]
+                    ),
+                    metadata={
+                        "input_tokens": input_tokens,
+                        "intent_count": len(result.plan.intents),
+                    },
+                )
                 for intent in result.plan.intents:
                     match intent:
                         case IRCompactBlockIntent():
-                            until_medium = (
-                                self._config.medium_threshold
-                                - self._gas_gauge.input_tokens
-                            )
+                            until_medium = self._config.medium_threshold - input_tokens
                             update_msgs.append(
                                 (
                                     f"new proposal - {render_intent(intent, self._block_manager.semantic_blocks)} "
@@ -471,6 +495,16 @@ class Homunculus:
                             raise NotImplementedError(
                                 f"`check_planner` does not yet support an intent of type {type(intent)}"
                             )
+                self._debug_event(
+                    subsystem="planner",
+                    event="proposal_applied",
+                    title="Planner proposal applied",
+                    content="\n".join(["# Planner Proposal Applied", "", *update_msgs]),
+                    metadata={
+                        "input_tokens": input_tokens,
+                        "intent_count": len(result.plan.intents),
+                    },
+                )
         if len(update_msgs) > 0:
             footer_text = "Planner:\n" + "\n".join(update_msgs)
             self._footer_c.queue_footer(
@@ -482,11 +516,11 @@ class Homunculus:
 
     def tick_round_ttls(self) -> None:
         if self._ttl_registry.tick(TTL_TRIGGER_SEQ):
-            self._invalidate()
+            self._invalidate(reason="ttl_seq")
 
     def tick_end_turn_ttls(self) -> None:
         if self._ttl_registry.tick(TTL_TRIGGER_END_TURN):
-            self._invalidate_counts()
+            self._invalidate_counts(reason="ttl_end_turn")
 
     def _format_token_count(self, count: int | None) -> str:
         if count is None:
@@ -650,14 +684,45 @@ class Homunculus:
             )
         return matches[0]
 
-    def _invalidate(self) -> None:
+    def _invalidate(self, *, reason: str = "context_changed") -> None:
         self._should_rerender = True
-        self._invalidate_counts()
+        self._invalidate_counts(reason=reason)
 
-    def _invalidate_counts(self) -> None:
+    def _invalidate_counts(self, *, reason: str = "context_changed") -> None:
         self._token_meter.invalidate()
         self._gas_gauge.invalidate()
+        self._invalidate_planner(reason=reason)
+
+    def _invalidate_planner(self, *, reason: str) -> None:
+        had_proposal = self._planner.proposal is not None
         self._planner.invalidate()
+        if had_proposal:
+            self._debug_event(
+                subsystem="planner",
+                event="proposal_invalidated",
+                title="Planner proposal invalidated",
+                metadata={"reason": reason},
+            )
+
+    def _debug_event(
+        self,
+        *,
+        subsystem: str,
+        event: str,
+        title: str,
+        metadata: dict[str, object],
+        content: str | None = None,
+    ) -> None:
+        if self._debug is None:
+            return
+        self._debug.debug(
+            subsystem=subsystem,
+            event=event,
+            title=title,
+            content=content,
+            plaintext=title,
+            metadata=metadata,
+        )
 
 
 class HomunculusRoundLifecycle(RoundLifecycle):

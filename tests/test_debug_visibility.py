@@ -10,6 +10,10 @@ from spellbook.debug_visibility import (
     DebugEmitter,
     settings_from_runtime_config_records,
 )
+from spellbook.homunculus.tool_result_ttl import (
+    TTL_TRIGGER_END_TURN,
+    ToolResultTTLRegistry,
+)
 from spellbook.ir_types import (
     IRRuntimeConfigRecord,
     IRSkillCatalog,
@@ -136,3 +140,80 @@ async def test_nursery_job_failure_emits_always_on_debug_alert(tmp_path: Path) -
     assert response.metadata["event"] == "job_failed"
     assert response.metadata["job_kind"] == "bash"
     assert response.metadata["error_message"] == "background boom"
+
+
+@pytest.mark.asyncio
+async def test_nursery_lifecycle_debug_events_are_debug_gated(
+    tmp_path: Path,
+) -> None:
+    recorder, transcript = _recorder(tmp_path)
+    lifecycle = _Lifecycle()
+    emitter = DebugEmitter(recorder=recorder, session_lifecycle=lifecycle)
+    emitter.bind_context(SessionContext(session_id="session_test", turn_idx=0))
+    nursery = Nursery(config=SpellbookConfig(cwd=tmp_path), debug_emitter=emitter)
+
+    async def _ok() -> str:
+        return "done"
+
+    nursery.submit(_ok(), kind="bash", source="bash")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    nursery.collect_ready(source="bash")
+    await emitter.flush()
+
+    assert Rehydrator(transcript).run().system_responses == []
+
+    emitter.configure_enabled(True)
+    nursery.submit(_ok(), kind="bash", source="bash")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    nursery.collect_ready(source="bash")
+    await emitter.flush()
+
+    responses = Rehydrator(transcript).run().system_responses
+    events = [
+        response.metadata["event"]
+        for response in responses
+        if response.metadata is not None
+        and response.metadata.get("subsystem") == "nursery"
+    ]
+    assert events == ["job_started", "job_completed", "job_harvested"]
+
+
+@pytest.mark.asyncio
+async def test_ttl_registration_and_tick_emit_debug_events(tmp_path: Path) -> None:
+    recorder, transcript = _recorder(tmp_path)
+    recorder.start_turn("turn_1", [])
+    lifecycle = _Lifecycle()
+    emitter = DebugEmitter(recorder=recorder, session_lifecycle=lifecycle)
+    emitter.bind_context(SessionContext(session_id="session_test", turn_idx=0))
+    emitter.configure_enabled(True)
+    registry = ToolResultTTLRegistry(
+        config=SpellbookConfig(cwd=tmp_path).hom_config,
+        recorder=recorder,
+        debug_emitter=emitter,
+    )
+
+    registry.register(
+        call_id="toolu_big",
+        replace_content="[collapsed]",
+        ttl=1,
+        trigger=TTL_TRIGGER_END_TURN,
+    )
+    registry.tick(TTL_TRIGGER_END_TURN)
+    await emitter.flush()
+
+    responses = Rehydrator(transcript).run().system_responses
+    events = [
+        response.metadata["event"]
+        for response in responses
+        if response.metadata is not None and response.metadata.get("subsystem") == "ttl"
+    ]
+    assert events == ["registered", "tick"]
+    tick = next(
+        response
+        for response in responses
+        if response.metadata is not None and response.metadata.get("event") == "tick"
+    )
+    assert tick.metadata is not None
+    assert tick.metadata["collapsed_call_ids"] == ["toolu_big"]

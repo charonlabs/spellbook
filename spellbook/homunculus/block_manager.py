@@ -507,6 +507,20 @@ class BlockManager:
             self._discard_detection_result(fork_id=fork_id, result=result, error=exc)
             return
 
+        self._debug_event(
+            subsystem="block_detector",
+            event="boundaries_proposed",
+            title="Block detector returned boundaries",
+            metadata={
+                "fork_id": fork_id,
+                "completed": len(result.completed),
+                "still_buffered": len(result.still_buffered),
+                "accepted": len(integration.completed),
+                "deferred": len(integration.deferred_completed),
+                "discarded": len(integration.discarded_ranges),
+            },
+        )
+
         if integration.partial:
             logger.warning(
                 "block_detector.result_partially_deferred fork_id=%s "
@@ -542,6 +556,19 @@ class BlockManager:
         for new_block in new_blocks:
             self.semantic_blocks.append(new_block)
             self._recorder.write_semantic_block(new_block)
+            self._debug_event(
+                subsystem="block_detector",
+                event="block_crystallized",
+                title=f'New block crystallized: "{new_block.title}"',
+                metadata={
+                    "fork_id": fork_id,
+                    "block_id": new_block.id,
+                    "block_idx": new_block.idx,
+                    "title": new_block.title,
+                    "start_block": new_block.range.start_block,
+                    "end_block": new_block.range.end_block,
+                },
+            )
             self._footer_c.queue_footer(
                 text=f'New block crystallized: "{new_block.title}"',
                 footer_type="notif",
@@ -649,11 +676,17 @@ class BlockManager:
     def _submit_detection(self, prepared: PreparedFork) -> None:
         if not self._accept_background_work:
             return
-        self._nursery.submit(
+        job = self._nursery.submit(
             prepared.coro,
             kind="detect_blocks",
             source="block_manager",
             metadata={"fork_id": prepared.fork_id},
+        )
+        self._debug_event(
+            subsystem="block_detector",
+            event="detection_scheduled",
+            title="Block detection scheduled",
+            metadata={"job_id": job.id, "fork_id": prepared.fork_id},
         )
 
     async def _integrate_summarizer_result(
@@ -666,9 +699,45 @@ class BlockManager:
     ) -> None:
         self._summarizer.integrate_result(fork_id)
         if not -1 < block_idx < len(self.semantic_blocks):
+            self._debug_event(
+                subsystem="summarizer",
+                event="summary_discarded",
+                title="Summary result discarded",
+                metadata={
+                    "fork_id": fork_id,
+                    "block_id": block_id,
+                    "block_idx": block_idx,
+                    "reason": "block_idx_missing",
+                },
+            )
             return
         block = self.semantic_blocks[block_idx]
-        if block.id != block_id or "summary" in block.available_modes:
+        if block.id != block_id:
+            self._debug_event(
+                subsystem="summarizer",
+                event="summary_discarded",
+                title="Summary result discarded",
+                metadata={
+                    "fork_id": fork_id,
+                    "block_id": block_id,
+                    "block_idx": block_idx,
+                    "current_block_id": block.id,
+                    "reason": "block_id_mismatch",
+                },
+            )
+            return
+        if "summary" in block.available_modes:
+            self._debug_event(
+                subsystem="summarizer",
+                event="summary_discarded",
+                title="Summary result discarded",
+                metadata={
+                    "fork_id": fork_id,
+                    "block_id": block_id,
+                    "block_idx": block_idx,
+                    "reason": "summary_already_available",
+                },
+            )
             return
         new_block = block.model_copy(
             update={
@@ -691,6 +760,21 @@ class BlockManager:
         # prob should do something a bit cleaner in the future
         self.semantic_blocks[block.idx] = new_block
         self._recorder.write_block_artifact(new_summary, block.id)
+        self._debug_event(
+            subsystem="summarizer",
+            event="summary_applied",
+            title=f'Summary applied for block {block.idx}: "{block.title}"',
+            metadata={
+                "fork_id": fork_id,
+                "block_id": block.id,
+                "block_idx": block.idx,
+                "title": block.title,
+                "headline": new_summary.headline,
+                "token_count": new_summary.toks.tokens
+                if new_summary.toks is not None
+                else None,
+            },
+        )
         await self.generate_next_summary()
 
     async def generate_next_summary(self) -> None:
@@ -712,7 +796,7 @@ class BlockManager:
                     ),
                     prev_semantic_blocks=prev,
                 )
-                self._nursery.submit(
+                job = self._nursery.submit(
                     prepared.coro,
                     kind="summarize_block",
                     source="block_manager",
@@ -721,6 +805,18 @@ class BlockManager:
                         "block_id": block.id,
                         "block_idx": block.idx,
                         "fork_id": prepared.fork_id,
+                    },
+                )
+                self._debug_event(
+                    subsystem="summarizer",
+                    event="summary_scheduled",
+                    title=f'Summary scheduled for block {block.idx}: "{block.title}"',
+                    metadata={
+                        "job_id": job.id,
+                        "fork_id": prepared.fork_id,
+                        "block_id": block.id,
+                        "block_idx": block.idx,
+                        "title": block.title,
                     },
                 )
                 return
@@ -974,6 +1070,26 @@ class BlockManager:
             ),
             metadata=event_metadata,
             level=level,
+        )
+
+    def _debug_event(
+        self,
+        *,
+        subsystem: str,
+        event: str,
+        title: str,
+        metadata: dict[str, object],
+        content: str | None = None,
+    ) -> None:
+        if self._debug is None:
+            return
+        self._debug.debug(
+            subsystem=subsystem,
+            event=event,
+            title=title,
+            content=content,
+            plaintext=title,
+            metadata=metadata,
         )
 
     def _get_block_id(self, job: NurseryJob[Any]) -> str:

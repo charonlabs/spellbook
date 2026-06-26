@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence
 
 from spellbook.config import HomunculusConfig
 from spellbook.image_blobs import resolve_blob_path
@@ -24,6 +24,9 @@ from spellbook.ir_types import (
     ToolResultTTLTrigger,
 )
 from spellbook.recorder import Recorder
+
+if TYPE_CHECKING:
+    from spellbook.debug_visibility import DebugEmitter
 
 TTL_TRIGGER_END_TURN: ToolResultTTLTrigger = "end_turn"
 TTL_TRIGGER_SEQ: ToolResultTTLTrigger = "seq"
@@ -170,9 +173,16 @@ class ToolResultTTLRegistry:
     provider-facing projection after a registered TTL has expired.
     """
 
-    def __init__(self, *, config: HomunculusConfig, recorder: Recorder) -> None:
+    def __init__(
+        self,
+        *,
+        config: HomunculusConfig,
+        recorder: Recorder,
+        debug_emitter: DebugEmitter | None = None,
+    ) -> None:
         self._settings = ToolResultTTLSettings.from_config(config)
         self._recorder = recorder
+        self._debug = debug_emitter
         self._ttls: dict[str, ToolResultTTL] = {}
 
     @property
@@ -281,6 +291,18 @@ class ToolResultTTLRegistry:
             last_completed_turn=max(0, record.delivered_turn - 1),
         )
         self._ttls[call_id] = state
+        self._debug_ttl_event(
+            "registered",
+            title="Tool result TTL registered",
+            metadata={
+                "call_id": call_id,
+                "ttl": ttl_value,
+                "trigger": trigger,
+                "source": source,
+                "output_ref": output_ref,
+                "delivered_turn": state.delivered_turn,
+            },
+        )
         return state
 
     def forget(self, block: IRToolResultBlock) -> ToolResultTTL:
@@ -325,12 +347,27 @@ class ToolResultTTLRegistry:
     def tick(self, trigger: ToolResultTTLTrigger) -> bool:
         """Tick matching TTLs. Returns True if any tool result became collapsed."""
         any_newly_expired = False
+        ticked = 0
+        newly_expired: list[str] = []
         for state in self._ttls.values():
             if state.trigger != trigger or state.remaining <= 0:
                 continue
             state.remaining -= 1
+            ticked += 1
             if state.remaining == 0:
                 any_newly_expired = True
+                newly_expired.append(state.call_id)
+        self._debug_ttl_event(
+            "tick",
+            title="Tool result TTL tick",
+            metadata={
+                "trigger": trigger,
+                "tracked": len(self._ttls),
+                "ticked": ticked,
+                "collapsed": len(newly_expired),
+                "collapsed_call_ids": newly_expired,
+            },
+        )
         return any_newly_expired
 
     def collapse_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
@@ -518,11 +555,41 @@ class ToolResultTTLRegistry:
         output_path.write_text(output, encoding="utf-8")
         return str(output_path.relative_to(self._recorder.transcript_path.parent))
 
+    def _debug_ttl_event(
+        self, event: str, *, title: str, metadata: dict[str, object]
+    ) -> None:
+        if self._debug is None:
+            return
+        self._debug.debug(
+            subsystem="ttl",
+            event=event,
+            title=title,
+            content=_render_ttl_debug_event(title=title, metadata=metadata),
+            plaintext=title,
+            metadata=metadata,
+        )
+
 
 def _line_count(text: str) -> int:
     if text == "":
         return 0
     return len(text.splitlines()) or 1
+
+
+def _render_ttl_debug_event(*, title: str, metadata: dict[str, object]) -> str:
+    rows = [
+        f"# {title}",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+    ]
+    for key, value in sorted(metadata.items()):
+        rows.append(f"| {key} | `{_escape_table(value)}` |")
+    return "\n".join(rows)
+
+
+def _escape_table(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def _safe_filename(value: str) -> str:

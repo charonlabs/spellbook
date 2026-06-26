@@ -165,9 +165,13 @@ class _FakeFooter:
 class _FakeDebugEmitter:
     def __init__(self) -> None:
         self.alerts: list[dict[str, object]] = []
+        self.debug_events: list[dict[str, object]] = []
 
     def alert(self, **kwargs: object) -> None:
         self.alerts.append(kwargs)
+
+    def debug(self, **kwargs: object) -> None:
+        self.debug_events.append(kwargs)
 
 
 class _FakeDetector:
@@ -263,7 +267,10 @@ def _manager(
         config=HomunculusConfig(),
         fork_runner=cast(ForkRunner, fork_runner),
         footer_c=cast(FooterController, footer),
-        nursery=Nursery(config=SpellbookConfig(cwd=Path.cwd())),
+        nursery=Nursery(
+            config=SpellbookConfig(cwd=Path.cwd()),
+            debug_emitter=cast(Any, debug_emitter),
+        ),
         recorder=cast(Recorder, recorder),
         token_meter=cast(TokenMeter, _FakeMeter()),
         context_projector=context_projector,
@@ -726,7 +733,8 @@ async def test_block_metrics_update_full_mode_toks_and_full_toks() -> None:
 
 @pytest.mark.asyncio
 async def test_completed_detection_starts_summary_generation() -> None:
-    manager, recorder, footer, _ = _manager()
+    debug = _FakeDebugEmitter()
+    manager, recorder, footer, _ = _manager(debug_emitter=debug)
     manager.context_blocks = _user_blocks("a")
     summarizer = _FakeSummarizer()
     manager._detector = cast(  # noqa: SLF001 - test swaps collaborator
@@ -748,6 +756,18 @@ async def test_completed_detection_starts_summary_generation() -> None:
     assert footer.queued[0]["text"] == 'New block crystallized: "First"'
     assert summarizer.calls == [manager.semantic_blocks[0].id]
     assert manager.semantic_blocks[0].available_modes == ["full", "summary"]
+    events = [
+        event["event"]
+        for event in debug.debug_events
+        if event["subsystem"] in {"block_detector", "summarizer"}
+    ]
+    assert events == [
+        "detection_scheduled",
+        "boundaries_proposed",
+        "block_crystallized",
+        "summary_scheduled",
+        "summary_applied",
+    ]
 
 
 @pytest.mark.asyncio
