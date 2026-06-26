@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from .ir_types import IRInboundMessage, IRLoopResult
+from .system_response import SystemResponse
 
 
 @dataclass  # # not pydantic because mutable, internal state
@@ -30,6 +31,11 @@ class SessionLifecycle:
         """run_loop returned. Post-turn analysis: tiredness accumulation,
         rest decision, any subsystem work triggered by turn boundaries."""
 
+    async def on_system_response(
+        self, ctx: SessionContext, response: SystemResponse
+    ) -> None:
+        """A system-to-user response was recorded outside the model turn path."""
+
     async def on_shutdown(self, ctx: SessionContext) -> None:
         """Shutdown requested."""
 
@@ -57,6 +63,12 @@ class CompositeSessionLifecycle(SessionLifecycle):
     ) -> None:
         for lifecycle in self._lifecycles:
             await lifecycle.on_turn_ended(ctx, result, turn_id)
+
+    async def on_system_response(
+        self, ctx: SessionContext, response: SystemResponse
+    ) -> None:
+        for lifecycle in self._lifecycles:
+            await lifecycle.on_system_response(ctx, response)
 
     async def on_shutdown(self, ctx: SessionContext) -> None:
         for lifecycle in self._lifecycles:

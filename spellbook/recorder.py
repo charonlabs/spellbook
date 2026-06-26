@@ -37,6 +37,7 @@ from .ir_types import (
     IRSkillCatalog,
     IRSkillCatalogDelta,
     IRSkillCatalogUpdateRecord,
+    IRSystemResponseRecord,
     IRTokenRangeCount,
     IRToolResultTTLRecord,
     IRTurnEndRecord,
@@ -49,6 +50,7 @@ from .ir_types import (
     ToolResultTTLSource,
     ToolResultTTLTrigger,
 )
+from .system_response import SystemResponse
 from .tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
@@ -145,6 +147,17 @@ class Recorder:
             effective=effective,
             turn=self._turn,
             turn_id=self._curr_turn_id,
+        )
+        self._write_record(record)
+        return record
+
+    def write_system_response(self, response: SystemResponse) -> IRSystemResponseRecord:
+        record = IRSystemResponseRecord(
+            session_id=self._session_id,
+            command=response.command,
+            content=response.content,
+            plaintext=response.plaintext,
+            metadata=response.metadata,
         )
         self._write_record(record)
         return record

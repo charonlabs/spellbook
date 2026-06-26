@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 RuntimeState = Literal["idle", "running", "dreaming", "suspended"]
 ConduitType = Literal["context", "message", "notification"]
 ConduitAction = Literal["started_turn", "queued_as_message", "queued_as_context"]
+SubmitMessageAction = Literal["started_turn", "queued", "handled_system"]
 WebSocketCatchupMode = Literal["none", "lite", "full"]
 
 
@@ -111,6 +112,16 @@ class MessageQueuedEvent(BaseModel, frozen=True):
     message: IRInboundMessage
 
 
+class SystemResponseEvent(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["system_response"] = "system_response"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    command: str
+    content: str
+    plaintext: str
+    metadata: dict[str, Any] | None = None
+
+
 ServerEvent = Annotated[
     StreamEvent
     | ContextBlockAddedEvent
@@ -118,7 +129,8 @@ ServerEvent = Annotated[
     | TurnStartedEvent
     | TurnEndedEvent
     | RuntimeStateEvent
-    | MessageQueuedEvent,
+    | MessageQueuedEvent
+    | SystemResponseEvent,
     Field(discriminator="kind"),
 ]
 
@@ -162,14 +174,49 @@ class SubmitMessageResponse(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["submit_message"] = "submit_message"
     time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    started: bool
-    queued: bool
+    action: SubmitMessageAction = "started_turn"
+    started: bool = True
+    queued: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_legacy_flags(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        action = values.get("action")
+        if action is None:
+            started = values.get("started")
+            queued = values.get("queued")
+            if started is True and queued is False:
+                action = "started_turn"
+            elif started is False and queued is True:
+                action = "queued"
+            elif started is False and queued is False:
+                action = "handled_system"
+            if action is not None:
+                values["action"] = action
+        if action == "started_turn":
+            values.setdefault("started", True)
+            values.setdefault("queued", False)
+        elif action == "queued":
+            values.setdefault("started", False)
+            values.setdefault("queued", True)
+        elif action == "handled_system":
+            values.setdefault("started", False)
+            values.setdefault("queued", False)
+        return values
 
     @model_validator(mode="after")
     def _validate_bools(self) -> Self:
-        if self.started == self.queued:
+        expected = {
+            "started_turn": (True, False),
+            "queued": (False, True),
+            "handled_system": (False, False),
+        }[self.action]
+        if (self.started, self.queued) != expected:
             raise ValueError(
-                "`SubmitMessageResponse` must have either `started` or `queued` set to True, and not both."
+                "`SubmitMessageResponse` action must match started/queued flags."
             )
         return self
 

@@ -5,6 +5,7 @@ from spellbook.app.protocol import (
     ContextBlockAddedEvent,
     RuntimeStateEvent,
     StreamEvent,
+    SystemResponseEvent,
     TurnEndedEvent,
     TurnStartedEvent,
 )
@@ -16,6 +17,7 @@ from spellbook.ir_types import (
 )
 from spellbook.round_lifecycle import RoundContext, RoundLifecycle
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
+from spellbook.system_response import SystemResponse
 
 TurnStartedHook = Callable[[SessionContext, str], Awaitable[None]]
 
@@ -81,6 +83,18 @@ class AppSessionLifecycle(SessionLifecycle):
     ) -> None:
         self._bus.publish(
             event=TurnEndedEvent(turn=ctx.turn_idx, turn_id=turn_id, result=result)
+        )
+
+    async def on_system_response(
+        self, ctx: SessionContext, response: SystemResponse
+    ) -> None:
+        self._bus.publish(
+            event=SystemResponseEvent(
+                command=response.command,
+                content=response.content,
+                plaintext=response.plaintext,
+                metadata=response.metadata,
+            )
         )
 
     async def on_shutdown(self, ctx: SessionContext) -> None:

@@ -792,6 +792,17 @@ class IRSkillCatalogUpdateRecord(BaseModel, frozen=True):
     turn_id: str
 
 
+class IRSystemResponseRecord(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    ir: Literal["system_response"] = "system_response"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    command: str
+    content: str
+    plaintext: str
+    metadata: dict[str, Any] | None = None
+
+
 IRRecord = Annotated[
     IRSessionRecord
     | IRTurnStartRecord
@@ -810,6 +821,7 @@ IRRecord = Annotated[
     | IRContextPlanProposalRecord
     | IRForkSummonRecord
     | IRForkShutdownRecord
-    | IRSkillCatalogUpdateRecord,
+    | IRSkillCatalogUpdateRecord
+    | IRSystemResponseRecord,
     Field(discriminator="ir"),
 ]

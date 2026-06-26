@@ -335,13 +335,20 @@ class CoreAppRuntime:
         if message.delivery == "footer":
             raise ValueError("`submit_message` only accepts turn/inject messages.")
         session = self._require_session()
+        if session.is_slash_command_message(message):
+            await self._note_surface_for_inbound(message)
+            response = await session.submit_message(message)
+            assert response is not None
+            return SubmitMessageResponse(action="handled_system")
         if message.delivery == "inject" and session.state == "running":
             await self._note_surface_for_inbound(message)
         queued = session.state == "running" or session.inbound_queue.has_pending_turn()
         await session.submit_message(message)
         if queued:
             self.bus.publish(MessageQueuedEvent(message=message))
-        return SubmitMessageResponse(started=not queued, queued=queued)
+        return SubmitMessageResponse(
+            action="queued" if queued else "started_turn",
+        )
 
     async def _before_turn_started(
         self,

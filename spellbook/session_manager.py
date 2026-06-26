@@ -18,7 +18,9 @@ from spellbook.session_lifecycle import (
     SessionContext,
     SessionLifecycle,
 )
+from spellbook.slash_commands import SlashCommandHandler, parse_slash_command_message
 from spellbook.skills.manager import SkillManager, SkillManagerRoundLifecycle
+from spellbook.system_response import SystemResponse
 from spellbook.surface_builder import RequestSurfaceBuilder
 from spellbook.timekeeper import (
     Timekeeper,
@@ -91,6 +93,7 @@ class SessionManager:
         self.nursery = nursery
         self.skill_manager = skill_manager
         self.fork_config = fork_config
+        self.slash_commands = SlashCommandHandler(self)
         self.state: SessionState = "suspended"
         self._shutdown_requested = False
         self._ctx: SessionContext = SessionContext(
@@ -113,12 +116,16 @@ class SessionManager:
     async def _idle_phase(self) -> None:
         self.state = "idle"
         await self.session_lifecycle.on_enter_idle(self._ctx)
-        msg = await self.inbound_queue.take_turn()
-        if msg is None:
-            await self._shutdown_from_idle()
+        while True:
+            msg = await self.inbound_queue.take_turn()
+            if msg is None:
+                await self._shutdown_from_idle()
+                return
+            if await self.handle_slash_command_message(msg) is not None:
+                continue
+            await self.session_lifecycle.on_exit_idle(self._ctx, reason="message")
+            self.inbound_queue.push_back(msg)
             return
-        await self.session_lifecycle.on_exit_idle(self._ctx, reason="message")
-        self.inbound_queue.push_back(msg)
 
     async def _running_phase(self) -> None:
         self.state = "running"
@@ -127,6 +134,8 @@ class SessionManager:
             if msg is None:
                 await self._shutdown_from_idle()
                 return
+            if await self.handle_slash_command_message(msg) is not None:
+                continue
             turn_id = f"turn_{uuid4().hex}"
             self.recorder.start_turn(turn_id, msg.blocks)
             self._ctx.inbound = msg
@@ -145,10 +154,29 @@ class SessionManager:
             self.cancel_token = None
             await self.session_lifecycle.on_turn_ended(self._ctx, loop_result, turn_id)
 
-    async def submit_message(
-        self, msg: IRInboundMessage
-    ) -> None:  # TODO: return a status
+    async def submit_message(self, msg: IRInboundMessage) -> SystemResponse | None:
+        response = await self.handle_slash_command_message(msg)
+        if response is not None:
+            return response
         await self.inbound_queue.put(msg)
+        return None
+
+    def is_slash_command_message(self, msg: IRInboundMessage) -> bool:
+        return parse_slash_command_message(msg) is not None
+
+    async def handle_slash_command_message(
+        self, msg: IRInboundMessage
+    ) -> SystemResponse | None:
+        parsed = parse_slash_command_message(msg)
+        if parsed is None:
+            return None
+        command, args = parsed
+        self._ctx.inbound = msg
+        self._ctx.turn_idx = self.recorder.current_turn_idx
+        response = await self.slash_commands.handle(command, args)
+        self.recorder.write_system_response(response)
+        await self.session_lifecycle.on_system_response(self._ctx, response)
+        return response
 
     async def shutdown(self) -> None:
         self._shutdown_requested = True

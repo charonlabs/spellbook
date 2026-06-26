@@ -30,6 +30,8 @@ from spellbook.ir_types import (
     IRSemanticBlockRange,
     IRSkillCatalog,
     IRSkillCatalogUpdateRecord,
+    IRSystemResponseRecord,
+    IRTurnStartRecord,
     IRTurnEndRecord,
     IRToolCallBlock,
     IRToolResultBlock,
@@ -49,6 +51,7 @@ from spellbook.round_lifecycle import (
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 from spellbook.session_manager import SessionManager
 from spellbook.skills.manager import SkillManager
+from spellbook.system_response import SystemResponse
 from spellbook.tools.common import (
     BlockDetectorToolMetadata,
     Tool,
@@ -185,6 +188,11 @@ class _RecordingSessionLifecycle(SessionLifecycle):
         self, ctx: SessionContext, result: IRLoopResult, turn_id: str
     ) -> None:
         self.events.append(("on_turn_ended", result.stop_reason))
+
+    async def on_system_response(
+        self, ctx: SessionContext, response: SystemResponse
+    ) -> None:
+        self.events.append(("on_system_response", response.command))
 
     async def on_shutdown(self, ctx: SessionContext) -> None:
         self.events.append(("on_shutdown", None))
@@ -559,6 +567,53 @@ class TestInboundInjectionRoundLifecycle:
 
 
 class TestRunningPhase:
+    @pytest.mark.asyncio
+    async def test_submit_message_handles_slash_command_without_turn(
+        self, tmp_path: Path
+    ) -> None:
+        gen = _FakeGenerator([])
+        lifecycle = _RecordingSessionLifecycle()
+        manager = _make_manager(
+            tmp_path,
+            generator=cast(Generator, gen),
+            session_lifecycle=lifecycle,
+        )
+
+        response = await manager.submit_message(_user_msg("/status"))
+
+        assert response is not None
+        assert response.command == "/status"
+        assert not manager.inbound_queue.has_pending_turn()
+        assert gen.calls_seen == []
+        rehydrated = Rehydrator(manager.transcript_path).run()
+        assert any(
+            isinstance(record, IRSystemResponseRecord) and record.command == "/status"
+            for record in rehydrated.records
+        )
+        assert not any(
+            isinstance(record, IRTurnStartRecord) for record in rehydrated.records
+        )
+        assert lifecycle.events == [("on_system_response", "/status")]
+
+    @pytest.mark.asyncio
+    async def test_running_phase_intercepts_directly_queued_slash_command(
+        self, tmp_path: Path
+    ) -> None:
+        gen = _FakeGenerator([])
+        lifecycle = _RecordingSessionLifecycle()
+        manager = _make_manager(
+            tmp_path,
+            generator=cast(Generator, gen),
+            session_lifecycle=lifecycle,
+        )
+        await manager.inbound_queue.put(_user_msg("/help"))
+
+        await manager._running_phase()
+
+        assert gen.calls_seen == []
+        assert not manager.inbound_queue.has_pending_turn()
+        assert lifecycle.events == [("on_system_response", "/help")]
+
     @pytest.mark.asyncio
     async def test_running_phase_processes_pending_turn_messages(
         self, tmp_path: Path

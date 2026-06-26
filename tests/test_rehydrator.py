@@ -51,6 +51,7 @@ from spellbook.ir_types import (
 )
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.system_response import SystemResponse
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
 
 
@@ -130,6 +131,31 @@ class TestCleanEnded:
         assert result.last_completed_turn == 2
         assert len(result.blocks) == 4
         assert _block_texts(result.blocks) == ["a", "b", "c", "d"]
+
+
+class TestSystemResponses:
+    def test_system_response_rehydrates_without_context_blocks(
+        self, tmp_path: Path
+    ) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.write_system_response(
+            SystemResponse(
+                command="/status",
+                content="# Status",
+                plaintext="Status",
+                metadata={"regime": "calm"},
+            )
+        )
+
+        result = Rehydrator(transcript).run()
+
+        assert result.blocks == []
+        assert len(result.system_responses) == 1
+        response = result.system_responses[0]
+        assert response.command == "/status"
+        assert response.content == "# Status"
+        assert response.metadata == {"regime": "calm"}
 
 
 class TestImageBlobRehydration:

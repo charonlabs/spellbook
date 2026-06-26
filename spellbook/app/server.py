@@ -193,8 +193,9 @@ def create_app(
             )
         )
         logger.info(
-            "message.routed delivery=%s started=%s queued=%s",
+            "message.routed delivery=%s action=%s started=%s queued=%s",
             delivery,
+            response.action,
             response.started,
             response.queued,
         )

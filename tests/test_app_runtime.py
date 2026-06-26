@@ -13,6 +13,7 @@ from spellbook.app.protocol import (
     MessageQueuedEvent,
     RecordWrittenEvent,
     RuntimeStateEvent,
+    SystemResponseEvent,
 )
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.config import SpellbookConfig
@@ -29,6 +30,8 @@ from spellbook.recorder import Recorder, RecordTap
 from spellbook.round_lifecycle import RoundLifecycle
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 from spellbook.session_manager import SessionBuilder, SessionManager, SessionState
+from spellbook.slash_commands import parse_slash_command_message
+from spellbook.system_response import SystemResponse
 from spellbook.tools.common import Tool, ToolExecutionResult, ToolMetadata
 from spellbook.tools.registry import ToolRegistry
 
@@ -95,9 +98,35 @@ class _FakeSession:
         self.state = "suspended"
         await self._lifecycle.on_shutdown(ctx)
 
-    async def submit_message(self, msg: IRInboundMessage) -> None:
+    async def submit_message(self, msg: IRInboundMessage) -> SystemResponse | None:
+        response = await self.handle_slash_command_message(msg)
+        if response is not None:
+            return response
         self.submitted.append(msg)
         await self.inbound_queue.put(msg)
+        return None
+
+    def is_slash_command_message(self, msg: IRInboundMessage) -> bool:
+        return parse_slash_command_message(msg) is not None
+
+    async def handle_slash_command_message(
+        self, msg: IRInboundMessage
+    ) -> SystemResponse | None:
+        parsed = parse_slash_command_message(msg)
+        if parsed is None:
+            return None
+        command, _args = parsed
+        response = SystemResponse(
+            command=command,
+            content=f"# {command}",
+            plaintext=f"handled {command}",
+            metadata={"fake": True},
+        )
+        await self._lifecycle.on_system_response(
+            SessionContext(session_id=self.session_id, turn_idx=0, inbound=msg),
+            response,
+        )
+        return response
 
     def interrupt(self) -> bool:
         return self.interrupt_result
@@ -199,14 +228,45 @@ async def test_submit_message_reports_started_then_queued(tmp_path: Path) -> Non
 
     assert started.started is True
     assert started.queued is False
+    assert started.action == "started_turn"
     assert queued.started is False
     assert queued.queued is True
+    assert queued.action == "queued"
 
     event = await asyncio.wait_for(subscription.__anext__(), timeout=1)
     assert isinstance(event, MessageQueuedEvent)
     queued_block = event.message.blocks[0]
     assert isinstance(queued_block, IRUserTextBlock)
     assert queued_block.text == "two"
+
+    await runtime.shutdown()
+
+
+async def test_submit_message_handles_slash_command_immediately_while_running(
+    tmp_path: Path,
+) -> None:
+    builder = _FakeSessionBuilder()
+    bus = AppEventBus()
+    runtime = CoreAppRuntime(
+        transcript_path=tmp_path / "transcript.jsonl",
+        config=_config(tmp_path),
+        session_builder=cast(SessionBuilder, builder),
+        bus=bus,
+    )
+    await runtime.startup()
+    assert builder.session is not None
+    builder.session.state = "running"
+    subscription = bus.subscribe()
+
+    response = await runtime.submit_message(_message("/help"))
+
+    assert response.action == "handled_system"
+    assert response.started is False
+    assert response.queued is False
+    assert not any(message.delivery == "turn" for message in builder.session.submitted)
+    event = await asyncio.wait_for(subscription.__anext__(), timeout=1)
+    assert isinstance(event, SystemResponseEvent)
+    assert event.command == "/help"
 
     await runtime.shutdown()
 
