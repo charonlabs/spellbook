@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from pydantic import TypeAdapter
@@ -70,6 +71,14 @@ def _footer_msg(
             "footer_priority": footer_priority,
         },
     )
+
+
+class _FakeDebugEmitter:
+    def __init__(self) -> None:
+        self.debug_events: list[dict[str, object]] = []
+
+    def debug(self, **kwargs: object) -> None:
+        self.debug_events.append(kwargs)
 
 
 class TestFooterControllerQueueing:
@@ -432,9 +441,12 @@ class TestFooterControllerRoundLifecycle:
     ) -> None:
         recorder, transcript = _make_recorder(tmp_path)
         inbound = InboundMessageQueue()
-        controller = FooterController(inbound_queue=inbound, recorder=recorder)
+        debug = _FakeDebugEmitter()
+        controller = FooterController(
+            inbound_queue=inbound, recorder=recorder, debug_emitter=cast(Any, debug)
+        )
         lifecycle = FooterControllerRoundLifecycle(
-            controller=controller, recorder=recorder
+            controller=controller, recorder=recorder, debug_emitter=cast(Any, debug)
         )
 
         controller.queue_footer(
@@ -480,3 +492,14 @@ class TestFooterControllerRoundLifecycle:
         assert written_block.turn_id == "t1"
         assert written_block.event_id is not None
         assert written_block.text == "<spellbook>\nbeta\n---\nalpha\n</spellbook>"
+        injected = [
+            event
+            for event in debug.debug_events
+            if event["event"] == "footers_injected"
+        ]
+        assert len(injected) == 1
+        content = cast(str, injected[0]["content"])
+        assert "```xml\n<spellbook>\nbeta\n---\nalpha\n</spellbook>\n```" in content
+        metadata = cast(dict[str, object], injected[0]["metadata"])
+        assert metadata["rendered"] == "<spellbook>\nbeta\n---\nalpha\n</spellbook>"
+        assert metadata["footer_keys"] == ["b", "a"]

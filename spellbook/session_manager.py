@@ -333,6 +333,7 @@ class SessionManager:
                 rehydrated.runtime_config_updates
             ),
         )
+        footer_controller.bind_debug_emitter(debug_emitter)
         fork_runner = ForkRunner(
             parent_config=config,
             parent_transcript_path=transcript_path,
@@ -383,7 +384,9 @@ class SessionManager:
                 )
             lifecycles.append(
                 FooterControllerRoundLifecycle(
-                    controller=footer_controller, recorder=recorder
+                    controller=footer_controller,
+                    recorder=recorder,
+                    debug_emitter=debug_emitter,
                 )
             )
             comp_round_lifecycle = CompositeRoundLifecycle(lifecycles=lifecycles)
