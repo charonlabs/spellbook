@@ -118,6 +118,8 @@ class TestSuccessfulDispatch:
         ) -> ToolExecutionResult:
             seen["cwd"] = meta.cwd
             seen["transcript_path"] = meta.transcript_path
+            seen["chorus_url"] = meta.chorus_url
+            seen["chorus_entity_name"] = meta.chorus_entity_name
             seen["input"] = input.value
             return ToolExecutionResult(content=[IRToolTextBlock(text="ok")])
 
@@ -132,6 +134,8 @@ class TestSuccessfulDispatch:
             cwd=tmp_path,
             model="claude-sonnet-4-6",
             session_type="custom",
+            chorus_url="http://127.0.0.1:8766",
+            chorus_entity_name="meta",
         )
         executor = Executor(config, transcript, ToolRegistry(tools=[inspect_tool]))
 
@@ -151,6 +155,8 @@ class TestSuccessfulDispatch:
         assert seen == {
             "cwd": tmp_path,
             "transcript_path": transcript,
+            "chorus_url": "http://127.0.0.1:8766",
+            "chorus_entity_name": "meta",
             "input": "hello",
         }
 

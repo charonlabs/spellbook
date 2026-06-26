@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "A home for a mind."
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.11.0",
     "anthropic>=0.86.0",
     "exa-py>=1.0.0",
     "fastapi[standard]>=0.136.1",
+    "httpx>=0.28.1",
     "openai>=2.30.0",
     "pydantic>=2.12.5,<2.13",
     "python-dotenv>=1.2.2",

@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -36,6 +37,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_ENV_PATH = Path.home() / ".chorus" / ".env"
 SESSIONS_DIR = Path.home() / ".spellbook" / "sessions"
+CHORUS_SESSION_ENV = "CHORUS_SESSION"
+CHORUS_URL_ENV = "CHORUS_URL"
+MINICHORUS_SERVER_URL_ENV = "MINICHORUS_SERVER_URL"
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 
@@ -138,6 +142,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Dotenv file to load before startup. Defaults to {DEFAULT_ENV_PATH}.",
     )
     parser.add_argument(
+        "--chorus-url",
+        default=None,
+        help=(
+            "MiniChorus server URL for Chorus-bound tools. Defaults to "
+            f"${MINICHORUS_SERVER_URL_ENV}, then ${CHORUS_URL_ENV}, if set."
+        ),
+    )
+    parser.add_argument(
+        "--chorus-entity-name",
+        default=None,
+        help=(
+            "MiniChorus entity name for Chorus-bound tools. Defaults to "
+            f"${CHORUS_SESSION_ENV}, if set."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=("critical", "error", "warning", "info", "debug", "trace"),
         default="info",
@@ -161,8 +181,22 @@ def _config_from_args(args: argparse.Namespace) -> SpellbookConfig:
         max_output_tokens=args.max_output_tokens,
         cwd=args.cwd.expanduser().resolve(),
         user_name=args.user_name,
+        chorus_url=_chorus_url_from_args(args),
+        chorus_entity_name=_chorus_entity_name_from_args(args),
         hom_config=HomunculusConfig(detect_interval=args.detect_interval),
     )
+
+
+def _chorus_url_from_args(args: argparse.Namespace) -> str | None:
+    return (
+        args.chorus_url
+        or os.environ.get(MINICHORUS_SERVER_URL_ENV)
+        or os.environ.get(CHORUS_URL_ENV)
+    )
+
+
+def _chorus_entity_name_from_args(args: argparse.Namespace) -> str | None:
+    return args.chorus_entity_name or os.environ.get(CHORUS_SESSION_ENV)
 
 
 def _system_prompt_from_args(args: argparse.Namespace) -> str:

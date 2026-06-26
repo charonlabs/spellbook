@@ -53,6 +53,7 @@ ToolCategory = Literal[
     "thinking",
     "block_detection",
     "block_summarization",
+    "chorus_tools",
 ]
 
 TOOL_DESCS_DIR = Path(__file__).parent / "descs"
@@ -74,6 +75,8 @@ class ToolMetadata:
     skill_manager: SkillManager | None = None
     homunculus: Homunculus | None = None
     cancel_token: CancelToken | None = None
+    chorus_url: str | None = None
+    chorus_entity_name: str | None = None
 
 
 # I'm using inheritance here b/c idk how to do the union thingy with dataclasses
@@ -131,6 +134,8 @@ def build_tool_metadata(
                 transcript_path=transcript_path,
                 homunculus=homunculus,
                 skill_manager=skill_manager,
+                chorus_url=config.chorus_url,
+                chorus_entity_name=config.chorus_entity_name,
             )
         case "custom":
             return ToolMetadata(
@@ -138,6 +143,8 @@ def build_tool_metadata(
                 transcript_path=transcript_path,
                 homunculus=homunculus,
                 skill_manager=skill_manager,
+                chorus_url=config.chorus_url,
+                chorus_entity_name=config.chorus_entity_name,
             )
         case "block_detector":
             assert isinstance(fork_config, BlockDetectorConfig)

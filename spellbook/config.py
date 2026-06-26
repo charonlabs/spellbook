@@ -82,6 +82,8 @@ class SpellbookConfig(BaseModel, frozen=True):
     )
     user_name: str = DEFAULT_USER_NAME
     tool_categories: set[str] | None = None
+    chorus_url: str | None = None
+    chorus_entity_name: str | None = None
     session_type: SessionType = "main"
     cwd: Path
 

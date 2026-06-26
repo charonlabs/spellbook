@@ -13,11 +13,13 @@ The registry is immutable — there's no ``registry.add``; to change the
 tool surface, construct a new registry.
 """
 
+from collections.abc import Set as AbstractSet
 from typing import Any, Literal
 
 from pydantic import BaseModel
 
 from spellbook.custom import CustomSurface
+from spellbook.tools.chorus import REACH_TOOL
 from spellbook.tools.skills import SKILL_TOOL
 from spellbook.tools.web import WEB_ANSWER_TOOL, WEB_READ_TOOL, WEB_SEARCH_TOOL
 
@@ -41,6 +43,14 @@ from .self_work import (
 )
 
 ToolSurface = Literal["main", "block_detector", "block_summarizer", "custom"]
+
+CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
+    "coding": frozenset({"filesystem", "thinking"}),
+    "main": frozenset({"filesystem", "thinking", "memory", "web", "skills"}),
+    "chorus": frozenset(
+        {"filesystem", "thinking", "memory", "web", "skills", "chorus_tools"}
+    ),
+}
 
 
 class ToolRegistry(BaseModel, frozen=True):
@@ -66,7 +76,7 @@ class ToolRegistry(BaseModel, frozen=True):
     @classmethod
     def build(
         cls,
-        categories: set[str] | None = None,
+        categories: AbstractSet[str] | None = None,
         *,
         surface: ToolSurface = "main",
         custom: CustomSurface | None = None,
@@ -79,15 +89,31 @@ class ToolRegistry(BaseModel, frozen=True):
             custom_tools = [
                 tool
                 for tool in TOOLS_BY_SURFACE["main"]
-                if tool.category in custom.include_tool_categories
+                if tool.category
+                in resolve_tool_categories(custom.include_tool_categories)
             ]
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
         surface_tools = TOOLS_BY_SURFACE[surface]
-        if categories is None:
+        if categories is None and surface != "main":
             return cls(tools=surface_tools)
-        filtered_tools = [tool for tool in surface_tools if tool.category in categories]
+        resolved_categories = resolve_tool_categories(categories)
+        filtered_tools = [
+            tool for tool in surface_tools if tool.category in resolved_categories
+        ]
         return cls(tools=filtered_tools)
+
+
+def resolve_tool_categories(categories: AbstractSet[str] | None) -> set[str]:
+    requested = {"main"} if categories is None else set(categories)
+    resolved: set[str] = set()
+    for category in requested:
+        expanded = CATEGORY_HIERARCHY.get(category)
+        if expanded is None:
+            resolved.add(category)
+        else:
+            resolved.update(expanded)
+    return resolved
 
 
 # Main entity tools. This is the surface a normal Spellbook session sees.
@@ -107,6 +133,7 @@ MAIN_TOOLS: list[Tool[Any]] = [
     CONFIGURE_TOOL,
     PIN_TOOL,
     RECALL_TOOL,
+    REACH_TOOL,
 ]
 
 # Fork-scoped tools. These are protocol tools for child sessions, not part of
@@ -128,5 +155,5 @@ TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
 # Every tool this binary knows how to validate and execute.
 ALL_TOOLS: list[Tool[Any]] = MAIN_TOOLS + BLOCK_DETECTOR_TOOLS + BLOCK_SUMMARIZER_TOOLS
 
-DEFAULT_TOOL_REGISTRY = ToolRegistry(tools=MAIN_TOOLS)
+DEFAULT_TOOL_REGISTRY = ToolRegistry.build(categories=None, surface="main")
 KNOWN_TOOL_REGISTRY = ToolRegistry(tools=ALL_TOOLS)

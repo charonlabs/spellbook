@@ -124,7 +124,7 @@ class TestSchemaGeneration:
         schemas = backend.build_tool_schemas(registry)
         assert schemas == []
 
-    def test_registry_build_none_categories_means_all(self) -> None:
+    def test_registry_build_none_categories_means_main_bundle(self) -> None:
         registry = ToolRegistry.build(categories=None)
         assert registry.tool_names == DEFAULT_TOOL_REGISTRY.tool_names
 
@@ -185,6 +185,7 @@ class TestDefaultRegistry:
             "Pin",
             "Recall",
         }
+        assert "Reach" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "ProposeBlock" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "AmendBlock" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "CompleteBlock" not in DEFAULT_TOOL_REGISTRY.tool_names
@@ -210,6 +211,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Reach",
             "ProposeBlock",
             "AmendBlock",
             "CompleteBlock",
@@ -237,6 +239,29 @@ class TestToolSurfaces:
             "Pin",
             "Recall",
         }
+        assert "Reach" not in registry.tool_names
+
+    def test_main_category_expands_to_normal_entity_registry(self) -> None:
+        registry = ToolRegistry.build(categories={"main"}, surface="main")
+
+        assert registry.tool_names == DEFAULT_TOOL_REGISTRY.tool_names
+
+    def test_coding_category_expands_to_filesystem_tools(self) -> None:
+        registry = ToolRegistry.build(categories={"coding"}, surface="main")
+
+        assert registry.tool_names == {
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+        }
+        assert "WebSearch" not in registry.tool_names
+        assert "Reach" not in registry.tool_names
+
+    def test_chorus_category_includes_standard_tools_and_reach(self) -> None:
+        registry = ToolRegistry.build(categories={"chorus"}, surface="main")
+
+        assert registry.tool_names == DEFAULT_TOOL_REGISTRY.tool_names | {"Reach"}
 
     def test_main_surface_does_not_expose_block_detection_category(self) -> None:
         registry = ToolRegistry.build(categories={"block_detection"}, surface="main")

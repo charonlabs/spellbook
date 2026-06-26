@@ -156,6 +156,26 @@ def test_config_from_args_infers_openai_provider_for_gpt_model(tmp_path: Path) -
     assert config.model == "gpt-5.5"
 
 
+def test_config_from_args_threads_chorus_launch_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHORUS_SESSION", "meta")
+    monkeypatch.setenv("MINICHORUS_SERVER_URL", "http://127.0.0.1:8766")
+    args = server._parse_args(
+        [
+            "--model",
+            "claude-sonnet-4-6",
+            "--cwd",
+            str(tmp_path),
+        ]
+    )
+
+    config = server._config_from_args(args)
+
+    assert config.chorus_entity_name == "meta"
+    assert config.chorus_url == "http://127.0.0.1:8766"
+
+
 def test_model_is_optional_when_resuming_existing_transcript(tmp_path: Path) -> None:
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text("", encoding="utf-8")
