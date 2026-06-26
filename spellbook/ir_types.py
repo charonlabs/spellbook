@@ -251,8 +251,8 @@ StopReason = Literal[
 
 ToolResultTTLTrigger = Literal["end_turn", "seq"]
 ToolResultTTLSource = Literal["auto", "manual", "repair"]
-RuntimeConfigNamespace = Literal["tool_result_ttl"]
-RuntimeConfigSource = Literal["model"]
+RuntimeConfigNamespace = Literal["tool_result_ttl", "debug_visibility"]
+RuntimeConfigSource = Literal["model", "operator"]
 RuntimeConfigValue = int | bool
 
 

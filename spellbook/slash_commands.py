@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from spellbook.config import SpellbookConfig
+from spellbook.debug_visibility import DebugEmitter
 from spellbook.homunculus import Homunculus
 from spellbook.homunculus.common import render_plan
 from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
@@ -18,6 +19,7 @@ class SlashCommandSession(Protocol):
     config: SpellbookConfig
     homunculus: Homunculus
     recorder: Recorder
+    debug_emitter: DebugEmitter
     state: Any
 
 
@@ -101,6 +103,12 @@ class SlashCommandHandler:
             self._help,
             description="List available slash commands.",
             usage="/help",
+        )
+        self.register(
+            "/debug",
+            self._debug,
+            description="Show or toggle operator debug visibility.",
+            usage="/debug [status|on|off]",
         )
 
     async def _status(self, args: str) -> SystemResponse:
@@ -236,6 +244,68 @@ class SlashCommandHandler:
                         self._commands.values(), key=lambda item: item.name
                     )
                 ]
+            },
+        )
+
+    async def _debug(self, args: str) -> SystemResponse:
+        arg = args.strip().lower()
+        if arg in {"", "status"}:
+            return self._debug_response(action="status", changed=False)
+        if arg in {"on", "true", "yes", "1"}:
+            _old, _new, changed = self._session.debug_emitter.configure_enabled(True)
+            return self._debug_response(action="on", changed=changed)
+        if arg in {"off", "false", "no", "0"}:
+            _old, _new, changed = self._session.debug_emitter.configure_enabled(False)
+            return self._debug_response(action="off", changed=changed)
+        return SystemResponse(
+            command="/debug",
+            content=(
+                "# Debug Visibility\n\n"
+                f"Unknown debug command: `{_escape_inline(args)}`\n\n"
+                "Usage: `/debug status`, `/debug on`, or `/debug off`."
+            ),
+            plaintext=(
+                f"Unknown debug command: {args}. "
+                "Usage: /debug status, /debug on, or /debug off."
+            ),
+            metadata={
+                "kind": "debug_control",
+                "action": "invalid",
+                "enabled": self._session.debug_emitter.enabled,
+            },
+        )
+
+    def _debug_response(self, *, action: str, changed: bool) -> SystemResponse:
+        enabled = self._session.debug_emitter.enabled
+        state = "on" if enabled else "off"
+        if action == "status":
+            plaintext = f"Debug visibility is {state}."
+        elif changed:
+            plaintext = f"Debug visibility turned {state}."
+        else:
+            plaintext = f"Debug visibility is already {state}."
+
+        content = "\n".join(
+            [
+                "# Debug Visibility",
+                "",
+                "| Field | Value |",
+                "| --- | --- |",
+                f"| Enabled | `{enabled}` |",
+                f"| State | `{state}` |",
+                f"| Action | `{_escape_table(action)}` |",
+                f"| Changed | `{changed}` |",
+            ]
+        )
+        return SystemResponse(
+            command="/debug",
+            content=content,
+            plaintext=plaintext,
+            metadata={
+                "kind": "debug_control",
+                "action": action,
+                "enabled": enabled,
+                "changed": changed,
             },
         )
 

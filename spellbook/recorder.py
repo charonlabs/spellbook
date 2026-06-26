@@ -46,6 +46,7 @@ from .ir_types import (
     SemanticBlockMode,
     StopReason,
     RuntimeConfigNamespace,
+    RuntimeConfigSource,
     RuntimeConfigValue,
     ToolResultTTLSource,
     ToolResultTTLTrigger,
@@ -139,12 +140,14 @@ class Recorder:
         namespace: RuntimeConfigNamespace,
         updates: dict[str, RuntimeConfigValue],
         effective: dict[str, RuntimeConfigValue],
+        source: RuntimeConfigSource = "model",
     ) -> IRRuntimeConfigRecord:
         record = IRRuntimeConfigRecord(
             session_id=self._session_id,
             namespace=namespace,
             updates=updates,
             effective=effective,
+            source=source,
             turn=self._turn,
             turn_id=self._curr_turn_id,
         )

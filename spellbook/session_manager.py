@@ -4,6 +4,10 @@ from uuid import uuid4
 
 from spellbook.backends import build_backend
 from spellbook.custom import CustomSurface
+from spellbook.debug_visibility import (
+    DebugEmitter,
+    settings_from_runtime_config_records,
+)
 from spellbook.footer import (
     FooterController,
     FooterControllerRoundLifecycle,
@@ -74,6 +78,7 @@ class SessionManager:
         transcript_path: Path,
         nursery: Nursery,
         skill_manager: SkillManager,
+        debug_emitter: DebugEmitter | None = None,
         fork_config: ForkConfig | None = None,
     ) -> None:
         self.session_id = session_id
@@ -93,12 +98,17 @@ class SessionManager:
         self.nursery = nursery
         self.skill_manager = skill_manager
         self.fork_config = fork_config
-        self.slash_commands = SlashCommandHandler(self)
         self.state: SessionState = "suspended"
         self._shutdown_requested = False
         self._ctx: SessionContext = SessionContext(
             session_id=session_id, turn_idx=recorder.current_turn_idx
         )
+        self.debug_emitter = debug_emitter or DebugEmitter(
+            recorder=recorder,
+            session_lifecycle=session_lifecycle,
+        )
+        self.debug_emitter.bind_context(self._ctx)
+        self.slash_commands = SlashCommandHandler(self)
 
     async def run(self) -> None:
         """Main entrypoint. Run until shutdown is requested."""
@@ -108,6 +118,7 @@ class SessionManager:
                 await self._running_phase()
         self.state = "suspended"
         await self.homunculus.shutdown()
+        await self.debug_emitter.close()
         await self.session_lifecycle.on_shutdown(self._ctx)
 
     async def _shutdown_from_idle(self) -> None:
@@ -388,6 +399,13 @@ class SessionManager:
             session_lifecycle = CompositeSessionLifecycle(
                 [TimekeeperSessionLifecycle(timekeeper), session_lifecycle]
             )
+        debug_emitter = DebugEmitter(
+            recorder=recorder,
+            session_lifecycle=session_lifecycle,
+            settings=settings_from_runtime_config_records(
+                rehydrated.runtime_config_updates
+            ),
+        )
         return cls(
             session_id=session_id,
             inbound_queue=inbound_queue,
@@ -402,5 +420,6 @@ class SessionManager:
             transcript_path=transcript_path,
             nursery=nursery,
             skill_manager=skill_manager,
+            debug_emitter=debug_emitter,
             fork_config=fork_config,
         )

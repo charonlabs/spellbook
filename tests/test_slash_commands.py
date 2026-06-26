@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from spellbook.config import SpellbookConfig
+from spellbook.debug_visibility import DebugVisibilitySettings
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
     AwarenessHomunculusSnapshot,
@@ -25,6 +26,19 @@ from spellbook.slash_commands import (
     SlashCommandSession,
     parse_slash_command_message,
 )
+
+
+class _FakeDebugEmitter:
+    def __init__(self) -> None:
+        self.enabled = False
+
+    def configure_enabled(
+        self, enabled: bool
+    ) -> tuple[DebugVisibilitySettings, DebugVisibilitySettings, bool]:
+        old = DebugVisibilitySettings(enabled=self.enabled)
+        changed = self.enabled != enabled
+        self.enabled = enabled
+        return old, DebugVisibilitySettings(enabled=self.enabled), changed
 
 
 def _message(text: str, *, delivery: InboundDelivery = "turn") -> IRInboundMessage:
@@ -72,6 +86,7 @@ def _handler(tmp_path: Path) -> SlashCommandHandler:
         config=SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path),
         homunculus=SimpleNamespace(build_awareness=_awareness),
         recorder=SimpleNamespace(current_turn_idx=7),
+        debug_emitter=_FakeDebugEmitter(),
         state="idle",
     )
     return SlashCommandHandler(cast(SlashCommandSession, session))
@@ -115,7 +130,29 @@ async def test_help_command_lists_registered_commands(tmp_path: Path) -> None:
 
     assert response.command == "/help"
     assert "/status" in response.plaintext
+    assert "/debug" in response.plaintext
     assert "| `/reflect` |" in response.content
+
+
+@pytest.mark.asyncio
+async def test_debug_command_toggles_operator_visibility(tmp_path: Path) -> None:
+    handler = _handler(tmp_path)
+
+    enabled = await handler.handle("/debug", "on")
+    repeated = await handler.handle("/debug", "on")
+    disabled = await handler.handle("/debug", "off")
+
+    assert enabled.command == "/debug"
+    assert enabled.plaintext == "Debug visibility turned on."
+    assert enabled.metadata is not None
+    assert enabled.metadata["enabled"] is True
+    assert enabled.metadata["changed"] is True
+    assert repeated.plaintext == "Debug visibility is already on."
+    assert repeated.metadata is not None
+    assert repeated.metadata["changed"] is False
+    assert disabled.plaintext == "Debug visibility turned off."
+    assert disabled.metadata is not None
+    assert disabled.metadata["enabled"] is False
 
 
 @pytest.mark.asyncio

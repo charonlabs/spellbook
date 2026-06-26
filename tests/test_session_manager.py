@@ -27,6 +27,7 @@ from spellbook.ir_types import (
     IRGeneration,
     IRInboundMessage,
     IRLoopResult,
+    IRRuntimeConfigRecord,
     IRSemanticBlockRange,
     IRSkillCatalog,
     IRSkillCatalogUpdateRecord,
@@ -594,6 +595,32 @@ class TestRunningPhase:
             isinstance(record, IRTurnStartRecord) for record in rehydrated.records
         )
         assert lifecycle.events == [("on_system_response", "/status")]
+
+    @pytest.mark.asyncio
+    async def test_debug_command_persists_operator_runtime_config(
+        self, tmp_path: Path
+    ) -> None:
+        manager = _make_manager(tmp_path)
+
+        response = await manager.submit_message(_user_msg("/debug on"))
+
+        assert response is not None
+        assert response.command == "/debug"
+        assert response.metadata is not None
+        assert response.metadata["enabled"] is True
+        rehydrated = Rehydrator(manager.transcript_path).run()
+        runtime_records = [
+            record
+            for record in rehydrated.records
+            if isinstance(record, IRRuntimeConfigRecord)
+        ]
+        assert len(runtime_records) == 1
+        assert runtime_records[0].namespace == "debug_visibility"
+        assert runtime_records[0].source == "operator"
+        assert runtime_records[0].updates == {"enabled": True}
+        assert not any(
+            isinstance(record, IRTurnStartRecord) for record in rehydrated.records
+        )
 
     @pytest.mark.asyncio
     async def test_running_phase_intercepts_directly_queued_slash_command(
