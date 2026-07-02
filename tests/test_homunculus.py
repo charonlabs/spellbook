@@ -1272,20 +1272,26 @@ async def test_configure_reads_runtime_ttl_settings_without_recording(
 
     text, display = homunculus.configure()
 
-    assert display == {
-        "kind": "configure",
-        "action": "read",
-        "namespace": "tool_result_ttl",
-        "updates": {},
-        "effective": {
-            "enabled": True,
-            "ttl_turns": 7,
-            "char_threshold": 1234,
-        },
+    assert display["kind"] == "configure"
+    assert display["action"] == "read"
+    assert display["namespace"] == "runtime"
+    assert display["updates"] == {}
+    assert display["effective"]["tool_result_ttl"] == {
+        "enabled": True,
+        "ttl_turns": 7,
+        "char_threshold": 1234,
+    }
+    assert display["effective"]["hearth"] == {
+        "enabled": False,
+        "interval_minutes": 55,
+        "quiet_hours": "",
     }
     assert "- ttl_enabled: True" in text
     assert "- ttl_turns: 7" in text
     assert "- ttl_char_threshold: 1234" in text
+    assert "- hearth_enabled: False" in text
+    assert "- hearth_interval_minutes: 55" in text
+    assert '- hearth_quiet_hours: ""' in text
     assert not any(
         isinstance(record, IRRuntimeConfigRecord)
         for record in _read_records(transcript)
@@ -1356,13 +1362,55 @@ async def test_configure_rehydrates_runtime_ttl_settings(tmp_path: Path) -> None
     text, display = resumed.configure()
 
     assert len(rehydrated.runtime_config_updates) == 2
-    assert display["effective"] == {
+    assert display["effective"]["tool_result_ttl"] == {
         "enabled": True,
         "ttl_turns": 4,
         "char_threshold": 99,
     }
     assert "- ttl_turns: 4" in text
     assert "- ttl_char_threshold: 99" in text
+
+
+async def test_configure_persists_and_rehydrates_hearth_runtime_settings(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    homunculus = _homunculus(tmp_path)
+    await homunculus.rehydrate(_rehydrated(tmp_path, blocks=[], semantic_blocks=[]))
+
+    text, display = homunculus.configure(key="hearth_enabled", value=True)
+    homunculus.configure(key="hearth_interval_minutes", value="10")
+    homunculus.configure(key="hearth_quiet_hours", value="23:00-07:00")
+
+    assert display["action"] == "update"
+    assert display["namespace"] == "hearth"
+    assert display["updates"] == {"enabled": True}
+    assert "- hearth_enabled: False -> True" in text
+
+    rehydrated = Rehydrator(transcript).run()
+    resumed = _homunculus_with_transcript(
+        tmp_path,
+        transcript,
+        initialize=False,
+    )
+    await resumed.rehydrate(rehydrated)
+    _, read_display = resumed.configure()
+
+    assert (
+        len(
+            [
+                record
+                for record in rehydrated.runtime_config_updates
+                if record.namespace == "hearth"
+            ]
+        )
+        == 3
+    )
+    assert read_display["effective"]["hearth"] == {
+        "enabled": True,
+        "interval_minutes": 10,
+        "quiet_hours": "23:00-07:00",
+    }
 
 
 async def test_ttl_rehydrates_remaining_from_completed_turns(tmp_path: Path) -> None:

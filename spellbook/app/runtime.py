@@ -35,7 +35,8 @@ from spellbook.app.protocol import (
 )
 from spellbook.config import SpellbookConfig
 from spellbook.custom import CustomSurface
-from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
+from spellbook.hearth import HearthScheduler
+from spellbook.ir_types import IRInboundMessage, IRLoopResult, IRUserTextBlock
 from spellbook.rehydrator import Rehydrator
 from spellbook.session_lifecycle import SessionContext
 from spellbook.session_manager import SessionBuilder, SessionManager
@@ -62,9 +63,11 @@ class CoreAppRuntime:
         self._session_builder = session_builder
         self._session: SessionManager | None = None
         self._session_task: asyncio.Task[None] | None = None
+        self._hearth_scheduler: HearthScheduler | None = None
         self._command_lock = asyncio.Lock()
         self._shutdown_lock = asyncio.Lock()
         self._shutdown_complete = False
+        self._last_activity_time = datetime.now(timezone.utc)
         self._last_active_surface: str | None = None
         self._last_surface_time: datetime | None = None
         self._last_reported_surface: str | None = None
@@ -78,6 +81,10 @@ class CoreAppRuntime:
         task = self._session_task
         return task is not None and not task.done()
 
+    @property
+    def last_activity_time(self) -> datetime:
+        return self._last_activity_time
+
     async def startup(self) -> None:
         """Build and start the owned session loop."""
         if self._session is not None:
@@ -89,6 +96,7 @@ class CoreAppRuntime:
             lifecycle=AppSessionLifecycle(
                 self.bus,
                 before_turn_started=self._before_turn_started,
+                after_turn_ended=self._after_turn_ended,
             ),
             pre_round_lifecycle=AppRoundLifecycle(self.bus),
             record_tap=self.bus.record_tap,
@@ -97,6 +105,9 @@ class CoreAppRuntime:
         self._session = session
         self._session_task = asyncio.create_task(session.run())
         self._session_task.add_done_callback(self._on_session_task_done)
+        if session.config.session_type == "main":
+            self._hearth_scheduler = HearthScheduler(self)
+            self._hearth_scheduler.start()
         await asyncio.sleep(0)
 
     def build_awareness(self) -> AwarenessResponse:
@@ -122,6 +133,15 @@ class CoreAppRuntime:
 
         async with self._command_lock:
             return await self._submit_message_unlocked(message)
+
+    async def submit_hearth_crackle(self, message: IRInboundMessage) -> bool:
+        """Submit a scheduler crackle only if the session is still fully idle."""
+        async with self._command_lock:
+            session = self._require_session()
+            if session.state != "idle" or session.inbound_queue.has_pending():
+                return False
+            await self._submit_message_unlocked(message)
+            return True
 
     async def handle_conduit(
         self,
@@ -335,6 +355,7 @@ class CoreAppRuntime:
         if message.delivery == "footer":
             raise ValueError("`submit_message` only accepts turn/inject messages.")
         session = self._require_session()
+        self._note_activity()
         if session.is_slash_command_message(message):
             await self._note_surface_for_inbound(message)
             response = await session.submit_message(message)
@@ -365,6 +386,18 @@ class CoreAppRuntime:
             sorted(ctx.inbound.source_metadata.keys()),
         )
         await self._note_surface_for_inbound(ctx.inbound)
+
+    async def _after_turn_ended(
+        self,
+        ctx: SessionContext,
+        result: IRLoopResult,
+        turn_id: str,
+    ) -> None:
+        del ctx, result, turn_id
+        self._note_activity()
+
+    def _note_activity(self) -> None:
+        self._last_activity_time = datetime.now(timezone.utc)
 
     async def _note_surface_for_inbound(self, inbound: IRInboundMessage) -> None:
         session = self._require_session()
@@ -471,7 +504,12 @@ class CoreAppRuntime:
 
             session = self._session
             task = self._session_task
+            hearth_scheduler = self._hearth_scheduler
             self._session_task = None
+            self._hearth_scheduler = None
+
+            if hearth_scheduler is not None:
+                await hearth_scheduler.stop()
 
             if session is not None:
                 await session.shutdown()
@@ -491,6 +529,9 @@ class CoreAppRuntime:
     def _on_session_task_done(self, task: asyncio.Task[None]) -> None:
         if self._session_task is not task:
             return
+
+        if self._hearth_scheduler is not None:
+            self._hearth_scheduler.cancel()
 
         if task.cancelled():
             logger.info("Core session task was cancelled.")

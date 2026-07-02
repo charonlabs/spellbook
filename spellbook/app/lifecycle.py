@@ -20,6 +20,7 @@ from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 from spellbook.system_response import SystemResponse
 
 TurnStartedHook = Callable[[SessionContext, str], Awaitable[None]]
+TurnEndedHook = Callable[[SessionContext, IRLoopResult, str], Awaitable[None]]
 
 
 class AppRoundLifecycle(RoundLifecycle):
@@ -56,9 +57,11 @@ class AppSessionLifecycle(SessionLifecycle):
         bus: AppEventBus,
         *,
         before_turn_started: TurnStartedHook | None = None,
+        after_turn_ended: TurnEndedHook | None = None,
     ):
         self._bus = bus
         self._before_turn_started = before_turn_started
+        self._after_turn_ended = after_turn_ended
 
     async def on_enter_idle(self, ctx: SessionContext) -> None:
         self._bus.publish(event=RuntimeStateEvent(state="idle"))
@@ -81,6 +84,9 @@ class AppSessionLifecycle(SessionLifecycle):
     async def on_turn_ended(
         self, ctx: SessionContext, result: IRLoopResult, turn_id: str
     ) -> None:
+        if self._after_turn_ended is not None:
+            await self._after_turn_ended(ctx, result, turn_id)
+
         self._bus.publish(
             event=TurnEndedEvent(turn=ctx.turn_idx, turn_id=turn_id, result=result)
         )

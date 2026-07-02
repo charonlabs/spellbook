@@ -5,6 +5,7 @@ from spellbook.backends.model_backend import TokenCounter
 from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
 from spellbook.fork import ForkConfig, ForkRunner
+from spellbook.hearth import HEARTH_RUNTIME_CONFIG_NAMESPACE, HearthSettings
 from spellbook.homunculus.block_manager import BlockManager
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
@@ -34,6 +35,7 @@ from ..ir_types import (
     IRGeneration,
     IRSemanticBlockSummary,
     IRToolResultBlock,
+    RuntimeConfigNamespace,
     SemanticBlockApplyModeSource,
     StopReason,
 )
@@ -55,6 +57,7 @@ class Homunculus:
         fork_runner: ForkRunner,
         fork_config: ForkConfig | None = None,
         debug_emitter: "DebugEmitter | None" = None,
+        hearth_settings: HearthSettings | None = None,
     ):
         self._config = config
         self._footer_c = footer_c
@@ -65,6 +68,7 @@ class Homunculus:
         self._ttl_registry = ToolResultTTLRegistry(
             config=config, recorder=recorder, debug_emitter=debug_emitter
         )
+        self._hearth_settings = hearth_settings or HearthSettings()
         self._nursery = nursery
         self._planner = Planner(config=config)
         self._fork_runner = fork_runner
@@ -81,6 +85,10 @@ class Homunculus:
         self._fork_config = fork_config
         self._should_rerender: bool = False
 
+    @property
+    def hearth_settings(self) -> HearthSettings:
+        return self._hearth_settings
+
     async def rehydrate(self, rehydrated: RehydrationResult) -> None:
         self._block_manager.context_blocks = rehydrated.blocks
         self._block_manager.next_block_id = len(self._block_manager.context_blocks)
@@ -91,6 +99,11 @@ class Homunculus:
             last_completed_turn=rehydrated.last_completed_turn,
             config_records=rehydrated.runtime_config_updates,
         )
+        for record in rehydrated.runtime_config_updates:
+            if record.namespace == HEARTH_RUNTIME_CONFIG_NAMESPACE:
+                self._hearth_settings = self._hearth_settings.apply_config(
+                    record.effective
+                )
 
     def build_awareness(self) -> AwarenessHomunculusSnapshot:
         input_tokens = self._gas_gauge.input_tokens
@@ -341,25 +354,47 @@ class Homunculus:
         key: str | None = None,
         value: str | int | bool | None = None,
     ) -> tuple[str, dict[str, Any]]:
+        if key is None and value is not None:
+            raise ValueError("Configure writes require both `key` and `value`.")
+        if key is None:
+            return self._render_config_read()
+        if value is None:
+            raise ValueError("Configure writes require both `key` and `value`.")
+
+        namespace, normalized_key = self._normalize_config_key(key)
+        if namespace == "tool_result_ttl":
+            return self._configure_ttl(
+                key=key,
+                normalized_key=normalized_key,
+                value=value,
+            )
+        if namespace == HEARTH_RUNTIME_CONFIG_NAMESPACE:
+            return self._configure_hearth(
+                key=key,
+                normalized_key=normalized_key,
+                value=value,
+            )
+        raise ValueError(f"Unknown runtime config key `{key}`.")
+
+    def _configure_ttl(
+        self,
+        *,
+        key: str,
+        normalized_key: str,
+        value: str | int | bool,
+    ) -> tuple[str, dict[str, Any]]:
         ttl_enabled: bool | None = None
         ttl_turns: int | None = None
         ttl_char_threshold: int | None = None
-        if key is None and value is not None:
-            raise ValueError("Configure writes require both `key` and `value`.")
-        if key is not None:
-            if value is None:
-                raise ValueError("Configure writes require both `key` and `value`.")
-            normalized_key = self._normalize_config_key(key)
-            match normalized_key:
-                case "enabled":
-                    ttl_enabled = self._parse_bool_config_value(value, key)
-                case "ttl_turns":
-                    ttl_turns = self._parse_int_config_value(value, key)
-                case "char_threshold":
-                    ttl_char_threshold = self._parse_int_config_value(value, key)
-                case _:
-                    raise ValueError(f"Unknown runtime config key `{key}`.")
-
+        match normalized_key:
+            case "enabled":
+                ttl_enabled = self._parse_bool_config_value(value, key)
+            case "ttl_turns":
+                ttl_turns = self._parse_int_config_value(value, key)
+            case "char_threshold":
+                ttl_char_threshold = self._parse_int_config_value(value, key)
+            case _:
+                raise ValueError(f"Unknown runtime config key `{key}`.")
         old, new, updates = self._ttl_registry.configure(
             enabled=ttl_enabled,
             ttl_turns=ttl_turns,
@@ -373,30 +408,75 @@ class Homunculus:
             )
 
         lines = ["## Runtime Configuration", "", "### Tool Result TTL", ""]
-        if not updates:
-            lines.extend(self._render_ttl_settings())
-            lines.append("")
+        lines.append("Updated:")
+        for updated_key in updates:
+            old_value = self._ttl_setting_value(old, updated_key)
+            new_value = self._ttl_setting_value(new, updated_key)
             lines.append(
-                "Set `key` and `value` to update one setting. Available keys: "
-                "`ttl_enabled`, `ttl_turns`, `ttl_char_threshold`."
+                f"- {self._display_ttl_key(updated_key)}: {old_value} -> {new_value}"
             )
-            action = "read"
-        else:
-            lines.append("Updated:")
-            for key in updates:
-                old_value = self._ttl_setting_value(old, key)
-                new_value = self._ttl_setting_value(new, key)
-                lines.append(
-                    f"- {self._display_ttl_key(key)}: {old_value} -> {new_value}"
-                )
-            lines.append("")
-            lines.append("Current:")
-            lines.extend(self._render_ttl_settings())
-            action = "update"
+        lines.append("")
+        lines.append("Current:")
+        lines.extend(self._render_ttl_settings())
         return "\n".join(lines), {
             "kind": "configure",
-            "action": action,
+            "action": "update",
             "namespace": "tool_result_ttl",
+            "updates": updates,
+            "effective": new.as_record_dict(),
+        }
+
+    def _configure_hearth(
+        self,
+        *,
+        key: str,
+        normalized_key: str,
+        value: str | int | bool,
+    ) -> tuple[str, dict[str, Any]]:
+        hearth_enabled: bool | None = None
+        hearth_interval_minutes: int | None = None
+        hearth_quiet_hours: str | None = None
+        match normalized_key:
+            case "enabled":
+                hearth_enabled = self._parse_bool_config_value(value, key)
+            case "interval_minutes":
+                hearth_interval_minutes = self._parse_int_config_value(
+                    value, key, minimum=5
+                )
+            case "quiet_hours":
+                hearth_quiet_hours = self._parse_str_config_value(value, key)
+            case _:
+                raise ValueError(f"Unknown runtime config key `{key}`.")
+
+        old = self._hearth_settings
+        new, updates = old.configure(
+            enabled=hearth_enabled,
+            interval_minutes=hearth_interval_minutes,
+            quiet_hours=hearth_quiet_hours,
+        )
+        self._hearth_settings = new
+        if updates:
+            self._recorder.write_runtime_config(
+                namespace=HEARTH_RUNTIME_CONFIG_NAMESPACE,
+                updates=updates,
+                effective=new.as_record_dict(),
+            )
+
+        lines = ["## Runtime Configuration", "", "### Hearth", ""]
+        lines.append("Updated:")
+        for updated_key in updates:
+            old_value = self._hearth_setting_value(old, updated_key)
+            new_value = self._hearth_setting_value(new, updated_key)
+            lines.append(
+                f"- {self._display_hearth_key(updated_key)}: {old_value} -> {new_value}"
+            )
+        lines.append("")
+        lines.append("Current:")
+        lines.extend(self._render_hearth_settings())
+        return "\n".join(lines), {
+            "kind": "configure",
+            "action": "update",
+            "namespace": HEARTH_RUNTIME_CONFIG_NAMESPACE,
             "updates": updates,
             "effective": new.as_record_dict(),
         }
@@ -585,12 +665,42 @@ class Homunculus:
             return f"{size / 1024:.1f}KB"
         return f"{size / (1024 * 1024):.1f}MB"
 
+    def _render_config_read(self) -> tuple[str, dict[str, Any]]:
+        lines = ["## Runtime Configuration", "", "### Tool Result TTL", ""]
+        lines.extend(self._render_ttl_settings())
+        lines.extend(["", "### Hearth", ""])
+        lines.extend(self._render_hearth_settings())
+        lines.append("")
+        lines.append(
+            "Set `key` and `value` to update one setting. Available keys: "
+            "`ttl_enabled`, `ttl_turns`, `ttl_char_threshold`, "
+            "`hearth_enabled`, `hearth_interval_minutes`, `hearth_quiet_hours`."
+        )
+        return "\n".join(lines), {
+            "kind": "configure",
+            "action": "read",
+            "namespace": "runtime",
+            "updates": {},
+            "effective": {
+                "tool_result_ttl": self._ttl_registry.settings.as_record_dict(),
+                HEARTH_RUNTIME_CONFIG_NAMESPACE: self._hearth_settings.as_record_dict(),
+            },
+        }
+
     def _render_ttl_settings(self) -> list[str]:
         settings = self._ttl_registry.settings
         return [
             f"- ttl_enabled: {settings.enabled}",
             f"- ttl_turns: {settings.ttl_turns}",
             f"- ttl_char_threshold: {settings.char_threshold}",
+        ]
+
+    def _render_hearth_settings(self) -> list[str]:
+        settings = self._hearth_settings
+        return [
+            f"- hearth_enabled: {settings.enabled}",
+            f"- hearth_interval_minutes: {settings.interval_minutes}",
+            f"- hearth_quiet_hours: {self._format_config_string(settings.quiet_hours)}",
         ]
 
     def _ttl_setting_value(
@@ -617,17 +727,58 @@ class Homunculus:
             case _:
                 return key
 
-    def _normalize_config_key(self, key: str) -> str:
+    def _hearth_setting_value(
+        self, settings: HearthSettings, key: str
+    ) -> bool | int | str:
+        match key:
+            case "enabled":
+                return settings.enabled
+            case "interval_minutes":
+                return settings.interval_minutes
+            case "quiet_hours":
+                return self._format_config_string(settings.quiet_hours)
+            case _:
+                raise ValueError(f"Unknown hearth config key `{key}`.")
+
+    def _display_hearth_key(self, key: str) -> str:
+        match key:
+            case "enabled":
+                return "hearth_enabled"
+            case "interval_minutes":
+                return "hearth_interval_minutes"
+            case "quiet_hours":
+                return "hearth_quiet_hours"
+            case _:
+                return key
+
+    def _format_config_string(self, value: str) -> str:
+        if value == "":
+            return '""'
+        return value
+
+    def _normalize_config_key(self, key: str) -> tuple[RuntimeConfigNamespace, str]:
         normalized = key.strip()
-        aliases = {
-            "enabled": "enabled",
-            "ttl_enabled": "enabled",
-            "tool_result_ttl.enabled": "enabled",
-            "ttl_turns": "ttl_turns",
-            "tool_result_ttl.ttl_turns": "ttl_turns",
-            "ttl_char_threshold": "char_threshold",
-            "char_threshold": "char_threshold",
-            "tool_result_ttl.char_threshold": "char_threshold",
+        aliases: dict[str, tuple[RuntimeConfigNamespace, str]] = {
+            "enabled": ("tool_result_ttl", "enabled"),
+            "ttl_enabled": ("tool_result_ttl", "enabled"),
+            "tool_result_ttl.enabled": ("tool_result_ttl", "enabled"),
+            "ttl_turns": ("tool_result_ttl", "ttl_turns"),
+            "tool_result_ttl.ttl_turns": ("tool_result_ttl", "ttl_turns"),
+            "ttl_char_threshold": ("tool_result_ttl", "char_threshold"),
+            "char_threshold": ("tool_result_ttl", "char_threshold"),
+            "tool_result_ttl.char_threshold": ("tool_result_ttl", "char_threshold"),
+            "hearth_enabled": (HEARTH_RUNTIME_CONFIG_NAMESPACE, "enabled"),
+            "hearth.enabled": (HEARTH_RUNTIME_CONFIG_NAMESPACE, "enabled"),
+            "hearth_interval_minutes": (
+                HEARTH_RUNTIME_CONFIG_NAMESPACE,
+                "interval_minutes",
+            ),
+            "hearth.interval_minutes": (
+                HEARTH_RUNTIME_CONFIG_NAMESPACE,
+                "interval_minutes",
+            ),
+            "hearth_quiet_hours": (HEARTH_RUNTIME_CONFIG_NAMESPACE, "quiet_hours"),
+            "hearth.quiet_hours": (HEARTH_RUNTIME_CONFIG_NAMESPACE, "quiet_hours"),
         }
         try:
             return aliases[normalized]
@@ -645,9 +796,11 @@ class Homunculus:
                     return False
         raise ValueError(f"`{key}` expects a boolean value.")
 
-    def _parse_int_config_value(self, value: str | int | bool, key: str) -> int:
+    def _parse_int_config_value(
+        self, value: str | int | bool, key: str, *, minimum: int = 0
+    ) -> int:
         if isinstance(value, bool):
-            raise ValueError(f"`{key}` expects a non-negative integer value.")
+            raise ValueError(f"`{key}` expects an integer value >= {minimum}.")
         if isinstance(value, int):
             parsed = value
         elif isinstance(value, str):
@@ -655,13 +808,18 @@ class Homunculus:
                 parsed = int(value.strip())
             except ValueError as e:
                 raise ValueError(
-                    f"`{key}` expects a non-negative integer value."
+                    f"`{key}` expects an integer value >= {minimum}."
                 ) from e
         else:
-            raise ValueError(f"`{key}` expects a non-negative integer value.")
-        if parsed < 0:
-            raise ValueError(f"`{key}` expects a non-negative integer value.")
+            raise ValueError(f"`{key}` expects an integer value >= {minimum}.")
+        if parsed < minimum:
+            raise ValueError(f"`{key}` expects an integer value >= {minimum}.")
         return parsed
+
+    def _parse_str_config_value(self, value: str | int | bool, key: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"`{key}` expects a string value.")
+        return value
 
     def _resolve_tool_result(self, call_id: str) -> IRToolResultBlock:
         results = [

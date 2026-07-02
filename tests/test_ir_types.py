@@ -464,6 +464,26 @@ class TestIRRecordDiscrimination:
         assert parsed.updates == {"ttl_turns": 2}
         assert parsed.effective["char_threshold"] == 4000
 
+        hearth_record = IRRuntimeConfigRecord(
+            session_id="s1",
+            namespace="hearth",
+            updates={"quiet_hours": "23:00-07:00"},
+            effective={
+                "enabled": True,
+                "interval_minutes": 55,
+                "quiet_hours": "23:00-07:00",
+            },
+            turn=5,
+            turn_id="turn_5",
+        )
+
+        parsed_hearth = adapter.validate_json(hearth_record.model_dump_json())
+
+        assert isinstance(parsed_hearth, IRRuntimeConfigRecord)
+        assert parsed_hearth.namespace == "hearth"
+        assert parsed_hearth.updates == {"quiet_hours": "23:00-07:00"}
+        assert parsed_hearth.effective["quiet_hours"] == "23:00-07:00"
+
     def test_pair_narrative_artifacts_round_trip_through_ir_record_union(self) -> None:
         adapter = TypeAdapter(IRRecord)
         parent = IRSemanticBlockArtifactRecord(

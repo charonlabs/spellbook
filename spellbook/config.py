@@ -12,9 +12,10 @@ in the rewrite.
 """
 
 from pathlib import Path
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Provider = Literal["anthropic", "openai", "local"]
 
@@ -39,8 +40,16 @@ DEFAULT_OPENAI_SKILL_DISCOVERY_DIRS = [".agents", ".spellbook"]
 
 DEFAULT_LOCAL_TIMEZONE = "America/New_York"
 DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS = 300
+DEFAULT_HEARTH_ENABLED = False
+DEFAULT_HEARTH_INTERVAL_MINUTES = 55
+DEFAULT_HEARTH_QUIET_HOURS = ""
 
 DEFAULT_USER_NAME = "Ryan"
+
+_QUIET_HOURS_RE = re.compile(
+    r"^(?P<start_hour>\d{2}):(?P<start_minute>\d{2})-"
+    r"(?P<end_hour>\d{2}):(?P<end_minute>\d{2})$"
+)
 
 SessionType = Literal["main", "block_detector", "block_summarizer", "custom"]
 
@@ -80,6 +89,9 @@ class SpellbookConfig(BaseModel, frozen=True):
     idle_footer_threshold_seconds: int = Field(
         default=DEFAULT_IDLE_FOOTER_THRESHOLD_SECONDS, ge=0
     )
+    hearth_enabled: bool = DEFAULT_HEARTH_ENABLED
+    hearth_interval_minutes: int = Field(default=DEFAULT_HEARTH_INTERVAL_MINUTES, ge=5)
+    hearth_quiet_hours: str = DEFAULT_HEARTH_QUIET_HOURS
     user_name: str = DEFAULT_USER_NAME
     tool_categories: set[str] | None = None
     chorus_url: str | None = None
@@ -102,3 +114,20 @@ class SpellbookConfig(BaseModel, frozen=True):
         provider = str(values.get("provider", DEFAULT_PROVIDER))
         values["skill_discovery_dirs"] = default_skill_discovery_dirs(provider)
         return values
+
+    @field_validator("hearth_quiet_hours")
+    @classmethod
+    def _validate_hearth_quiet_hours(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            return ""
+        match = _QUIET_HOURS_RE.match(text)
+        if match is None:
+            raise ValueError("hearth_quiet_hours must be empty or HH:MM-HH:MM.")
+        start_hour = int(match.group("start_hour"))
+        start_minute = int(match.group("start_minute"))
+        end_hour = int(match.group("end_hour"))
+        end_minute = int(match.group("end_minute"))
+        if start_hour > 23 or end_hour > 23 or start_minute > 59 or end_minute > 59:
+            raise ValueError("hearth_quiet_hours must be empty or HH:MM-HH:MM.")
+        return f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"

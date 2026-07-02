@@ -13,6 +13,7 @@ from spellbook.footer import (
     FooterControllerRoundLifecycle,
 )
 from spellbook.fork import ForkConfig, ForkRunner
+from spellbook.hearth import HearthSettings
 from spellbook.ir_types import IRInboundMessage, IRSkillCatalog
 from spellbook.loop import run_loop
 from spellbook.nursery import Nursery
@@ -351,6 +352,7 @@ class SessionManager:
             fork_runner=fork_runner,
             fork_config=fork_config,
             debug_emitter=debug_emitter,
+            hearth_settings=HearthSettings.from_config(config),
         )
         await homunculus.rehydrate(rehydrated)
         custom_has_skills = (

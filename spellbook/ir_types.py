@@ -251,9 +251,9 @@ StopReason = Literal[
 
 ToolResultTTLTrigger = Literal["end_turn", "seq"]
 ToolResultTTLSource = Literal["auto", "manual", "repair"]
-RuntimeConfigNamespace = Literal["tool_result_ttl", "debug_visibility"]
+RuntimeConfigNamespace = Literal["tool_result_ttl", "debug_visibility", "hearth"]
 RuntimeConfigSource = Literal["model", "operator"]
-RuntimeConfigValue = int | bool
+RuntimeConfigValue = int | bool | str
 
 
 class IRGeneration(BaseModel, frozen=True):

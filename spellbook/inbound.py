@@ -26,6 +26,9 @@ class InboundMessageQueue:
     def has_pending_turn(self) -> bool:
         return any(self._is_turn_eligible(msg) for msg in self._messages)
 
+    def has_pending(self) -> bool:
+        return bool(self._messages)
+
     def drain_footer_messages(self) -> list[IRInboundMessage]:
         drained: list[IRInboundMessage] = []
         retained: deque[IRInboundMessage] = deque()
