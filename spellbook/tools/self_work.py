@@ -80,13 +80,16 @@ async def exec_forget(meta: ToolMetadata, input: ForgetInput) -> ToolExecutionRe
     if meta.homunculus is None:
         raise ToolError("Forget is unavailable because this session has no Homunculus.")
     try:
-        await meta.homunculus.forget(input.block_idx, input.confirm)
+        result = await meta.homunculus.forget(input.block_idx, input.confirm)
     except ValueError as e:
         raise ToolError(str(e)) from e
     return ToolExecutionResult(
-        content=[
-            IRToolTextBlock(text=f"Block {input.block_idx} successfully compacted.")
-        ]
+        content=[IRToolTextBlock(text=result.message)],
+        display={
+            "kind": "forget_block",
+            "block_idx": input.block_idx,
+            "status": result.status,
+        },
     )
 
 

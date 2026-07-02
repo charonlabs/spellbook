@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
@@ -42,6 +43,23 @@ if TYPE_CHECKING:
     from spellbook.debug_visibility import DebugNoticeLevel, DebugEmitter
 
 logger = logging.getLogger(__name__)
+
+ForgetBlockStatus = Literal[
+    "compacted",
+    "summary_queued",
+    "summary_in_flight",
+    "summary_unavailable",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ForgetBlockResult:
+    status: ForgetBlockStatus
+    message: str
+
+    @property
+    def compacted(self) -> bool:
+        return self.status == "compacted"
 
 
 class BlockManager:
@@ -726,7 +744,7 @@ class BlockManager:
                 },
             )
             return
-        if "summary" in block.available_modes:
+        if self._summary_ready(block):
             self._debug_event(
                 subsystem="summarizer",
                 event="summary_discarded",
@@ -739,10 +757,13 @@ class BlockManager:
                 },
             )
             return
+        available_modes = block.available_modes
+        if "summary" not in available_modes:
+            available_modes = block.available_modes + ["summary"]
         new_block = block.model_copy(
             update={
                 "artifacts": block.artifacts + [result.summary],
-                "available_modes": block.available_modes + ["summary"],
+                "available_modes": available_modes,
             }
         )
         summary_toks = await self._meter.tok_counter.count_blocks(
@@ -783,49 +804,114 @@ class BlockManager:
             return
         prev: list[IRSemanticBlock] = []
         for block in self.semantic_blocks:
-            if "summary" in block.available_modes:
+            if self._summary_ready(block):
                 prev.append(block)
             else:
-                key = f"summary:{block.id}"
-                if self._nursery.get_by_key(key) is not None:
-                    return
-                prepared = await self._summarizer.summarize(
-                    semantic_block=block,
-                    context_block_slice=self._project_blocks(
-                        self._context_blocks_in_block(block)
-                    ),
+                await self._schedule_summary_for_block(
+                    block=block,
                     prev_semantic_blocks=prev,
-                )
-                job = self._nursery.submit(
-                    prepared.coro,
-                    kind="summarize_block",
-                    source="block_manager",
-                    key=key,
-                    metadata={
-                        "block_id": block.id,
-                        "block_idx": block.idx,
-                        "fork_id": prepared.fork_id,
-                    },
-                )
-                self._debug_event(
-                    subsystem="summarizer",
-                    event="summary_scheduled",
-                    title=f'Summary scheduled for block {block.idx}: "{block.title}"',
-                    metadata={
-                        "job_id": job.id,
-                        "fork_id": prepared.fork_id,
-                        "block_id": block.id,
-                        "block_idx": block.idx,
-                        "title": block.title,
-                    },
                 )
                 return
             if len(prev) > 5:
                 prev.pop(0)
 
-    def forget_block(
+    async def _schedule_summary_for_block(
+        self,
+        *,
+        block: IRSemanticBlock,
+        prev_semantic_blocks: list[IRSemanticBlock],
+    ) -> bool:
+        if not self._accept_background_work:
+            return False
+        key = self._summary_key(block)
+        if self._nursery.get_by_key(key) is not None:
+            return False
+        prepared = await self._summarizer.summarize(
+            semantic_block=block,
+            context_block_slice=self._project_blocks(
+                self._context_blocks_in_block(block)
+            ),
+            prev_semantic_blocks=prev_semantic_blocks,
+        )
+        job = self._nursery.submit(
+            prepared.coro,
+            kind="summarize_block",
+            source="block_manager",
+            key=key,
+            metadata={
+                "block_id": block.id,
+                "block_idx": block.idx,
+                "fork_id": prepared.fork_id,
+            },
+        )
+        self._debug_event(
+            subsystem="summarizer",
+            event="summary_scheduled",
+            title=f'Summary scheduled for block {block.idx}: "{block.title}"',
+            metadata={
+                "job_id": job.id,
+                "fork_id": prepared.fork_id,
+                "block_id": block.id,
+                "block_idx": block.idx,
+                "title": block.title,
+            },
+        )
+        return True
+
+    def _summary_ready(self, block: IRSemanticBlock) -> bool:
+        return "summary" in block.available_modes and any(
+            isinstance(artifact, IRSemanticBlockSummary) for artifact in block.artifacts
+        )
+
+    def _previous_summary_context(self, target_idx: int) -> list[IRSemanticBlock]:
+        prev: list[IRSemanticBlock] = []
+        for block in self.semantic_blocks[:target_idx]:
+            if not self._summary_ready(block):
+                continue
+            prev.append(block)
+            if len(prev) > 5:
+                prev.pop(0)
+        return prev
+
+    def _summary_key(self, block: IRSemanticBlock) -> str:
+        return f"summary:{block.id}"
+
+    async def _queue_summary_for_forget(
+        self, block: IRSemanticBlock
+    ) -> ForgetBlockResult:
+        key = self._summary_key(block)
+        if self._nursery.get_by_key(key) is not None:
+            return ForgetBlockResult(
+                status="summary_in_flight",
+                message=(
+                    f"Block {block.idx}'s summary is still baking; a summary job is "
+                    "already in flight. Try Forget again in a moment."
+                ),
+            )
+
+        scheduled = await self._schedule_summary_for_block(
+            block=block,
+            prev_semantic_blocks=self._previous_summary_context(block.idx),
+        )
+        if scheduled:
+            return ForgetBlockResult(
+                status="summary_queued",
+                message=(
+                    f"Block {block.idx}'s summary is still baking; I queued it just "
+                    "now. Try Forget again in a moment."
+                ),
+            )
+        return ForgetBlockResult(
+            status="summary_unavailable",
+            message=(
+                f"Block {block.idx}'s summary is still baking, but summary generation "
+                "is not available right now. Try Forget again in a moment."
+            ),
+        )
+
+    async def forget_block(
         self, idx: int, confirm: bool, source: SemanticBlockApplyModeSource = "model"
-    ) -> None:
+    ) -> ForgetBlockResult:
         block = self._get_block_by_idx(idx)
         self._ensure_not_pair_narrative(block, operation="Forget")
         if not confirm and block.pin is not None:
@@ -839,8 +925,16 @@ class BlockManager:
             case "summary":
                 raise ValueError(f"Block {idx} is already at the lowest possible mode.")
             case "full":
+                if not self._summary_ready(block):
+                    return await self._queue_summary_for_forget(block)
                 new_block = self._apply_mode(block, "summary", source)
                 self.semantic_blocks[idx] = new_block
+                return ForgetBlockResult(
+                    status="compacted",
+                    message=f"Block {idx} successfully compacted.",
+                )
+            case _:
+                raise NotImplementedError(f"Forget does not support mode {block.mode}.")
 
     def pin_block(self, idx: int, reason: str) -> bool:
         """Returns True when the pin invalidates the prefix."""
@@ -964,6 +1058,10 @@ class BlockManager:
         ready = self._nursery.collect_ready(source="block_manager")
         for result in ready:
             await self._integrate_nursery_result(result)
+
+        await self.generate_next_summary()
+        if wait_for_all:
+            await self._wait_for_jobs()
 
     async def shutdown_nursery(self) -> None:
         self._accept_background_work = False

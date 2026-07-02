@@ -93,8 +93,8 @@ class BlockDetector:
         self._semantic_buffer = list(rehydrated.buffered_semantic_block_ranges)
         self._accumulated = list(rehydrated.blocks)
         self._accumulated_start_block_id = 0 if self._accumulated else None
-        self._counter = len(self._accumulated) % self._detect_interval
         self.build_context_buffer()
+        self._counter = len(self._context_buffer)
 
     @property
     def buffered_blocks(self) -> list[IRSemanticBlockRange]:

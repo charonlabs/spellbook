@@ -510,9 +510,79 @@ class TestRehydrate:
         assert detector.buffered_blocks == buffered
         assert detector._accumulated == blocks
         assert detector._accumulated_start_block_id == 0
-        assert detector._counter == 3
+        assert detector._counter == 1
         assert detector._start_block_id == 2
         assert detector._context_buffer == [blocks[2]]
+
+    @pytest.mark.asyncio
+    async def test_rehydrate_large_undetected_tail_preserves_detection_debt(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path, detect_interval=10)
+        blocks: list[IRBlock] = [_user(f"block {idx}") for idx in range(35)]
+        completed = [
+            IRSemanticBlockRange(title="Completed", start_block=0, end_block=4)
+        ]
+        rehydrated = RehydrationResult(
+            session_id="session_test",
+            records=[],
+            blocks=blocks,
+            config=SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path),
+            tools=[],
+            last_completed_turn=1,
+            pending_footers={},
+            completed_semantic_block_ranges=completed,
+            buffered_semantic_block_ranges=[],
+            semantic_blocks=[],
+            plan_proposal=None,
+            skill_catalog=IRSkillCatalog(),
+        )
+        seen: dict[str, BlockDetectorConfig] = {}
+
+        async def _run_fork(*, fork_config: BlockDetectorConfig) -> PreparedFork:
+            seen["fork_config"] = fork_config
+            return _prepared(BlockDetectorResult(completed=[], still_buffered=[]))
+
+        cast(Any, detector._fork_runner).run_fork = _run_fork
+
+        detector.rehydrate(rehydrated)
+        prepared = await detector.maybe_detect([_assistant("new")], first_block_id=35)
+
+        assert detector._counter == 21
+        assert prepared is not None
+        assert seen["fork_config"].context_block_start_id == 5
+        assert len(seen["fork_config"].context_block_buffer) == 31
+        await prepared.coro
+
+    @pytest.mark.asyncio
+    async def test_rehydrate_no_debt_does_not_fire_detection_at_block_one(
+        self, tmp_path: Path
+    ) -> None:
+        detector = _make_detector(tmp_path, detect_interval=10)
+        blocks: list[IRBlock] = [_user(f"block {idx}") for idx in range(5)]
+        completed = [
+            IRSemanticBlockRange(title="Completed", start_block=0, end_block=4)
+        ]
+        rehydrated = RehydrationResult(
+            session_id="session_test",
+            records=[],
+            blocks=blocks,
+            config=SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path),
+            tools=[],
+            last_completed_turn=1,
+            pending_footers={},
+            completed_semantic_block_ranges=completed,
+            buffered_semantic_block_ranges=[],
+            semantic_blocks=[],
+            plan_proposal=None,
+            skill_catalog=IRSkillCatalog(),
+        )
+
+        detector.rehydrate(rehydrated)
+        prepared = await detector.maybe_detect([_assistant("new")], first_block_id=5)
+
+        assert prepared is None
+        assert detector._counter == 1
 
     def test_rehydrate_empty_transcript_resets_detector_buffers(
         self, tmp_path: Path

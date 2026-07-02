@@ -708,7 +708,12 @@ def test_semantic_block_range_rejects_inverted_bounds() -> None:
 async def test_block_metrics_update_full_mode_toks_and_full_toks() -> None:
     manager, recorder, _, _ = _manager()
     manager.context_blocks = _user_blocks("a")
-    block = _semantic_block(idx=0, start=0, end=0, title="First")
+    block = _semantic_block(idx=0, start=0, end=0, title="First").model_copy(
+        update={
+            "available_modes": ["full", "summary"],
+            "artifacts": [_summary()],
+        }
+    )
     manager.semantic_blocks = [block]
     count = _count(17)
 
@@ -875,7 +880,35 @@ async def test_generate_next_summary_does_not_duplicate_in_flight_summary(
     await manager.check_nursery(wait_for_all=True)
 
 
-def test_forget_block_compacts_to_summary_and_records_mode() -> None:
+@pytest.mark.asyncio
+async def test_check_nursery_schedules_missing_summary_without_detection_event(
+    tmp_path: Path,
+) -> None:
+    blocks = _user_blocks("a")
+    semantic_blocks = [
+        _semantic_block(idx=0, start=0, end=0, title="First"),
+    ]
+    manager = _rehydrate_manager(
+        tmp_path,
+        blocks=blocks,
+        semantic_blocks=semantic_blocks,
+    )
+    summarizer = _FakeSummarizer()
+    manager._summarizer = cast(Any, summarizer)  # noqa: SLF001 - test swaps collaborator
+
+    await manager.check_nursery()
+
+    assert summarizer.calls == [manager.semantic_blocks[0].id]
+    jobs = manager._nursery.jobs(  # noqa: SLF001 - assert boundary scheduling
+        source="block_manager",
+        kind="summarize_block",
+    )
+    assert len(jobs) == 1
+    await manager._nursery.shutdown(cancel=True)  # noqa: SLF001 - cleanup job
+
+
+@pytest.mark.asyncio
+async def test_forget_block_compacts_to_summary_and_records_mode() -> None:
     manager, recorder, _, _ = _manager()
     full_count = _count(40)
     summary_count = _count(7)
@@ -890,9 +923,11 @@ def test_forget_block_compacts_to_summary_and_records_mode() -> None:
     manager.context_blocks = _user_blocks("full text")
     manager.semantic_blocks = [block]
 
-    manager.forget_block(0, confirm=False)
+    result = await manager.forget_block(0, confirm=False)
 
     compacted = manager.semantic_blocks[0]
+    assert result.status == "compacted"
+    assert result.message == "Block 0 successfully compacted."
     assert compacted.mode == "summary"
     assert compacted.toks == summary_count
     assert recorder.applied_modes == [("summary", block.id)]
@@ -903,16 +938,34 @@ def test_forget_block_compacts_to_summary_and_records_mode() -> None:
     assert "Summary headline" in rendered[0].text
 
 
-def test_forget_block_requires_existing_summary_artifact() -> None:
-    manager, recorder, _, _ = _manager()
-    block = _semantic_block(idx=0, start=0, end=0, title="First")
-    manager.context_blocks = _user_blocks("full text")
-    manager.semantic_blocks = [block]
+@pytest.mark.asyncio
+async def test_forget_block_queues_missing_summary_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    blocks = _user_blocks("full text")
+    semantic_blocks = [_semantic_block(idx=0, start=0, end=0, title="First")]
+    manager = _rehydrate_manager(
+        tmp_path,
+        blocks=blocks,
+        semantic_blocks=semantic_blocks,
+    )
+    manager._summarizer = cast(Any, _FakeSummarizer())  # noqa: SLF001
+    block = manager.semantic_blocks[0]
 
-    with pytest.raises(ValueError, match="no summary artifact"):
-        manager.forget_block(0, confirm=False)
+    queued = await manager.forget_block(0, confirm=False)
 
-    assert recorder.applied_modes == []
+    assert queued.status == "summary_queued"
+    assert "summary is still baking" in queued.message
+    assert "queued it just now" in queued.message
+    assert manager.semantic_blocks[0].mode == "full"
+    assert manager._nursery.get_by_key(f"summary:{block.id}") is not None  # noqa: SLF001
+
+    await _settle()
+    await manager.check_nursery()
+    compacted = await manager.forget_block(0, confirm=False)
+
+    assert compacted.status == "compacted"
+    assert manager.semantic_blocks[0].mode == "summary"
 
 
 def test_recall_summary_block_returns_full_context_with_original_ids() -> None:
@@ -1183,7 +1236,8 @@ def test_render_pinned_facet_expands_to_include_matching_tool_pair() -> None:
     assert isinstance(rendered[2], IRToolResultBlock)
 
 
-def test_forget_pinned_block_requires_confirm() -> None:
+@pytest.mark.asyncio
+async def test_forget_pinned_block_requires_confirm() -> None:
     manager, recorder, _, _ = _manager()
     summary_count = _count(7)
     block = _semantic_block(idx=0, start=0, end=0, title="First").model_copy(
@@ -1197,13 +1251,14 @@ def test_forget_pinned_block_requires_confirm() -> None:
     manager.semantic_blocks = [block]
 
     with pytest.raises(ValueError, match="currently pinned"):
-        manager.forget_block(0, confirm=False)
+        await manager.forget_block(0, confirm=False)
 
     assert manager.semantic_blocks[0].mode == "full"
     assert recorder.applied_modes == []
 
 
-def test_forget_pinned_block_with_confirm_compacts() -> None:
+@pytest.mark.asyncio
+async def test_forget_pinned_block_with_confirm_compacts() -> None:
     manager, recorder, _, _ = _manager()
     summary_count = _count(7)
     pin = IRSemanticBlockPin(kind="block", reason="Keep this vivid.")
@@ -1217,9 +1272,10 @@ def test_forget_pinned_block_with_confirm_compacts() -> None:
     manager.context_blocks = _user_blocks("full text")
     manager.semantic_blocks = [block]
 
-    manager.forget_block(0, confirm=True)
+    result = await manager.forget_block(0, confirm=True)
 
     compacted = manager.semantic_blocks[0]
+    assert result.status == "compacted"
     assert compacted.mode == "summary"
     assert compacted.toks == summary_count
     assert compacted.pin == pin

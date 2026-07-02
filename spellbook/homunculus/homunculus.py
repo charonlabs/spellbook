@@ -6,7 +6,7 @@ from spellbook.config import HomunculusConfig
 from spellbook.footer import FooterController
 from spellbook.fork import ForkConfig, ForkRunner
 from spellbook.hearth import HEARTH_RUNTIME_CONFIG_NAMESPACE, HearthSettings
-from spellbook.homunculus.block_manager import BlockManager
+from spellbook.homunculus.block_manager import BlockManager, ForgetBlockResult
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
     AwarenessHomunculusSnapshot,
@@ -315,9 +315,11 @@ class Homunculus:
         block_idx: int,
         confirm: bool = False,
         source: SemanticBlockApplyModeSource = "model",
-    ) -> None:
-        self._block_manager.forget_block(block_idx, confirm, source)
-        self._invalidate(reason=f"forget:{source}")
+    ) -> ForgetBlockResult:
+        result = await self._block_manager.forget_block(block_idx, confirm, source)
+        if result.compacted:
+            self._invalidate(reason=f"forget:{source}")
+        return result
 
     async def pin(
         self, block_idx: int, reason: str, facet_id: str | None = None
