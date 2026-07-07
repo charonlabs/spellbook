@@ -6,6 +6,15 @@ import pytest
 from pydantic import ValidationError
 
 from spellbook.config import SpellbookConfig
+from spellbook.profiles import (
+    BLOCK_DETECTOR,
+    BLOCK_SUMMARIZER,
+    CUSTOM,
+    MAIN,
+    QUANTUM,
+    SessionProfile,
+    SessionType,
+)
 
 
 def test_openai_config_uses_provider_specific_skill_dirs() -> None:
@@ -42,3 +51,41 @@ def test_hearth_config_validates_interval_and_quiet_hours() -> None:
 
     config = SpellbookConfig(cwd=Path.cwd(), hearth_quiet_hours="23:00-07:00")
     assert config.hearth_quiet_hours == "23:00-07:00"
+
+
+@pytest.mark.parametrize(
+    ("session_type", "expected_profile"),
+    [
+        ("main", MAIN),
+        ("custom", CUSTOM),
+        ("block_detector", BLOCK_DETECTOR),
+        ("block_summarizer", BLOCK_SUMMARIZER),
+        ("quantum", QUANTUM),
+    ],
+)
+def test_session_type_resolves_profile_preset(
+    session_type: SessionType, expected_profile: SessionProfile
+) -> None:
+    config = SpellbookConfig(cwd=Path.cwd(), session_type=session_type)
+
+    assert config.profile == expected_profile
+
+
+def test_model_copy_session_type_update_refreshes_profile() -> None:
+    config = SpellbookConfig(cwd=Path.cwd())
+
+    updated = config.model_copy(update={"session_type": "block_detector"})
+
+    assert updated.session_type == "block_detector"
+    assert updated.profile == BLOCK_DETECTOR
+
+
+def test_explicit_profile_overrides_session_type_default() -> None:
+    config = SpellbookConfig(
+        cwd=Path.cwd(),
+        session_type="block_detector",
+        profile=MAIN,
+    )
+
+    assert config.session_type == "block_detector"
+    assert config.profile == MAIN

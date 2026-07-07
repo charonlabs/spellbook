@@ -295,7 +295,7 @@ def _build_block_manager(
 ) -> tuple[BlockManager, Recorder]:
     tool_registry = ToolRegistry.build(
         rehydrated.config.tool_categories,
-        surface=rehydrated.config.session_type,
+        surface=rehydrated.config.profile.tool_surface,
     )
     recorder = Recorder(
         rehydrated.config,
@@ -356,7 +356,7 @@ def _build_token_counter(config: SpellbookConfig) -> TokenCounter:
     backend = AnthropicBackend()
     tool_registry = ToolRegistry.build(
         config.tool_categories,
-        surface=config.session_type,
+        surface=config.profile.tool_surface,
     )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,

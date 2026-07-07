@@ -51,6 +51,7 @@ from spellbook.ir_types import (
 )
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.profiles import MAIN
 from spellbook.system_response import SystemResponse
 from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
 
@@ -79,6 +80,30 @@ def _skill(tmp_path: Path, name: str, description: str) -> IRSkill:
         directory=directory,
         scope="project",
     )
+
+
+def test_rehydrates_legacy_session_config_without_profile(tmp_path: Path) -> None:
+    transcript = tmp_path / "legacy_transcript.jsonl"
+    config = SpellbookConfig(cwd=tmp_path).model_dump(mode="json")
+    config.pop("profile")
+    transcript.write_text(
+        json.dumps(
+            {
+                "session_id": "session_legacy",
+                "ir": "session",
+                "time": "2026-01-01T00:00:00Z",
+                "config": config,
+                "tools": [],
+                "skill_catalog": {"skills": {}},
+            }
+        )
+        + "\n"
+    )
+
+    rehydrated = Rehydrator(transcript).run()
+
+    assert rehydrated.config.session_type == "main"
+    assert rehydrated.config.profile == MAIN
 
 
 # --- Clean-ended transcripts ---

@@ -58,6 +58,7 @@ class Homunculus:
         fork_config: ForkConfig | None = None,
         debug_emitter: "DebugEmitter | None" = None,
         hearth_settings: HearthSettings | None = None,
+        enable_block_detection: bool = True,
     ):
         self._config = config
         self._footer_c = footer_c
@@ -80,6 +81,7 @@ class Homunculus:
             recorder=recorder,
             token_meter=self._token_meter,
             context_projector=self._ttl_registry.collapse_blocks,
+            enable_block_detection=enable_block_detection,
             debug_emitter=debug_emitter,
         )
         self._fork_config = fork_config

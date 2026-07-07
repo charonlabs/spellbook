@@ -142,7 +142,7 @@ class Rehydrator:
                     # like we also have in the old one) or "... print warning while silenty using newer
                     # tools"? For now I'm erroring loudly
                     known_registry = KNOWN_TOOL_REGISTRY
-                    if config.session_type == "custom":
+                    if config.profile.custom_surface:
                         if self._custom_tools is None:
                             raise ValueError(
                                 "Tried to rehydrate a custom session without giving custom tools."

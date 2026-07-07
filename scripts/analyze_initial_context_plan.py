@@ -379,7 +379,9 @@ def _tail_start(semantic_blocks: list[IRSemanticBlock]) -> int:
 
 def _build_surface_builder(config: SpellbookConfig) -> RequestSurfaceBuilder:
     backend = build_backend(config)
-    registry = ToolRegistry.build(config.tool_categories, surface=config.session_type)
+    registry = ToolRegistry.build(
+        config.tool_categories, surface=config.profile.tool_surface
+    )
     return RequestSurfaceBuilder.from_config(
         backend=backend,
         config=config,
@@ -389,7 +391,9 @@ def _build_surface_builder(config: SpellbookConfig) -> RequestSurfaceBuilder:
 
 def _build_token_counter(config: SpellbookConfig) -> TokenCounter:
     backend = build_backend(config)
-    registry = ToolRegistry.build(config.tool_categories, surface=config.session_type)
+    registry = ToolRegistry.build(
+        config.tool_categories, surface=config.profile.tool_surface
+    )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,
         config=config,

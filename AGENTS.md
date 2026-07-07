@@ -36,6 +36,12 @@ A few ideas are load-bearing here:
 - **Derived buffers should be derived, not canonical.**
 - **Self-state lives in Homunculus; mechanisms stay outside.**
 
+### Session profile freeze
+
+Do not add new `session_type` comparisons; new behavior switches go through
+`SessionProfile` flags so rendering, tools, and ambient services can vary
+independently instead of accumulating another master enum branch.
+
 If you are unsure where something belongs, ask:
 
 1. Is this transcript truth?

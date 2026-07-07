@@ -226,21 +226,17 @@ class SessionManager:
                 raise ValueError(
                     "Transcript does not exist and no config was passed. Need one or the other."
                 )
+            profile = config.profile
             if session_id is None:
-                match config.session_type:
-                    case "main":
-                        session_id = f"session_{uuid4().hex}"
-                    case "block_detector":
-                        session_id = f"bd_session_{uuid4().hex}"
-                    case "block_summarizer":
-                        session_id = f"bs_session_{uuid4().hex}"
-                    case "custom":
-                        session_id = f"custom_session_{uuid4().hex}"
+                session_id = f"{profile.session_id_prefix}_{uuid4().hex}"
             assert session_id is not None
-            discover_skills = config.session_type == "main"
-            if config.session_type == "custom":
+            if profile.custom_surface:
                 assert custom_surface is not None
-                discover_skills = "skills" in custom_surface.include_tool_categories
+            discover_skills = profile.should_discover_skills(
+                custom_surface.include_tool_categories
+                if custom_surface is not None
+                else None
+            )
             if discover_skills:
                 initial_skill_manager = SkillManager(config=config)
                 initial_catalog = initial_skill_manager.discover_skills()
@@ -257,7 +253,7 @@ class SessionManager:
                 initial_catalog = IRSkillCatalog()
             tool_registry = ToolRegistry.build(
                 config.tool_categories,
-                surface=config.session_type,
+                surface=profile.tool_surface,
                 custom=custom_surface,
             )
             initial_recorder = Recorder(
@@ -275,9 +271,12 @@ class SessionManager:
         )
         rehydrated = rehydrator.run()
         config = rehydrated.config
+        profile = config.profile
+        if profile.custom_surface:
+            assert custom_surface is not None
         tool_registry = ToolRegistry.build(
             config.tool_categories,
-            surface=config.session_type,
+            surface=profile.tool_surface,
             custom=custom_surface,
         )
         skill_manager = SkillManager(config=config)
@@ -312,7 +311,7 @@ class SessionManager:
             seq=(rehydrated.last_seq + 1) if rehydrated.last_seq is not None else 0,
         )
         timekeeper: Timekeeper | None = None
-        if config.session_type == "main":
+        if profile.ambient_time:
             timekeeper = Timekeeper(config=config, footer_c=footer_controller)
             if is_resume:
                 timekeeper.note_resume(
@@ -322,7 +321,7 @@ class SessionManager:
                     turn_idx=recorder.current_turn_idx,
                 )
         session_lifecycle = lifecycle or SessionLifecycle()
-        if config.session_type == "main":
+        if profile.ambient_time:
             assert timekeeper is not None
             session_lifecycle = CompositeSessionLifecycle(
                 [TimekeeperSessionLifecycle(timekeeper), session_lifecycle]
@@ -353,19 +352,20 @@ class SessionManager:
             fork_config=fork_config,
             debug_emitter=debug_emitter,
             hearth_settings=HearthSettings.from_config(config),
+            enable_block_detection=profile.block_detection,
         )
         await homunculus.rehydrate(rehydrated)
-        custom_has_skills = (
-            config.session_type == "custom"
-            and custom_surface is not None
-            and "skills" in custom_surface.include_tool_categories
+        should_manage_skills = profile.should_discover_skills(
+            custom_surface.include_tool_categories
+            if custom_surface is not None
+            else None
         )
-        if config.session_type in {"main", "custom"}:
+        if profile.homunculus_lifecycle:
             lifecycles: list[RoundLifecycle] = [
                 RecordingRoundLifecycle(recorder=recorder),
                 HomunculusRoundLifecycle(homunculus=homunculus),
             ]
-            if config.session_type == "main" or custom_has_skills:
+            if should_manage_skills:
                 lifecycles.append(
                     SkillManagerRoundLifecycle(
                         footer_c=footer_controller,
@@ -373,17 +373,16 @@ class SessionManager:
                         recorder=recorder,
                     )
                 )
-            if config.session_type == "main":
-                assert timekeeper is not None
-                lifecycles.extend(
-                    [
-                        InboundInjectionRoundLifecycle(
-                            inbound_queue=inbound_queue,
-                            recorder=recorder,
-                        ),
-                        TimekeeperRoundLifecycle(timekeeper),
-                    ]
+            if profile.inbound_injection:
+                lifecycles.append(
+                    InboundInjectionRoundLifecycle(
+                        inbound_queue=inbound_queue,
+                        recorder=recorder,
+                    )
                 )
+            if profile.ambient_time:
+                assert timekeeper is not None
+                lifecycles.append(TimekeeperRoundLifecycle(timekeeper))
             lifecycles.append(
                 FooterControllerRoundLifecycle(
                     controller=footer_controller,

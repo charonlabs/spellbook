@@ -74,6 +74,7 @@ class BlockManager:
         token_meter: TokenMeter,
         context_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
         enable_block_metrics: bool = True,
+        enable_block_detection: bool = True,
         debug_emitter: "DebugEmitter | None" = None,
     ):
         """Manager for semantic and context blocks. Public instance vars can be
@@ -81,6 +82,7 @@ class BlockManager:
         `next_block_id` are both directly mutated externally."""
         self._context_projector = context_projector or _identity_context_projector
         self._enable_block_metrics = enable_block_metrics
+        self._enable_block_detection = enable_block_detection
         self._detector = BlockDetector(
             config=config,
             fork_runner=fork_runner,
@@ -679,12 +681,16 @@ class BlockManager:
     async def maybe_detect(
         self, blocks: Sequence[IRBlock], first_block_id: int
     ) -> None:
+        if not self._enable_block_detection:
+            return
         maybe_prepared = await self._detector.maybe_detect(blocks, first_block_id)
 
         if maybe_prepared is not None:
             self._submit_detection(maybe_prepared)
 
     async def force_detect(self, *, finalize: bool = False) -> bool:
+        if not self._enable_block_detection:
+            return False
         maybe_prepared = await self._detector.force_detect(finalize=finalize)
         if maybe_prepared is None:
             return False
@@ -800,7 +806,7 @@ class BlockManager:
 
     async def generate_next_summary(self) -> None:
         """Generate summary for the next completed block without a summary artifact."""
-        if not self._accept_background_work:
+        if not self._accept_background_work or not self._enable_block_detection:
             return
         prev: list[IRSemanticBlock] = []
         for block in self.semantic_blocks:
@@ -821,7 +827,7 @@ class BlockManager:
         block: IRSemanticBlock,
         prev_semantic_blocks: list[IRSemanticBlock],
     ) -> bool:
-        if not self._accept_background_work:
+        if not self._accept_background_work or not self._enable_block_detection:
             return False
         key = self._summary_key(block)
         if self._nursery.get_by_key(key) is not None:
@@ -879,6 +885,14 @@ class BlockManager:
     async def _queue_summary_for_forget(
         self, block: IRSemanticBlock
     ) -> ForgetBlockResult:
+        if not self._enable_block_detection:
+            return ForgetBlockResult(
+                status="summary_unavailable",
+                message=(
+                    f"Block {block.idx}'s summary is unavailable because this "
+                    "session profile does not run summary forks."
+                ),
+            )
         key = self._summary_key(block)
         if self._nursery.get_by_key(key) is not None:
             return ForgetBlockResult(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Sequence, cast, Never
+from typing import Any, Never, Sequence, cast
 
 import pytest
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.executor import Executor
 from spellbook.footer import FooterController
-from spellbook.fork import BlockDetectorConfig, ForkRunner
+from spellbook.fork import BlockDetectorConfig, BlockSummarizerConfig, ForkRunner
 from spellbook.generator import Generator
 from spellbook.homunculus import Homunculus
 from spellbook.inbound import InboundInjectionRoundLifecycle, InboundMessageQueue
@@ -49,12 +49,17 @@ from spellbook.round_lifecycle import (
     RoundContext,
     RoundLifecycle,
 )
-from spellbook.session_lifecycle import SessionContext, SessionLifecycle
+from spellbook.session_lifecycle import (
+    CompositeSessionLifecycle,
+    SessionContext,
+    SessionLifecycle,
+)
 from spellbook.session_manager import SessionManager
 from spellbook.skills.manager import SkillManager
 from spellbook.system_response import SystemResponse
 from spellbook.tools.common import (
     BlockDetectorToolMetadata,
+    BlockSummarizerToolMetadata,
     Tool,
     ToolError,
     ToolExecutionResult,
@@ -422,6 +427,212 @@ def _write_skill(
     path.parent.mkdir(parents=True)
     path.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n")
     return path
+
+
+def _round_lifecycle_names(manager: SessionManager) -> list[str]:
+    assert isinstance(manager.round_lifecycle, CompositeRoundLifecycle)
+    return [
+        type(lifecycle).__name__ for lifecycle in manager.round_lifecycle._lifecycles
+    ]
+
+
+def _session_lifecycle_names(manager: SessionManager) -> list[str]:
+    if not isinstance(manager.session_lifecycle, CompositeSessionLifecycle):
+        return [type(manager.session_lifecycle).__name__]
+    return [
+        type(lifecycle).__name__ for lifecycle in manager.session_lifecycle._lifecycles
+    ]
+
+
+def _detector_fork_config() -> BlockDetectorConfig:
+    inbound = IRUserTextBlock(text="<block_detector_context />", origin="system")
+    return BlockDetectorConfig(
+        prev_semantic_blocks=[],
+        full_context_blocks=[inbound],
+        context_block_buffer=[inbound],
+        context_block_start_id=0,
+        semantic_block_buffer=[],
+        inbound_block=inbound,
+    )
+
+
+def _summarizer_fork_config() -> BlockSummarizerConfig:
+    return BlockSummarizerConfig(
+        inbound_block=IRUserTextBlock(
+            text="<block_summarizer_context />",
+            origin="system",
+        )
+    )
+
+
+class TestSessionProfileBuild:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case",
+        [
+            {
+                "name": "main",
+                "update": {},
+                "custom_surface": None,
+                "fork_config": None,
+                "session_id_prefix": "session_",
+                "tool_names": DEFAULT_TOOL_REGISTRY.tool_names,
+                "round_lifecycles": [
+                    "RecordingRoundLifecycle",
+                    "HomunculusRoundLifecycle",
+                    "SkillManagerRoundLifecycle",
+                    "InboundInjectionRoundLifecycle",
+                    "TimekeeperRoundLifecycle",
+                    "FooterControllerRoundLifecycle",
+                ],
+                "session_lifecycles": [
+                    "TimekeeperSessionLifecycle",
+                    "SessionLifecycle",
+                ],
+                "meta_type": ToolMetadata,
+            },
+            {
+                "name": "custom_without_skills",
+                "update": {"session_type": "custom"},
+                "custom_surface": CustomSurface(
+                    tools=[CUSTOM_TEST_TOOL],
+                    include_tool_categories={"memory"},
+                ),
+                "fork_config": None,
+                "session_id_prefix": "custom_session_",
+                "tool_names": {
+                    "CustomTool",
+                    "Reflect",
+                    "ReflectToolResults",
+                    "Forget",
+                    "ForgetToolResult",
+                    "Configure",
+                    "Pin",
+                    "Recall",
+                },
+                "round_lifecycles": [
+                    "RecordingRoundLifecycle",
+                    "HomunculusRoundLifecycle",
+                    "FooterControllerRoundLifecycle",
+                ],
+                "session_lifecycles": ["SessionLifecycle"],
+                "meta_type": ToolMetadata,
+            },
+            {
+                "name": "custom_with_skills",
+                "update": {"session_type": "custom"},
+                "custom_surface": CustomSurface(
+                    tools=[],
+                    include_tool_categories={"skills"},
+                ),
+                "fork_config": None,
+                "session_id_prefix": "custom_session_",
+                "tool_names": {"Skill"},
+                "round_lifecycles": [
+                    "RecordingRoundLifecycle",
+                    "HomunculusRoundLifecycle",
+                    "SkillManagerRoundLifecycle",
+                    "FooterControllerRoundLifecycle",
+                ],
+                "session_lifecycles": ["SessionLifecycle"],
+                "meta_type": ToolMetadata,
+            },
+            {
+                "name": "block_detector",
+                "update": {
+                    "session_type": "block_detector",
+                    "tool_categories": {"block_detection"},
+                },
+                "custom_surface": None,
+                "fork_config": _detector_fork_config(),
+                "session_id_prefix": "bd_session_",
+                "tool_names": {
+                    "ProposeBlock",
+                    "AmendBlock",
+                    "CompleteBlock",
+                },
+                "round_lifecycles": ["RecordingRoundLifecycle"],
+                "session_lifecycles": ["SessionLifecycle"],
+                "meta_type": BlockDetectorToolMetadata,
+            },
+            {
+                "name": "block_summarizer",
+                "update": {
+                    "session_type": "block_summarizer",
+                    "tool_categories": {"block_summarization"},
+                },
+                "custom_surface": None,
+                "fork_config": _summarizer_fork_config(),
+                "session_id_prefix": "bs_session_",
+                "tool_names": {"Summarize"},
+                "round_lifecycles": ["RecordingRoundLifecycle"],
+                "session_lifecycles": ["SessionLifecycle"],
+                "meta_type": BlockSummarizerToolMetadata,
+            },
+        ],
+        ids=lambda case: case["name"],
+    )
+    async def test_existing_session_type_presets_preserve_build_wiring(
+        self, tmp_path: Path, monkeypatch, case: dict[str, Any]
+    ) -> None:
+        transcript = tmp_path / f"{case['name']}.jsonl"
+        config = _config(tmp_path).model_copy(update=case["update"])
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript,
+            config=config,
+            custom_surface=case["custom_surface"],
+            fork_config=case["fork_config"],
+        )
+
+        assert manager.session_id.startswith(case["session_id_prefix"])
+        assert manager.tool_registry.tool_names == case["tool_names"]
+        assert _round_lifecycle_names(manager) == case["round_lifecycles"]
+        assert _session_lifecycle_names(manager) == case["session_lifecycles"]
+        assert isinstance(manager.executor.meta, case["meta_type"])
+
+    @pytest.mark.asyncio
+    async def test_quantum_profile_suppresses_ambient_services(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "quantum.jsonl"
+        config = _config(tmp_path).model_copy(
+            update={
+                "session_type": "quantum",
+                "hom_config": HomunculusConfig(detect_interval=1),
+            }
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(transcript_path=transcript, config=config)
+
+        assert manager.session_id.startswith("quantum_session_")
+        assert manager.tool_registry.tool_names == {
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+        }
+        assert _round_lifecycle_names(manager) == [
+            "RecordingRoundLifecycle",
+            "HomunculusRoundLifecycle",
+            "FooterControllerRoundLifecycle",
+        ]
+        assert _session_lifecycle_names(manager) == ["SessionLifecycle"]
+
+        await manager.homunculus.render_context(
+            [IRUserTextBlock(text="quantum context", origin="human")]
+        )
+
+        assert manager.nursery.jobs(kind="detect_blocks") == []
 
 
 class TestInboundQueueSemantics:

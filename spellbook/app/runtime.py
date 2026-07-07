@@ -105,7 +105,7 @@ class CoreAppRuntime:
         self._session = session
         self._session_task = asyncio.create_task(session.run())
         self._session_task.add_done_callback(self._on_session_task_done)
-        if session.config.session_type == "main":
+        if session.config.profile.hearth:
             self._hearth_scheduler = HearthScheduler(self)
             self._hearth_scheduler.start()
         await asyncio.sleep(0)

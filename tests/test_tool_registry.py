@@ -310,6 +310,15 @@ class TestToolSurfaces:
 
         assert registry.tool_names == set()
 
+    def test_quantum_surface_exposes_read_only_memory_tools(self) -> None:
+        registry = ToolRegistry.build(categories=None, surface="quantum")
+
+        assert registry.tool_names == {
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+        }
+
     def test_custom_surface_includes_selected_main_categories_and_custom_tools(
         self,
     ) -> None:

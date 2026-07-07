@@ -13,9 +13,11 @@ in the rewrite.
 
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal, Mapping, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .profiles import SessionProfile, SessionType, profile_for_session_type
 
 Provider = Literal["anthropic", "openai", "local"]
 
@@ -50,8 +52,6 @@ _QUIET_HOURS_RE = re.compile(
     r"^(?P<start_hour>\d{2}):(?P<start_minute>\d{2})-"
     r"(?P<end_hour>\d{2}):(?P<end_minute>\d{2})$"
 )
-
-SessionType = Literal["main", "block_detector", "block_summarizer", "custom"]
 
 
 def default_skill_discovery_dirs(provider: str) -> list[str]:
@@ -97,6 +97,9 @@ class SpellbookConfig(BaseModel, frozen=True):
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
     session_type: SessionType = "main"
+    profile: SessionProfile = Field(
+        default_factory=lambda: profile_for_session_type("main")
+    )
     cwd: Path
 
     # TEMPORARY FIELDS to be replaced with frames once they are implemented
@@ -108,12 +111,27 @@ class SpellbookConfig(BaseModel, frozen=True):
     @model_validator(mode="before")
     @classmethod
     def _apply_provider_specific_defaults(cls, data: object) -> object:
-        if not isinstance(data, dict) or "skill_discovery_dirs" in data:
+        if not isinstance(data, dict):
             return data
         values = dict(data)
-        provider = str(values.get("provider", DEFAULT_PROVIDER))
-        values["skill_discovery_dirs"] = default_skill_discovery_dirs(provider)
+        if "skill_discovery_dirs" not in values:
+            provider = str(values.get("provider", DEFAULT_PROVIDER))
+            values["skill_discovery_dirs"] = default_skill_discovery_dirs(provider)
+        if "profile" not in values:
+            session_type = str(values.get("session_type", "main"))
+            values["profile"] = profile_for_session_type(session_type)
         return values
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> Self:
+        resolved_update = update
+        if update is not None and "session_type" in update and "profile" not in update:
+            resolved_update = dict(update)
+            resolved_update["profile"] = profile_for_session_type(
+                str(update["session_type"])
+            )
+        return super().model_copy(update=resolved_update, deep=deep)
 
     @field_validator("hearth_quiet_hours")
     @classmethod

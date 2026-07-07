@@ -156,7 +156,7 @@ class _FakeSessionBuilder:
         if not transcript_path.exists():
             tool_registry = ToolRegistry.build(
                 config.tool_categories,
-                surface=config.session_type,
+                surface=config.profile.tool_surface,
                 custom=custom_surface,
             )
             Recorder(
@@ -207,6 +207,31 @@ async def test_startup_wires_app_lifecycles_and_record_tap(tmp_path: Path) -> No
     assert isinstance(record_event, RecordWrittenEvent)
     assert isinstance(state_event, RuntimeStateEvent)
     assert state_event.state == "idle"
+
+    await runtime.shutdown()
+
+
+async def test_quantum_startup_does_not_start_hearth_scheduler(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _UnexpectedHearthScheduler:
+        def __init__(self, runtime: CoreAppRuntime) -> None:
+            raise AssertionError("quantum sessions must not start hearth")
+
+    monkeypatch.setattr(
+        "spellbook.app.runtime.HearthScheduler",
+        _UnexpectedHearthScheduler,
+    )
+    builder = _FakeSessionBuilder()
+    runtime = CoreAppRuntime(
+        transcript_path=tmp_path / "quantum.jsonl",
+        config=_config(tmp_path).model_copy(update={"session_type": "quantum"}),
+        session_builder=cast(SessionBuilder, builder),
+    )
+
+    await runtime.startup()
+
+    assert runtime._hearth_scheduler is None
 
     await runtime.shutdown()
 

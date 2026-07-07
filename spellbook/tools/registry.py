@@ -14,11 +14,12 @@ tool surface, construct a new registry.
 """
 
 from collections.abc import Set as AbstractSet
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
 from spellbook.custom import CustomSurface
+from spellbook.profiles import ToolSurface
 from spellbook.tools.chorus import REACH_TOOL
 from spellbook.tools.skills import SKILL_TOOL
 from spellbook.tools.web import WEB_ANSWER_TOOL, WEB_READ_TOOL, WEB_SEARCH_TOOL
@@ -41,8 +42,6 @@ from .self_work import (
     REFLECT_TOOL,
     REFLECT_TOOL_RESULTS_TOOL,
 )
-
-ToolSurface = Literal["main", "block_detector", "block_summarizer", "custom"]
 
 CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
     "coding": frozenset({"filesystem", "thinking"}),
@@ -146,10 +145,17 @@ BLOCK_DETECTOR_TOOLS: list[Tool[Any]] = [
 
 BLOCK_SUMMARIZER_TOOLS: list[Tool[Any]] = [SUMMARIZE_TOOL]
 
+QUANTUM_TOOLS: list[Tool[Any]] = [
+    REFLECT_TOOL,
+    REFLECT_TOOL_RESULTS_TOOL,
+    RECALL_TOOL,
+]
+
 TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
     "main": MAIN_TOOLS,
     "block_detector": BLOCK_DETECTOR_TOOLS,
     "block_summarizer": BLOCK_SUMMARIZER_TOOLS,
+    "quantum": QUANTUM_TOOLS,
 }
 
 # Every tool this binary knows how to validate and execute.

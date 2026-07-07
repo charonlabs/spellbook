@@ -127,17 +127,8 @@ def build_tool_metadata(
     skill_manager: SkillManager | None,
     fork_config: ForkConfig | None,
 ) -> ToolMetadata:
-    match config.session_type:
-        case "main":
-            return ToolMetadata(
-                cwd=config.cwd,
-                transcript_path=transcript_path,
-                homunculus=homunculus,
-                skill_manager=skill_manager,
-                chorus_url=config.chorus_url,
-                chorus_entity_name=config.chorus_entity_name,
-            )
-        case "custom":
+    match config.profile.tool_metadata:
+        case "standard":
             return ToolMetadata(
                 cwd=config.cwd,
                 transcript_path=transcript_path,

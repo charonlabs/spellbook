@@ -386,7 +386,7 @@ async def replay_transcript(
     resume_backup_path = _backup_resume_output(output_path) if resume else None
     tool_registry = ToolRegistry.build(
         replay_build.config.tool_categories,
-        surface=replay_build.config.session_type,
+        surface=replay_build.config.profile.tool_surface,
     )
     record_printer = _ReplayRecordPrinter()
     if replay_build.rehydrated_output is not None:
