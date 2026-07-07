@@ -681,7 +681,8 @@ def _build_runtime(
     context_projector: Callable[[Sequence[IRBlock]], list[IRBlock]],
 ) -> DrainRuntime:
     tool_registry = ToolRegistry.build(
-        config.tool_categories, surface=config.session_type
+        config.tool_categories,
+        surface=config.profile.tool_surface,
     )
     backend = build_backend(config)
     surface_builder = RequestSurfaceBuilder.from_config(
@@ -724,7 +725,8 @@ def _build_recorder(
     source: RehydrationResult,
 ) -> Recorder:
     tool_registry = ToolRegistry.build(
-        config.tool_categories, surface=config.session_type
+        config.tool_categories,
+        surface=config.profile.tool_surface,
     )
     recorder = Recorder(
         config=config,

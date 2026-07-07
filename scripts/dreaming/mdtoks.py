@@ -55,7 +55,10 @@ def _build_token_counter(model: str) -> TokenCounter:
         cwd=Path.cwd(),
     )
     backend = AnthropicBackend()
-    registry = ToolRegistry.build(config.tool_categories, surface=config.session_type)
+    registry = ToolRegistry.build(
+        config.tool_categories,
+        surface=config.profile.tool_surface,
+    )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,
         config=config,

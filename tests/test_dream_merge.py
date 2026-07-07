@@ -6,19 +6,23 @@ from pathlib import Path
 import pytest
 from scripts.dreaming.dream_director import Pair
 from scripts.dreaming.dream_merge import (
-    QUANTUM_DICE_CONTRACT,
+    DREAM_FORK_FRAMING,
     DirectorResult,
     DirectorTask,
     DreamMergeOptions,
     DreamTask,
+    _chapter_markdown_from_quantum_result,
     _clone_transcript_workspace,
     _dream_user_message,
     _parse_pairs,
     _write_stats_files,
+    run_quantum_dream_task,
     run_dream_merge,
 )
 from scripts.dreaming.mdtoks import MarkdownTokenReport
 from scripts.dreaming.merge_stats import BlockLine, MergeStatsReport, PinCount
+from spellbook.dreaming import pipeline as dream_pipeline
+from spellbook.fork import QuantumForkConfig, QuantumForkResult
 from spellbook.ir_types import IRTokenRangeCount
 
 
@@ -131,9 +135,11 @@ def test_dream_user_message_includes_contract_stats_pins_and_render_path(
 
     message = _dream_user_message(pair_run)
 
-    assert QUANTUM_DICE_CONTRACT in message
-    assert "Save the chapter to:" in message
+    assert message.startswith("A dream has found you.")
+    assert DREAM_FORK_FRAMING in message
+    assert "The waking pipeline will save your submitted chapter to:" in message
     assert str(pair_run.chapter_path) in message
+    assert "SubmitResult exactly once" in message
     assert "Full fidelity (both): 48,200 tokens" in message
     assert "Three-Body Architecture Decision" in message
     assert "## Rendered Markdown Path" in message
@@ -172,12 +178,6 @@ async def test_run_dream_merge_with_fake_runners(tmp_path: Path) -> None:
 
     async def fake_dream(task: DreamTask) -> str:
         dream_messages.append(task.dream_message)
-        assert (
-            task.pair_run.fork_transcript_path.parent / "blobs" / "asset.txt"
-        ).exists()
-        assert (
-            task.pair_run.fork_transcript_path.parent / "tool-outputs" / "output.txt"
-        ).exists()
         alternate = task.pair_run.chapter_path.parent / "chapter-03-the-composition.md"
         alternate.parent.mkdir(parents=True, exist_ok=True)
         alternate.write_text("# Dream\n", encoding="utf-8")
@@ -258,6 +258,70 @@ async def test_run_dream_merge_can_reuse_preflight_stats(tmp_path: Path) -> None
     assert report.pair_runs[0].render_path == render_path.resolve()
 
 
+@pytest.mark.asyncio
+async def test_run_quantum_dream_task_writes_submission_and_mirrors_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    transcript = source_dir / "transcript.jsonl"
+    transcript.write_text('{"ir":"session"}\n', encoding="utf-8")
+    pair_run = _pair_run_for_test(tmp_path, render_path=tmp_path / "render.md")
+    pair_run.render_path.write_text("# Source Blocks\nsource", encoding="utf-8")
+    pair_run = _replace_pair_run_transcript(pair_run, transcript)
+
+    async def fake_run_quantum_fork(
+        *,
+        parent_transcript_path: Path,
+        fork_config: QuantumForkConfig,
+    ) -> QuantumForkResult:
+        assert parent_transcript_path.exists()
+        assert fork_config.instruction.text.startswith("A dream has found you.")
+        assert fork_config.fork_label == "dream_chapter_01_blocks_0_1"
+        child_transcript = (
+            parent_transcript_path.parent
+            / "forks"
+            / "quantum_dream"
+            / "transcript.jsonl"
+        )
+        child_transcript.parent.mkdir(parents=True)
+        child_transcript.write_text("child transcript\n", encoding="utf-8")
+        return QuantumForkResult(
+            final_text="submitted",
+            submitted={"chapter_markdown": "# Dream\n"},
+            fork_transcript_path=str(child_transcript),
+            rounds=1,
+            stop_reason="end_turn",
+        )
+
+    monkeypatch.setattr(dream_pipeline, "_run_quantum_fork", fake_run_quantum_fork)
+
+    final_text = await run_quantum_dream_task(
+        DreamTask(pair_run=pair_run, dream_message=_dream_user_message(pair_run))
+    )
+
+    assert final_text == "submitted"
+    assert pair_run.chapter_path.read_text(encoding="utf-8") == "# Dream\n"
+    assert pair_run.fork_transcript_path.read_text(encoding="utf-8") == (
+        "child transcript\n"
+    )
+
+
+def test_chapter_markdown_from_quantum_result_accepts_expected_payloads(
+    tmp_path: Path,
+) -> None:
+    result = QuantumForkResult(
+        final_text="",
+        submitted={"chapter_markdown": "# Dream"},
+        fork_transcript_path=str(tmp_path / "fork.jsonl"),
+        rounds=1,
+        stop_reason="end_turn",
+    )
+
+    assert _chapter_markdown_from_quantum_result(result) == "# Dream"
+
+
 def _pair_run_for_test(tmp_path: Path, *, render_path: Path):
     from scripts.dreaming.dream_merge import PairRun
 
@@ -278,4 +342,33 @@ def _pair_run_for_test(tmp_path: Path, *, render_path: Path):
         review_path=tmp_path / "review.json",
         fork_dir=tmp_path / "fork",
         fork_transcript_path=tmp_path / "fork" / "transcript.jsonl",
+    )
+
+
+def _replace_pair_run_transcript(pair_run, transcript: Path):
+    from scripts.dreaming.dream_merge import PairRun
+
+    stats = MergeStatsReport(
+        transcript_path=transcript,
+        model=pair_run.stats.model,
+        block_lines=pair_run.stats.block_lines,
+        full_count=pair_run.stats.full_count,
+        summary_count=pair_run.stats.summary_count,
+        pins=pair_run.stats.pins,
+        render_path=pair_run.stats.render_path,
+    )
+    return PairRun(
+        pair=pair_run.pair,
+        stats=stats,
+        stats_text=pair_run.stats_text,
+        stats_text_path=pair_run.stats_text_path,
+        stats_json_path=pair_run.stats_json_path,
+        render_path=pair_run.render_path,
+        chapter_path=pair_run.chapter_path,
+        review_path=pair_run.review_path,
+        fork_dir=pair_run.fork_dir,
+        fork_transcript_path=pair_run.fork_transcript_path,
+        warnings=pair_run.warnings,
+        dream_result=pair_run.dream_result,
+        director_result=pair_run.director_result,
     )
