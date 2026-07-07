@@ -33,6 +33,7 @@ from .homunculus.block_detector import (
     PROPOSE_BLOCK_TOOL,
 )
 from .homunculus.block_summarizer import SUMMARIZE_TOOL
+from .quantum import SUBMIT_RESULT_TOOL
 from .self_work import (
     CONFIGURE_TOOL,
     FORGET_TOOL,
@@ -79,6 +80,7 @@ class ToolRegistry(BaseModel, frozen=True):
         *,
         surface: ToolSurface = "main",
         custom: CustomSurface | None = None,
+        include_quantum_submit: bool = True,
     ) -> "ToolRegistry":
         if surface == "custom" and custom is None:
             raise ValueError("Custom tool surfaces require a CustomSurface.")
@@ -94,6 +96,10 @@ class ToolRegistry(BaseModel, frozen=True):
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
         surface_tools = TOOLS_BY_SURFACE[surface]
+        if surface == "quantum" and not include_quantum_submit:
+            surface_tools = [
+                tool for tool in surface_tools if tool.name != SUBMIT_RESULT_TOOL.name
+            ]
         if categories is None and surface != "main":
             return cls(tools=surface_tools)
         resolved_categories = resolve_tool_categories(categories)
@@ -146,9 +152,11 @@ BLOCK_DETECTOR_TOOLS: list[Tool[Any]] = [
 BLOCK_SUMMARIZER_TOOLS: list[Tool[Any]] = [SUMMARIZE_TOOL]
 
 QUANTUM_TOOLS: list[Tool[Any]] = [
+    READ_TOOL,
     REFLECT_TOOL,
     REFLECT_TOOL_RESULTS_TOOL,
     RECALL_TOOL,
+    SUBMIT_RESULT_TOOL,
 ]
 
 TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
@@ -159,7 +167,9 @@ TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
 }
 
 # Every tool this binary knows how to validate and execute.
-ALL_TOOLS: list[Tool[Any]] = MAIN_TOOLS + BLOCK_DETECTOR_TOOLS + BLOCK_SUMMARIZER_TOOLS
+ALL_TOOLS: list[Tool[Any]] = (
+    MAIN_TOOLS + BLOCK_DETECTOR_TOOLS + BLOCK_SUMMARIZER_TOOLS + [SUBMIT_RESULT_TOOL]
+)
 
 DEFAULT_TOOL_REGISTRY = ToolRegistry.build(categories=None, surface="main")
 KNOWN_TOOL_REGISTRY = ToolRegistry(tools=ALL_TOOLS)

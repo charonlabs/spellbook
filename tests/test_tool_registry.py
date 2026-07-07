@@ -216,6 +216,7 @@ class TestToolSurfaces:
             "AmendBlock",
             "CompleteBlock",
             "Summarize",
+            "SubmitResult",
         }
 
     def test_main_surface_default_is_normal_entity_registry(self) -> None:
@@ -310,10 +311,26 @@ class TestToolSurfaces:
 
         assert registry.tool_names == set()
 
-    def test_quantum_surface_exposes_read_only_memory_tools(self) -> None:
+    def test_quantum_surface_exposes_read_only_tools_and_submit(self) -> None:
         registry = ToolRegistry.build(categories=None, surface="quantum")
 
         assert registry.tool_names == {
+            "Read",
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+            "SubmitResult",
+        }
+
+    def test_quantum_surface_can_omit_submit_result(self) -> None:
+        registry = ToolRegistry.build(
+            categories=None,
+            surface="quantum",
+            include_quantum_submit=False,
+        )
+
+        assert registry.tool_names == {
+            "Read",
             "Reflect",
             "ReflectToolResults",
             "Recall",

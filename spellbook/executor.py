@@ -71,6 +71,7 @@ class Executor:
         before running, kind of like the existing interrupt error result path."""
         result_blocks: list[IRToolResultBlock] = []
         cancelled_early = False
+        terminal_stop_reason = None
         for idx, call in enumerate(calls):
             if cancel_token.cancelled:
                 cancelled_early = True
@@ -117,6 +118,8 @@ class Executor:
                         display=exec_result.display,
                     )
                 )
+                if exec_result.terminal_stop_reason is not None:
+                    terminal_stop_reason = exec_result.terminal_stop_reason
             except ToolError as e:
                 result_blocks.append(
                     IRToolResultBlock(
@@ -127,7 +130,11 @@ class Executor:
                     )
                 )
 
-        return IRExecution(blocks=result_blocks, cancelled_early=cancelled_early)
+        return IRExecution(
+            blocks=result_blocks,
+            cancelled_early=cancelled_early,
+            terminal_stop_reason=terminal_stop_reason,
+        )
 
     def _cancelled_result_block(self, call: IRToolCallBlock) -> IRToolResultBlock:
         return IRToolResultBlock(

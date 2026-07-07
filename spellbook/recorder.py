@@ -316,10 +316,11 @@ class Recorder:
         )
         self._write_record(summon_fork_record)
 
-    def shutdown_fork(self, fork_id: str) -> None:
+    def shutdown_fork(self, fork_id: str, error_note: str | None = None) -> None:
         shutdown_fork_record = IRForkShutdownRecord(
             session_id=self._session_id,
             fork_id=fork_id,
+            error_note=error_note,
             turn=self._turn,
             turn_id=self._curr_turn_id,
         )

@@ -21,8 +21,10 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 NurseryJobMode = Literal["render_blocking", "best_effort"]
-NurseryJobSource = Literal["block_manager", "bash"]
-NurseryJobKind = Literal["detect_blocks", "summarize_block", "bash", "block_metrics"]
+NurseryJobSource = Literal["block_manager", "bash", "quantum_fork"]
+NurseryJobKind = Literal[
+    "detect_blocks", "summarize_block", "bash", "block_metrics", "quantum_fork"
+]
 
 
 @dataclass(frozen=True, slots=True)  # Not pydantic because need to hold task

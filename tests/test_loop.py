@@ -449,6 +449,38 @@ class TestCancellation:
         assert kinds[-1] == "on_loop_exit"
 
     @pytest.mark.asyncio
+    async def test_executor_terminal_stop_reason_exits_cleanly(self) -> None:
+        """Terminal tools end the loop without marking execution as cancelled."""
+        gen = _FakeGenerator(
+            [
+                _gen(blocks=[_tool_call("toolu_submit")], stop_reason="tool_use"),
+            ]
+        )
+        ex = _FakeExecutor(
+            [
+                IRExecution(
+                    blocks=[_tool_result("toolu_submit")],
+                    terminal_stop_reason="end_turn",
+                ),
+            ]
+        )
+        lifecycle = _RecordingLifecycle()
+
+        result = await run_loop(
+            generator=gen,  # type: ignore
+            executor=ex,  # type: ignore
+            lifecycle=lifecycle,
+            initial_blocks=_initial(),
+            cancel_token=CancelToken(),
+        )
+
+        assert result.stop_reason == "end_turn"
+        assert result.rounds == 1
+        kinds = [e[0] for e in lifecycle.events]
+        assert "between_rounds" not in kinds
+        assert kinds[-1] == "on_loop_exit"
+
+    @pytest.mark.asyncio
     async def test_cancellation_between_rounds(self) -> None:
         """Token cancelled during between_rounds: next round doesn't start."""
         token = CancelToken()

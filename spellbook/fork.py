@@ -3,8 +3,7 @@
 This module defines the typed protocol for fork-scoped work and the runtime
 service that executes those forks.
 
-Right now the only supported fork type is block detection, but the design intent
-is broader: `ForkRunner` is the reusable substrate for child-session work that
+`ForkRunner` is the reusable substrate for child-session work that
 derives from a parent session's runtime/config while remaining isolated from the
 parent's canonical transcript state.
 
@@ -16,8 +15,8 @@ Important invariants:
 - the parent session decides how fork results are integrated
 - `ForkRunner` owns child-session orchestration; feature-specific subsystems
   should not each reinvent session spawning
-- block detector is the first specialization, not the permanent shape of the
-  fork layer
+- specializations stay explicit without turning the fork layer into
+  feature-specific glue
 
 If you add new fork types, keep config/result typing, child-session wiring, and
 result decoding explicit and coherent together.
@@ -26,23 +25,30 @@ result decoding explicit and coherent together.
 from __future__ import annotations
 
 import asyncio
+import re
+import shutil
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Coroutine, Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from spellbook.config import SpellbookConfig
 from spellbook.ir_types import (
+    IRAssistantTextBlock,
     IRBlock,
     IRInboundMessage,
     IRLoopResult,
+    IRRecord,
     IRSemanticBlockRange,
     IRSemanticBlockSummary,
+    IRSessionRecord,
     IRUserTextBlock,
+    StopReason,
 )
+from spellbook.profiles import QUANTUM, SessionProfile
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 
 if TYPE_CHECKING:
@@ -81,8 +87,18 @@ class BlockSummarizerConfig(BaseModel, frozen=True):
     summarizer_model: str | None = DEFAULT_SUMMARIZER_MODEL
 
 
+class QuantumForkConfig(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["quantum"] = "quantum"
+    instruction: IRUserTextBlock
+    profile: SessionProfile = QUANTUM
+    submit_tool: bool = True
+    fork_label: str | None = None
+
+
 ForkConfig = Annotated[
-    BlockDetectorConfig | BlockSummarizerConfig, Field(discriminator="type")
+    BlockDetectorConfig | BlockSummarizerConfig | QuantumForkConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -99,8 +115,19 @@ class BlockSummarizerResult(BaseModel, frozen=True):
     summary: IRSemanticBlockSummary
 
 
+class QuantumForkResult(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["quantum"] = "quantum"
+    final_text: str
+    submitted: JsonValue | None
+    fork_transcript_path: str
+    rounds: int
+    stop_reason: StopReason
+
+
 ForkResult = Annotated[
-    BlockDetectorResult | BlockSummarizerResult, Field(discriminator="type")
+    BlockDetectorResult | BlockSummarizerResult | QuantumForkResult,
+    Field(discriminator="type"),
 ]
 
 
@@ -119,10 +146,14 @@ class ForkSession(Protocol):
 class ForkSessionLifecycle(SessionLifecycle):
     def __init__(self) -> None:
         self.turn_end_event = asyncio.Event()
+        self.last_result: IRLoopResult | None = None
+        self.last_turn_id: str | None = None
 
     async def on_turn_ended(
         self, ctx: SessionContext, result: IRLoopResult, turn_id: str
     ) -> None:
+        self.last_result = result
+        self.last_turn_id = turn_id
         self.turn_end_event.set()
 
 
@@ -156,13 +187,15 @@ class ForkRunner:
                 return await self._run_block_detector(fork_config)
             case BlockSummarizerConfig():
                 return await self._run_block_summarizer(fork_config)
+            case QuantumForkConfig():
+                return await self._run_quantum(fork_config)
             case _:
                 raise NotImplementedError(
                     f"Forks of type {fork_config.type} are not yet supported."
                 )
 
-    def integrate_result(self, fork_id: str) -> None:
-        self._recorder.shutdown_fork(fork_id)
+    def integrate_result(self, fork_id: str, error_note: str | None = None) -> None:
+        self._recorder.shutdown_fork(fork_id, error_note=error_note)
 
     async def _run_block_detector(
         self,
@@ -241,6 +274,116 @@ class ForkRunner:
                     fork_session=fork_session,
                     child_task=child_task,
                 )
+
+        return PreparedFork(coro=_run(), fork_id=fork_id)
+
+    async def _run_quantum(
+        self,
+        fork_config: QuantumForkConfig,
+    ) -> PreparedFork:
+        fork_id = f"quantum_{_safe_fork_label(fork_config.fork_label)}_{uuid4().hex}"
+        child_transcript_path = self._prepare_quantum_snapshot(
+            fork_id=fork_id,
+            fork_config=fork_config,
+        )
+        child_config = self._parent_config.model_copy(
+            update={
+                "session_type": fork_config.profile.name,
+                "profile": fork_config.profile,
+                "tool_categories": None,
+            }
+        )
+        lifecycle = ForkSessionLifecycle()
+        self._recorder.summon_fork(
+            fork_id=fork_id,
+            fork_type="quantum",
+            child_transcript_path=str(child_transcript_path),
+        )
+        try:
+            fork_session = await self._build_session(
+                transcript_path=child_transcript_path,
+                config=child_config,
+                lifecycle=lifecycle,
+                fork_config=fork_config,
+                session_id=fork_id,
+            )
+        except Exception as exc:
+            self._alert_fork_failure(
+                fork_id=fork_id,
+                fork_type="quantum",
+                event="build_failed",
+                title="Quantum fork failed to build",
+                error=exc,
+            )
+            self._shutdown_failed_fork(fork_id, exc)
+            raise
+
+        async def _run() -> QuantumForkResult:
+            child_task = asyncio.create_task(fork_session.run())
+            try:
+                try:
+                    initial_msg = IRInboundMessage(
+                        blocks=[fork_config.instruction],
+                        delivery="turn",
+                        source_metadata={
+                            "source": "quantum_fork",
+                            "fork_id": fork_id,
+                            "fork_label": fork_config.fork_label,
+                        },
+                    )
+                    await fork_session.submit_message(initial_msg)
+                    await self._wait_for_turn_end_or_child_exit(
+                        fork_id=fork_id,
+                        fork_type="quantum",
+                        lifecycle=lifecycle,
+                        child_task=child_task,
+                    )
+                    loop_result = lifecycle.last_result
+                    if loop_result is None:
+                        raise RuntimeError(
+                            f"Quantum fork {fork_id} ended without a loop result."
+                        )
+                    final_meta = await fork_session.get_tool_meta()
+                    from spellbook.tools.common import QuantumForkToolMetadata
+
+                    assert isinstance(final_meta, QuantumForkToolMetadata)
+                    return QuantumForkResult(
+                        final_text=_last_assistant_text(loop_result),
+                        submitted=(
+                            final_meta.submitted if final_meta.submit_called else None
+                        ),
+                        fork_transcript_path=str(child_transcript_path),
+                        rounds=loop_result.rounds,
+                        stop_reason=loop_result.stop_reason,
+                    )
+                finally:
+                    await self._shutdown_child_session(
+                        fork_id=fork_id,
+                        fork_type="quantum",
+                        fork_session=fork_session,
+                        child_task=child_task,
+                    )
+            except asyncio.CancelledError as exc:
+                self._alert_fork_failure(
+                    fork_id=fork_id,
+                    fork_type="quantum",
+                    event="cancelled",
+                    title="Quantum fork was cancelled",
+                    error=exc,
+                    level="warning",
+                )
+                self._shutdown_failed_fork(fork_id, exc)
+                raise
+            except Exception as exc:
+                self._alert_fork_failure(
+                    fork_id=fork_id,
+                    fork_type="quantum",
+                    event="run_failed",
+                    title="Quantum fork failed",
+                    error=exc,
+                )
+                self._shutdown_failed_fork(fork_id, exc)
+                raise
 
         return PreparedFork(coro=_run(), fork_id=fork_id)
 
@@ -360,6 +503,78 @@ class ForkRunner:
                 turn_end_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await turn_end_task
+
+    def _prepare_quantum_snapshot(
+        self, *, fork_id: str, fork_config: QuantumForkConfig
+    ) -> Path:
+        self._assert_parent_quiescent()
+        fork_dir = self._parent_path.parent / "forks" / fork_id
+        fork_dir.mkdir(parents=True, exist_ok=False)
+        child_transcript_path = fork_dir / "transcript.jsonl"
+        shutil.copy2(self._parent_path, child_transcript_path)
+        self._rewrite_quantum_snapshot_records(
+            transcript_path=child_transcript_path,
+            fork_id=fork_id,
+            fork_config=fork_config,
+        )
+        for dirname in ("blobs", "tool_outputs"):
+            (fork_dir / dirname).symlink_to(
+                Path("..") / ".." / dirname,
+                target_is_directory=True,
+            )
+        return child_transcript_path
+
+    def _assert_parent_quiescent(self) -> None:
+        from spellbook.rehydrator import Rehydrator
+
+        rehydrated = Rehydrator(self._parent_path).run()
+        if rehydrated.is_unfinished_turn:
+            raise RuntimeError(
+                "Cannot spawn quantum fork from a transcript with an in-progress turn."
+            )
+
+    def _rewrite_quantum_snapshot_records(
+        self,
+        *,
+        transcript_path: Path,
+        fork_id: str,
+        fork_config: QuantumForkConfig,
+    ) -> None:
+        from spellbook.tools.registry import ToolRegistry
+
+        adapter = TypeAdapter(IRRecord)
+        records: list[IRRecord] = []
+        for raw_line in transcript_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            record = adapter.validate_json(line)
+            update: dict[str, Any] = {"session_id": fork_id}
+            if isinstance(record, IRSessionRecord):
+                config = record.config.model_copy(
+                    update={
+                        "session_type": fork_config.profile.name,
+                        "profile": fork_config.profile,
+                        "tool_categories": None,
+                    }
+                )
+                tool_registry = ToolRegistry.build(
+                    None,
+                    surface=fork_config.profile.tool_surface,
+                    include_quantum_submit=fork_config.submit_tool,
+                )
+                update.update({"config": config, "tools": tool_registry.records})
+            records.append(record.model_copy(update=update))
+        transcript_path.write_text(
+            "".join(record.model_dump_json() + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+    def _shutdown_failed_fork(self, fork_id: str, error: BaseException) -> None:
+        self.integrate_result(
+            fork_id,
+            error_note=f"{type(error).__name__}: {error}",
+        )
 
     async def _raise_child_exit_before_turn_end(
         self, *, fork_id: str, fork_type: str, child_task: asyncio.Task[None]
@@ -511,6 +726,22 @@ def _fork_failure_plaintext(
     if error is None:
         return f"{title}: {fork_id} ({event})."
     return f"{title}: {fork_id} ({event}): {error}"
+
+
+def _last_assistant_text(result: IRLoopResult) -> str:
+    for generation in reversed(result.generations):
+        for block in reversed(generation.blocks):
+            if isinstance(block, IRAssistantTextBlock):
+                return block.text
+    return ""
+
+
+def _safe_fork_label(label: str | None) -> str:
+    if label is None:
+        return "fork"
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip())
+    sanitized = sanitized.strip("_")
+    return sanitized or "fork"
 
 
 def _escape_table(value: object) -> str:

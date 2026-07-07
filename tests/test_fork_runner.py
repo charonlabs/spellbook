@@ -14,14 +14,24 @@ from spellbook.fork import (
     BlockDetectorResult,
     ForkRunner,
     PreparedFork,
+    QuantumForkConfig,
+    QuantumForkResult,
 )
 from spellbook.ir_types import (
+    IRAssistantTextBlock,
+    IRGeneration,
     IRInboundMessage,
+    IRLoopResult,
     IRSemanticBlockRange,
+    IRSkillCatalog,
+    IRUsage,
     IRUserTextBlock,
 )
 from spellbook.recorder import Recorder
-from spellbook.tools.common import BlockDetectorToolMetadata
+from spellbook.rehydrator import Rehydrator
+from spellbook.session_lifecycle import SessionContext
+from spellbook.tools.common import BlockDetectorToolMetadata, QuantumForkToolMetadata
+from spellbook.tools.registry import ToolRegistry
 
 
 def _parent_config(tmp_path: Path) -> SpellbookConfig:
@@ -50,15 +60,83 @@ def _detector_config() -> BlockDetectorConfig:
     )
 
 
-def _prepared(result: BlockDetectorResult, fork_id: str = "detector_test"):
-    async def _run() -> BlockDetectorResult:
+def _quantum_config(label: str | None = "Chapter One") -> QuantumForkConfig:
+    return QuantumForkConfig(
+        instruction=IRUserTextBlock(
+            text="Write the fork result.",
+            origin="system",
+        ),
+        fork_label=label,
+    )
+
+
+def _write_parent_transcript(tmp_path: Path) -> Path:
+    session_dir = tmp_path / "session"
+    transcript = session_dir / "transcript.jsonl"
+    config = _parent_config(tmp_path).model_copy(
+        update={"system_prompt": "parent system"}
+    )
+    recorder = Recorder(
+        config=config,
+        transcript_path=transcript,
+        session_id="parent_session",
+        tool_registry=ToolRegistry.build(config.tool_categories),
+    )
+    recorder.write_session_record(skill_catalog=IRSkillCatalog())
+    recorder.start_turn(
+        "turn_parent",
+        [IRUserTextBlock(text="parent input", origin="human")],
+    )
+    recorder.write_block(IRAssistantTextBlock(text="parent answer", origin="model"))
+    recorder.end_turn("end_turn")
+    (session_dir / "blobs").mkdir()
+    (session_dir / "tool_outputs").mkdir()
+    return transcript
+
+
+def _unfinished_parent_transcript(tmp_path: Path) -> Path:
+    transcript = tmp_path / "session" / "transcript.jsonl"
+    config = _parent_config(tmp_path)
+    recorder = Recorder(
+        config=config,
+        transcript_path=transcript,
+        session_id="parent_session",
+        tool_registry=ToolRegistry.build(config.tool_categories),
+    )
+    recorder.write_session_record(skill_catalog=IRSkillCatalog())
+    recorder.start_turn(
+        "turn_open",
+        [IRUserTextBlock(text="still running", origin="human")],
+    )
+    return transcript
+
+
+def _loop_result(final_text: str, *, rounds: int = 1) -> IRLoopResult:
+    final_block = IRAssistantTextBlock(text=final_text, origin="model")
+    generation = IRGeneration(
+        model="test-model",
+        blocks=[final_block],
+        stop_reason="end_turn",
+        usage=IRUsage(),
+    )
+    return IRLoopResult(
+        blocks=[final_block],
+        generations=[generation],
+        executions=[],
+        stop_reason="end_turn",
+        rounds=rounds,
+    )
+
+
+def _prepared(result: Any, fork_id: str = "detector_test"):
+    async def _run():
         return result
 
     return PreparedFork(coro=_run(), fork_id=fork_id)
 
 
 class _FakeForkSession:
-    def __init__(self, final_meta: BlockDetectorToolMetadata):
+    def __init__(self, final_meta: object):
         self._final_meta = final_meta
         self.submitted_messages: list[IRInboundMessage] = []
         self.run_calls = 0
@@ -70,7 +148,7 @@ class _FakeForkSession:
     async def submit_message(self, msg: IRInboundMessage) -> None:
         self.submitted_messages.append(msg)
 
-    async def get_tool_meta(self) -> BlockDetectorToolMetadata:
+    async def get_tool_meta(self) -> object:
         return self._final_meta
 
     async def shutdown(self) -> None:
@@ -81,14 +159,16 @@ class _FakeRecorder:
     def __init__(self) -> None:
         self.summons: list[tuple[str, str, str]] = []
         self.shutdowns: list[str] = []
+        self.shutdown_notes: list[tuple[str, str | None]] = []
 
     def summon_fork(
         self, fork_id: str, fork_type: str, child_transcript_path: str
     ) -> None:
         self.summons.append((fork_id, fork_type, child_transcript_path))
 
-    def shutdown_fork(self, fork_id: str) -> None:
+    def shutdown_fork(self, fork_id: str, error_note: str | None = None) -> None:
         self.shutdowns.append(fork_id)
+        self.shutdown_notes.append((fork_id, error_note))
 
 
 class _FakeDebugEmitter:
@@ -121,6 +201,35 @@ class TestForkDispatch:
             return prepared
 
         cast(Any, runner)._run_block_detector = _fake_run_block_detector
+
+        result = await runner.run_fork(fork_config)
+
+        assert result is prepared
+        prepared.coro.close()
+
+    @pytest.mark.asyncio
+    async def test_run_fork_dispatches_quantum_config(self, tmp_path: Path) -> None:
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=tmp_path / "parent.jsonl",
+            recorder=cast(Recorder, _FakeRecorder()),
+            session_builder=cast(Any, lambda **kwargs: None),
+        )
+        fork_config = _quantum_config()
+        expected = QuantumForkResult(
+            final_text="done",
+            submitted=None,
+            fork_transcript_path=str(tmp_path / "fork.jsonl"),
+            rounds=1,
+            stop_reason="end_turn",
+        )
+        prepared = _prepared(expected, fork_id="quantum_test")
+
+        async def _fake_run_quantum(config: QuantumForkConfig) -> PreparedFork:
+            assert config is fork_config
+            return prepared
+
+        cast(Any, runner)._run_quantum = _fake_run_quantum
 
         result = await runner.run_fork(fork_config)
 
@@ -170,6 +279,262 @@ class TestForkDispatch:
         orientation = runner._get_orientation(_detector_config())  # noqa: SLF001
 
         assert "block detector" in orientation.lower()
+
+
+class TestQuantumForkRun:
+    @pytest.mark.asyncio
+    async def test_run_quantum_snapshots_parent_transcript_directory(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _write_parent_transcript(tmp_path)
+        fork_config = _quantum_config(label="Dream Chapter")
+        built: dict[str, Any] = {}
+
+        async def _build_session(**kwargs):
+            built.update(kwargs)
+            return _FakeForkSession(
+                QuantumForkToolMetadata(
+                    cwd=tmp_path,
+                    transcript_path=kwargs["transcript_path"],
+                )
+            )
+
+        recorder = _FakeRecorder()
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, recorder),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
+
+        child_path = built["transcript_path"]
+        assert child_path == Path(recorder.summons[0][2])
+        assert child_path.parent.parent == parent_path.parent / "forks"
+        assert child_path.name == "transcript.jsonl"
+        assert child_path.parent.name.startswith("quantum_Dream_Chapter_")
+        assert (child_path.parent / "blobs").is_symlink()
+        assert (child_path.parent / "tool_outputs").is_symlink()
+
+        rehydrated = Rehydrator(child_path).run()
+        assert rehydrated.session_id == prepared.fork_id
+        assert rehydrated.config.session_type == "quantum"
+        assert rehydrated.config.profile.name == "quantum"
+        assert rehydrated.config.system_prompt == "parent system"
+        assert [type(block).__name__ for block in rehydrated.blocks] == [
+            "IRUserTextBlock",
+            "IRAssistantTextBlock",
+        ]
+        assert {tool.name for tool in rehydrated.tools} == {
+            "Read",
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+            "SubmitResult",
+        }
+        assert built["config"].session_type == "quantum"
+        assert built["fork_config"] == fork_config
+        assert built["session_id"] == prepared.fork_id
+        assert recorder.shutdowns == []
+        prepared.coro.close()
+
+    @pytest.mark.asyncio
+    async def test_run_quantum_returns_submitted_payload_and_final_text(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _write_parent_transcript(tmp_path)
+        fork_config = _quantum_config()
+        final_meta = QuantumForkToolMetadata(
+            cwd=tmp_path,
+            transcript_path=Path(),
+            submitted={"chapter": 1, "status": "ok"},
+            submit_called=True,
+        )
+        fake_session = _FakeForkSession(final_meta)
+
+        async def _build_session(**kwargs):
+            lifecycle = kwargs["lifecycle"]
+
+            async def _submit_and_release(msg: IRInboundMessage) -> None:
+                fake_session.submitted_messages.append(msg)
+                await lifecycle.on_turn_ended(
+                    SessionContext(session_id=kwargs["session_id"], turn_idx=1),
+                    _loop_result("final fork text", rounds=2),
+                    "turn_quantum",
+                )
+
+            cast(Any, fake_session).submit_message = _submit_and_release
+            return fake_session
+
+        recorder = _FakeRecorder()
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, recorder),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
+        result = await prepared.coro
+
+        assert isinstance(result, QuantumForkResult)
+        assert result.final_text == "final fork text"
+        assert result.submitted == {"chapter": 1, "status": "ok"}
+        assert result.rounds == 2
+        assert result.stop_reason == "end_turn"
+        assert Path(result.fork_transcript_path).exists()
+        assert fake_session.submitted_messages == [
+            IRInboundMessage(
+                blocks=[fork_config.instruction],
+                delivery="turn",
+                source_metadata={
+                    "source": "quantum_fork",
+                    "fork_id": prepared.fork_id,
+                    "fork_label": fork_config.fork_label,
+                },
+            )
+        ]
+        assert recorder.shutdowns == []
+
+        runner.integrate_result(prepared.fork_id)
+
+        assert recorder.shutdown_notes == [(prepared.fork_id, None)]
+
+    @pytest.mark.asyncio
+    async def test_run_quantum_without_submit_uses_final_text(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _write_parent_transcript(tmp_path)
+        fork_config = _quantum_config(label=None)
+        fake_session = _FakeForkSession(
+            QuantumForkToolMetadata(cwd=tmp_path, transcript_path=Path())
+        )
+
+        async def _build_session(**kwargs):
+            lifecycle = kwargs["lifecycle"]
+
+            async def _submit_and_release(msg: IRInboundMessage) -> None:
+                fake_session.submitted_messages.append(msg)
+                await lifecycle.on_turn_ended(
+                    SessionContext(session_id=kwargs["session_id"], turn_idx=1),
+                    _loop_result("plain result"),
+                    "turn_quantum",
+                )
+
+            cast(Any, fake_session).submit_message = _submit_and_release
+            return fake_session
+
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, _FakeRecorder()),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
+        result = await prepared.coro
+
+        assert isinstance(result, QuantumForkResult)
+        assert result.final_text == "plain result"
+        assert result.submitted is None
+
+    @pytest.mark.asyncio
+    async def test_run_quantum_failure_keeps_transcript_and_writes_error_shutdown(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _write_parent_transcript(tmp_path)
+        fork_config = _quantum_config()
+
+        class _ErroringSession:
+            async def run(self) -> None:
+                raise RuntimeError("child boom")
+
+            async def submit_message(self, msg: IRInboundMessage) -> None:
+                return None
+
+            async def get_tool_meta(self) -> QuantumForkToolMetadata:
+                return QuantumForkToolMetadata(cwd=tmp_path, transcript_path=Path())
+
+            async def shutdown(self) -> None:
+                return None
+
+        async def _build_session(**kwargs):
+            return _ErroringSession()
+
+        recorder = _FakeRecorder()
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, recorder),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
+
+        with pytest.raises(RuntimeError, match="child boom"):
+            await asyncio.wait_for(prepared.coro, timeout=1)
+
+        fork_path = Path(recorder.summons[0][2])
+        assert fork_path.exists()
+        assert recorder.shutdowns == [prepared.fork_id]
+        assert recorder.shutdown_notes[0][0] == prepared.fork_id
+        assert "RuntimeError: child boom" in (recorder.shutdown_notes[0][1] or "")
+
+    @pytest.mark.asyncio
+    async def test_run_quantum_quiescence_failure_touches_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _unfinished_parent_transcript(tmp_path)
+        recorder = _FakeRecorder()
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, recorder),
+            session_builder=cast(Any, lambda **kwargs: None),
+        )
+
+        with pytest.raises(RuntimeError, match="in-progress turn"):
+            await runner._run_quantum(_quantum_config())  # noqa: SLF001
+
+        assert recorder.summons == []
+        assert recorder.shutdowns == []
+        assert not (parent_path.parent / "forks").exists()
+
+    @pytest.mark.asyncio
+    async def test_run_quantum_can_omit_submit_result_tool(
+        self, tmp_path: Path
+    ) -> None:
+        parent_path = _write_parent_transcript(tmp_path)
+        fork_config = _quantum_config().model_copy(update={"submit_tool": False})
+        built: dict[str, Any] = {}
+
+        async def _build_session(**kwargs):
+            built.update(kwargs)
+            return _FakeForkSession(
+                QuantumForkToolMetadata(
+                    cwd=tmp_path,
+                    transcript_path=kwargs["transcript_path"],
+                )
+            )
+
+        runner = ForkRunner(
+            parent_config=_parent_config(tmp_path),
+            parent_transcript_path=parent_path,
+            recorder=cast(Recorder, _FakeRecorder()),
+            session_builder=cast(Any, _build_session),
+        )
+
+        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
+        rehydrated = Rehydrator(built["transcript_path"]).run()
+
+        assert {tool.name for tool in rehydrated.tools} == {
+            "Read",
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+        }
+        prepared.coro.close()
 
 
 class TestBlockDetectorForkRun:

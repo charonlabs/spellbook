@@ -161,6 +161,12 @@ class CoreAppRuntime:
             metadata_keys,
         )
         async with self._command_lock:
+            session = self._require_session()
+            if not session.config.profile.conduit_surfaces:
+                raise RuntimeError(
+                    f"Conduit surfaces are disabled for profile "
+                    f"{session.config.profile.name!r}."
+                )
             if conduit_type == "context":
                 logger.info(
                     "runtime.conduit.route type=%s source=%s action=%s",

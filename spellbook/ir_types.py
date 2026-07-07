@@ -274,6 +274,7 @@ class IRGeneration(BaseModel, frozen=True):
 class IRExecution(BaseModel, frozen=True):
     blocks: list[IRToolResultBlock]
     cancelled_early: bool = False
+    terminal_stop_reason: StopReason | None = None
 
 
 class IRLoopResult(BaseModel, frozen=True):
@@ -779,6 +780,7 @@ class IRForkShutdownRecord(BaseModel, frozen=True):
     ir: Literal["fork_shutdown"] = "fork_shutdown"
     time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     fork_id: str
+    error_note: str | None = None
     turn: int
     turn_id: str
 

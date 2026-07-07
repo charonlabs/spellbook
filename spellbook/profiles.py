@@ -28,7 +28,7 @@ ToolSurface = Literal[
     "quantum",
 ]
 
-ToolMetadataKind = Literal["standard", "block_detector", "block_summarizer"]
+ToolMetadataKind = Literal["standard", "block_detector", "block_summarizer", "quantum"]
 
 
 class SessionProfile(BaseModel, frozen=True):
@@ -120,6 +120,7 @@ QUANTUM = SessionProfile(
     name="quantum",
     session_id_prefix="quantum_session",
     tool_surface="quantum",
+    tool_metadata="quantum",
     custom_surface=False,
     homunculus_lifecycle=True,
     block_detection=False,

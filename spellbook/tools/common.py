@@ -27,10 +27,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from spellbook.config import SpellbookConfig
-from spellbook.fork import BlockDetectorConfig, BlockSummarizerConfig, ForkConfig
+from spellbook.fork import (
+    BlockDetectorConfig,
+    BlockSummarizerConfig,
+    ForkConfig,
+    QuantumForkConfig,
+)
 from spellbook.skills.manager import SkillManager
 
 from ..cancel_token import CancelToken
@@ -40,6 +45,7 @@ from ..ir_types import (
     IRSemanticBlockSummary,
     IRToolRecord,
     IRToolResultContentBlock,
+    StopReason,
 )
 
 if TYPE_CHECKING:
@@ -66,6 +72,7 @@ class ToolExecutionResult(BaseModel, frozen=True):
     display: dict = Field(
         default_factory=dict
     )  # TODO: replace with real display types once those exist
+    terminal_stop_reason: StopReason | None = None
 
 
 @dataclass  # not pydantic because mutable, internal state
@@ -97,6 +104,12 @@ class BlockDetectorToolMetadata(ToolMetadata):
 @dataclass
 class BlockSummarizerToolMetadata(ToolMetadata):
     new_summary: IRSemanticBlockSummary = field(default_factory=list)
+
+
+@dataclass
+class QuantumForkToolMetadata(ToolMetadata):
+    submitted: JsonValue | None = None
+    submit_called: bool = False
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -162,6 +175,16 @@ def build_tool_metadata(
                 cwd=config.cwd,
                 transcript_path=transcript_path,
                 homunculus=homunculus,
+            )
+        case "quantum":
+            assert fork_config is None or isinstance(fork_config, QuantumForkConfig)
+            return QuantumForkToolMetadata(
+                cwd=config.cwd,
+                transcript_path=transcript_path,
+                homunculus=homunculus,
+                skill_manager=skill_manager,
+                chorus_url=config.chorus_url,
+                chorus_entity_name=config.chorus_entity_name,
             )
 
 

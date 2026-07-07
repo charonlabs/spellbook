@@ -12,7 +12,7 @@ from spellbook.footer import (
     FooterController,
     FooterControllerRoundLifecycle,
 )
-from spellbook.fork import ForkConfig, ForkRunner
+from spellbook.fork import ForkConfig, ForkRunner, QuantumForkConfig
 from spellbook.hearth import HearthSettings
 from spellbook.ir_types import IRInboundMessage, IRSkillCatalog
 from spellbook.loop import run_loop
@@ -255,6 +255,7 @@ class SessionManager:
                 config.tool_categories,
                 surface=profile.tool_surface,
                 custom=custom_surface,
+                include_quantum_submit=_include_quantum_submit(fork_config),
             )
             initial_recorder = Recorder(
                 config=config,
@@ -278,6 +279,7 @@ class SessionManager:
             config.tool_categories,
             surface=profile.tool_surface,
             custom=custom_surface,
+            include_quantum_submit=_include_quantum_submit(fork_config),
         )
         skill_manager = SkillManager(config=config)
         skill_manager.rehydrate(rehydrated)
@@ -429,3 +431,7 @@ class SessionManager:
             debug_emitter=debug_emitter,
             fork_config=fork_config,
         )
+
+
+def _include_quantum_submit(fork_config: ForkConfig | None) -> bool:
+    return not isinstance(fork_config, QuantumForkConfig) or fork_config.submit_tool

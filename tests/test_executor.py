@@ -17,13 +17,21 @@ from pydantic import BaseModel, Field
 from spellbook.cancel_token import CancelToken
 from spellbook.config import SpellbookConfig
 from spellbook.executor import Executor
-from spellbook.ir_types import IRToolCallBlock, IRToolResultBlock, IRToolTextBlock
+from spellbook.fork import QuantumForkConfig
+from spellbook.ir_types import (
+    IRToolCallBlock,
+    IRToolResultBlock,
+    IRToolTextBlock,
+    IRUserTextBlock,
+)
 from spellbook.tools.common import (
+    QuantumForkToolMetadata,
     Tool,
     ToolError,
     ToolExecutionResult,
     ToolMetadata,
 )
+from spellbook.tools.quantum import SUBMIT_RESULT_TOOL
 from spellbook.tools.registry import ToolRegistry
 
 # --- Test tool: Echo — predictable, no side effects ---
@@ -198,6 +206,41 @@ class TestSuccessfulDispatch:
         result = await executor.run([], CancelToken())
         assert result.blocks == []
         assert result.cancelled_early is False
+
+    @pytest.mark.asyncio
+    async def test_submit_result_records_payload_and_marks_terminal(
+        self, tmp_path: Path
+    ) -> None:
+        fork_config = QuantumForkConfig(
+            instruction=IRUserTextBlock(text="return json", origin="system")
+        )
+        config = SpellbookConfig(cwd=tmp_path, session_type="quantum")
+        executor = Executor(
+            config,
+            tmp_path / "quantum.jsonl",
+            ToolRegistry(tools=[SUBMIT_RESULT_TOOL]),
+            fork_config=fork_config,
+        )
+
+        result = await executor.run(
+            [
+                IRToolCallBlock(
+                    origin="model",
+                    call_id="toolu_submit",
+                    tool="SubmitResult",
+                    input={"payload": {"chapter": 1, "ok": True}},
+                )
+            ],
+            CancelToken(),
+        )
+
+        assert result.cancelled_early is False
+        assert result.terminal_stop_reason == "end_turn"
+        assert result.blocks[0].is_error is False
+        assert _result_text(result.blocks[0]) == "Result submitted."
+        assert isinstance(executor.meta, QuantumForkToolMetadata)
+        assert executor.meta.submit_called is True
+        assert executor.meta.submitted == {"chapter": 1, "ok": True}
 
 
 class TestErrorPaths:

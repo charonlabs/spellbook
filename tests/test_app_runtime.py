@@ -236,6 +236,25 @@ async def test_quantum_startup_does_not_start_hearth_scheduler(
     await runtime.shutdown()
 
 
+async def test_quantum_runtime_refuses_conduits(tmp_path: Path) -> None:
+    builder = _FakeSessionBuilder()
+    runtime = CoreAppRuntime(
+        transcript_path=tmp_path / "quantum.jsonl",
+        config=_config(tmp_path).model_copy(update={"session_type": "quantum"}),
+        session_builder=cast(SessionBuilder, builder),
+    )
+    await runtime.startup()
+
+    with pytest.raises(RuntimeError, match="Conduit surfaces are disabled"):
+        await runtime.handle_conduit(
+            conduit_type="message",
+            source="test",
+            content="hello",
+        )
+
+    await runtime.shutdown()
+
+
 async def test_submit_message_reports_started_then_queued(tmp_path: Path) -> None:
     builder = _FakeSessionBuilder()
     bus = AppEventBus()

@@ -60,6 +60,7 @@ from spellbook.system_response import SystemResponse
 from spellbook.tools.common import (
     BlockDetectorToolMetadata,
     BlockSummarizerToolMetadata,
+    QuantumForkToolMetadata,
     Tool,
     ToolError,
     ToolExecutionResult,
@@ -617,10 +618,13 @@ class TestSessionProfileBuild:
 
         assert manager.session_id.startswith("quantum_session_")
         assert manager.tool_registry.tool_names == {
+            "Read",
             "Reflect",
             "ReflectToolResults",
             "Recall",
+            "SubmitResult",
         }
+        assert isinstance(manager.executor.meta, QuantumForkToolMetadata)
         assert _round_lifecycle_names(manager) == [
             "RecordingRoundLifecycle",
             "HomunculusRoundLifecycle",

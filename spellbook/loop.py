@@ -83,6 +83,15 @@ async def run_loop(
                 stop_reason="cancelled",
                 rounds=ctx.round_number,
             )
+        if execution.terminal_stop_reason is not None:
+            await lifecycle.on_loop_exit(ctx, execution.terminal_stop_reason)
+            return IRLoopResult(
+                blocks=ctx.blocks,
+                generations=generations,
+                executions=executions,
+                stop_reason=execution.terminal_stop_reason,
+                rounds=ctx.round_number,
+            )
 
         await lifecycle.between_rounds(ctx)
 
