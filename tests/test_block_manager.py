@@ -43,6 +43,22 @@ def _user(text: str) -> IRUserTextBlock:
     return IRUserTextBlock(text=text, origin="human")
 
 
+def _tool_call(call_id: str, tool: str = "Bash") -> IRToolCallBlock:
+    return IRToolCallBlock(call_id=call_id, tool=tool, input={})
+
+
+def _tool_result(
+    call_id: str,
+    tool: str = "Bash",
+    text: str = "ok",
+) -> IRToolResultBlock:
+    return IRToolResultBlock(
+        call_id=call_id,
+        tool=tool,
+        content=[IRToolTextBlock(text=text)],
+    )
+
+
 async def _settle() -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -644,6 +660,136 @@ async def test_contiguous_detection_records_and_mutates_after_validation() -> No
 
 
 @pytest.mark.asyncio
+async def test_detection_rejects_completed_block_that_splits_tool_pair(
+    caplog,
+) -> None:
+    caplog.set_level(logging.ERROR, logger="spellbook.homunculus.block_manager")
+    manager, recorder, footer, _ = _manager()
+    detector = _FakeDetector(
+        [
+            IRSemanticBlockRange(
+                title="Call side",
+                start_block=0,
+                end_block=2,
+                completed=True,
+            )
+        ]
+    )
+    manager._detector = cast(Any, detector)  # noqa: SLF001
+    manager.context_blocks = [
+        _tool_call("toolu_1"),
+        _tool_result("toolu_1"),
+        _tool_call("toolu_2"),
+        _tool_result("toolu_2"),
+    ]
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=detector.completed, still_buffered=[]),
+        "detector_tool_split",
+    )
+
+    assert manager.semantic_blocks == []
+    assert recorder.detected == []
+    assert recorder.semantic_blocks == []
+    assert detector.integrated_forks == ["detector_tool_split"]
+    assert len(footer.queued) == 1
+    assert footer.queued[0]["text"] == (
+        "a detection pass failed validation and was discarded"
+    )
+    assert any("tool-closure split" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary_end", [0, 1, 2, 3, 4])
+async def test_detection_rejects_internal_parallel_tool_batch_boundaries(
+    boundary_end: int,
+) -> None:
+    manager, recorder, footer, _ = _manager()
+    detector = _FakeDetector(
+        [
+            IRSemanticBlockRange(
+                title=f"Parallel split {boundary_end}",
+                start_block=0,
+                end_block=boundary_end,
+                completed=True,
+            )
+        ]
+    )
+    manager._detector = cast(Any, detector)  # noqa: SLF001
+    manager.context_blocks = [
+        _tool_call("toolu_a"),
+        _tool_call("toolu_b"),
+        _tool_call("toolu_c"),
+        _tool_result("toolu_a"),
+        _tool_result("toolu_b"),
+        _tool_result("toolu_c"),
+    ]
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=detector.completed, still_buffered=[]),
+        f"detector_parallel_{boundary_end}",
+    )
+
+    assert manager.semantic_blocks == []
+    assert recorder.detected == []
+    assert recorder.semantic_blocks == []
+    assert detector.integrated_forks == [f"detector_parallel_{boundary_end}"]
+    assert len(footer.queued) == 1
+    assert footer.queued[0]["text"] == (
+        "a detection pass failed validation and was discarded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_detection_logs_raw_vs_sanitized_ranges_when_they_differ(
+    caplog,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="spellbook.homunculus.block_manager")
+    manager, recorder, _, _ = _manager()
+    manager._summarizer = cast(Any, _FakeSummarizer())  # noqa: SLF001
+    manager.context_blocks = [
+        _user("start"),
+        _tool_call("toolu_1"),
+        _tool_result("toolu_1"),
+    ]
+    _prime_detector(manager)
+    raw = BlockDetectorResult(
+        completed=[
+            IRSemanticBlockRange(
+                title="Call side",
+                start_block=0,
+                end_block=1,
+                completed=True,
+            ),
+            IRSemanticBlockRange(
+                title="Result side",
+                start_block=2,
+                end_block=2,
+                completed=True,
+            ),
+        ],
+        still_buffered=[],
+    )
+
+    await manager._integrate_detection(raw, "detector_sanitized")  # noqa: SLF001
+
+    assert [(r.start_block, r.end_block) for r in recorder.detected[0].completed] == [
+        (0, 2)
+    ]
+    assert any(
+        "block_detector.ranges_sanitized" in record.message
+        and record.levelno == logging.DEBUG
+        for record in caplog.records
+    )
+    assert any(
+        "block_detector.ranges_changed" in record.message
+        and record.levelno == logging.INFO
+        for record in caplog.records
+    )
+    await manager._nursery.shutdown(cancel=True)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_detector_jobs_are_best_effort() -> None:
     manager, _, _, _ = _manager()
     manager.context_blocks = _user_blocks("a")
@@ -936,6 +1082,89 @@ async def test_forget_block_compacts_to_summary_and_records_mode() -> None:
     assert isinstance(rendered[0], IRUserTextBlock)
     assert rendered[0].origin == "memory"
     assert "Summary headline" in rendered[0].text
+
+
+@pytest.mark.asyncio
+async def test_forget_refuses_legacy_block_that_would_orphan_tool_result() -> None:
+    manager, recorder, footer, _ = _manager()
+    summary_count = _count(7)
+    block = _semantic_block(
+        idx=0,
+        start=0,
+        end=2,
+        title="Legacy split call side",
+    ).model_copy(
+        update={
+            "available_modes": ["full", "summary"],
+            "artifacts": [_summary(toks=summary_count)],
+        }
+    )
+    result_side = _semantic_block(
+        idx=1,
+        start=3,
+        end=3,
+        title="Legacy split result side",
+    )
+    manager.context_blocks = [
+        _tool_call("toolu_1"),
+        _tool_result("toolu_1"),
+        _tool_call("toolu_2"),
+        _tool_result("toolu_2"),
+    ]
+    manager.semantic_blocks = [block, result_side]
+
+    result = await manager.forget_block(0, confirm=False)
+
+    assert result.status == "boundary_invalid"
+    assert 'Block 0 "Legacy split call side" cannot be compacted' in result.message
+    assert "Repair the transcript's semantic block boundaries" in result.message
+    assert manager.semantic_blocks[0] == block
+    assert recorder.applied_modes == []
+    assert len(footer.queued) == 1
+    assert footer.queued[0]["text"] == result.message
+    assert footer.queued[0]["key"] == f"forget:tool_closure:{block.id}"
+    assert manager.render_block(idx=0) == manager.context_blocks[0:3]
+
+
+@pytest.mark.asyncio
+async def test_forget_refuses_parallel_result_block_with_distant_call() -> None:
+    manager, recorder, footer, _ = _manager()
+    summary_count = _count(7)
+    call_side = _semantic_block(
+        idx=0,
+        start=0,
+        end=3,
+        title="Legacy parallel call side",
+    )
+    result_side = _semantic_block(
+        idx=1,
+        start=4,
+        end=5,
+        title="Legacy parallel result side",
+    ).model_copy(
+        update={
+            "available_modes": ["full", "summary"],
+            "artifacts": [_summary(toks=summary_count)],
+        }
+    )
+    manager.context_blocks = [
+        _tool_call("toolu_a"),
+        _tool_call("toolu_b"),
+        _tool_call("toolu_c"),
+        _tool_result("toolu_a"),
+        _tool_result("toolu_b"),
+        _tool_result("toolu_c"),
+    ]
+    manager.semantic_blocks = [call_side, result_side]
+
+    result = await manager.forget_block(1, confirm=False)
+
+    assert result.status == "boundary_invalid"
+    assert "call_ids=toolu_a,toolu_b,toolu_c" in result.message
+    assert "envelope 0-5" in result.message
+    assert manager.semantic_blocks[1] == result_side
+    assert recorder.applied_modes == []
+    assert len(footer.queued) == 1
 
 
 @pytest.mark.asyncio

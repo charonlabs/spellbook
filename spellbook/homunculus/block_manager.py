@@ -11,7 +11,7 @@ from spellbook.fork import (
     ForkRunner,
     PreparedFork,
 )
-from spellbook.homunculus.block_detector import BlockDetector
+from spellbook.homunculus.block_detector import BlockDetector, BlockDetectorIntegration
 from spellbook.homunculus.block_summarizer import BlockSummarizer
 from spellbook.homunculus.common import render_context_block, render_summary
 from spellbook.homunculus.token_meter import TokenMeter
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 ForgetBlockStatus = Literal[
     "compacted",
+    "boundary_invalid",
     "summary_queued",
     "summary_in_flight",
     "summary_unavailable",
@@ -60,6 +61,20 @@ class ForgetBlockResult:
     @property
     def compacted(self) -> bool:
         return self.status == "compacted"
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolClosureEnvelope:
+    start_block: int
+    end_block: int
+    call_ids: tuple[str, ...]
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolClosureViolation:
+    block: IRSemanticBlock
+    envelope: _ToolClosureEnvelope
 
 
 class BlockManager:
@@ -114,7 +129,7 @@ class BlockManager:
     def rehydrate(self, rehydrated: RehydrationResult) -> None:
         self._detector.rehydrate(rehydrated)
         self.semantic_blocks = rehydrated.semantic_blocks
-        self._validate_semantic_blocks()
+        self._validate_semantic_blocks(validate_tool_closure=False)
 
     async def append_context_blocks(
         self, blocks: Sequence[IRBlock], *, usage: IRUsage | None = None
@@ -520,9 +535,17 @@ class BlockManager:
     ) -> None:
         try:
             integration = self._detector.simulate_result(result)
+            self._log_detection_range_sanitization(
+                fork_id=fork_id,
+                raw=result,
+                sanitized=integration,
+            )
             new_blocks = self._semantic_blocks_for_completed(integration.completed)
             candidate_blocks = [*self.semantic_blocks, *new_blocks]
-            self._validate_semantic_blocks(candidate_blocks)
+            self._validate_semantic_blocks(
+                candidate_blocks,
+                validate_tool_closure=True,
+            )
         except ValueError as exc:
             self._discard_detection_result(fork_id=fork_id, result=result, error=exc)
             return
@@ -939,6 +962,13 @@ class BlockManager:
             case "summary":
                 raise ValueError(f"Block {idx} is already at the lowest possible mode.")
             case "full":
+                refusal = self._tool_closure_refusal(block)
+                if refusal is not None:
+                    self._queue_tool_closure_refusal_footer(block, refusal)
+                    return ForgetBlockResult(
+                        status="boundary_invalid",
+                        message=refusal,
+                    )
                 if not self._summary_ready(block):
                     return await self._queue_summary_for_forget(block)
                 new_block = self._apply_mode(block, "summary", source)
@@ -1224,6 +1254,11 @@ class BlockManager:
             raise ValueError(
                 f"Block {block.idx} currently has no {mode} artifact. Please wait and try again later."
             )
+        if mode == "summary":
+            refusal = self._tool_closure_refusal(block)
+            if refusal is not None:
+                self._queue_tool_closure_refusal_footer(block, refusal)
+                raise ValueError(refusal)
         match mode:
             case "full":
                 new_block = block.model_copy(
@@ -1265,7 +1300,10 @@ class BlockManager:
         return projected
 
     def _validate_semantic_blocks(
-        self, semantic_blocks: Sequence[IRSemanticBlock] | None = None
+        self,
+        semantic_blocks: Sequence[IRSemanticBlock] | None = None,
+        *,
+        validate_tool_closure: bool = False,
     ) -> None:
         """Semantic blocks must render as a gapless prefix of context_blocks."""
         blocks = self.semantic_blocks if semantic_blocks is None else semantic_blocks
@@ -1289,10 +1327,203 @@ class BlockManager:
                     f"but there are only {len(self.context_blocks)} context blocks."
                 )
             expected_start = block.range.end_block + 1
+        if validate_tool_closure:
+            violation = self._first_tool_closure_violation(blocks)
+            if violation is not None:
+                raise ValueError(self._tool_closure_validation_message(violation))
+
+    def _first_tool_closure_violation(
+        self, blocks: Sequence[IRSemanticBlock]
+    ) -> _ToolClosureViolation | None:
+        envelopes = self._tool_closure_envelopes()
+        if not envelopes:
+            return None
+        for block in blocks:
+            for envelope in envelopes:
+                if not _ranges_overlap(
+                    block.range.start_block,
+                    block.range.end_block,
+                    envelope.start_block,
+                    envelope.end_block,
+                ):
+                    continue
+                if (
+                    not envelope.complete
+                    or block.range.start_block > envelope.start_block
+                    or block.range.end_block < envelope.end_block
+                ):
+                    return _ToolClosureViolation(block=block, envelope=envelope)
+        return None
+
+    def _tool_closure_refusal(self, block: IRSemanticBlock) -> str | None:
+        violation = self._first_tool_closure_violation([block])
+        if violation is None:
+            return None
+        return self._tool_closure_refusal_message(violation)
+
+    def _tool_closure_envelopes(self) -> list[_ToolClosureEnvelope]:
+        call_positions: dict[str, int] = {}
+        result_positions: dict[str, int] = {}
+        for idx, block in enumerate(self.context_blocks):
+            if isinstance(block, IRToolCallBlock):
+                call_positions[block.call_id] = idx
+            elif isinstance(block, IRToolResultBlock):
+                result_positions[block.call_id] = idx
+
+        envelopes: list[_ToolClosureEnvelope] = []
+        covered_call_ids: set[str] = set()
+        idx = 0
+        while idx < len(self.context_blocks):
+            if self._provider_role(self.context_blocks[idx]) != "assistant":
+                idx += 1
+                continue
+
+            segment_call_ids: list[str] = []
+            segment_call_positions: list[int] = []
+            while (
+                idx < len(self.context_blocks)
+                and self._provider_role(self.context_blocks[idx]) == "assistant"
+            ):
+                block = self.context_blocks[idx]
+                if isinstance(block, IRToolCallBlock):
+                    segment_call_ids.append(block.call_id)
+                    segment_call_positions.append(idx)
+                    covered_call_ids.add(block.call_id)
+                idx += 1
+
+            if not segment_call_ids:
+                continue
+
+            result_blocks = [
+                result_positions[call_id]
+                for call_id in segment_call_ids
+                if call_id in result_positions
+            ]
+            start_block = min([*segment_call_positions, *result_blocks])
+            end_block = max([*segment_call_positions, *result_blocks])
+            complete = len(result_blocks) == len(segment_call_ids) and all(
+                result_positions[call_id] > call_positions[call_id]
+                for call_id in segment_call_ids
+                if call_id in result_positions
+            )
+            envelopes.append(
+                _ToolClosureEnvelope(
+                    start_block=start_block,
+                    end_block=end_block,
+                    call_ids=tuple(segment_call_ids),
+                    complete=complete,
+                )
+            )
+
+        for call_id, result_block in result_positions.items():
+            if call_id in covered_call_ids:
+                continue
+            envelopes.append(
+                _ToolClosureEnvelope(
+                    start_block=result_block,
+                    end_block=result_block,
+                    call_ids=(call_id,),
+                    complete=False,
+                )
+            )
+        return envelopes
+
+    def _tool_closure_validation_message(self, violation: _ToolClosureViolation) -> str:
+        block = violation.block
+        envelope = violation.envelope
+        return (
+            "Semantic block validation rejected a tool-closure split. "
+            f'Block {block.idx} "{block.title}" covers '
+            f"{block.range.start_block}-{block.range.end_block}, but tool "
+            f"call/result envelope {_format_call_ids(envelope.call_ids)} spans "
+            f"{envelope.start_block}-{envelope.end_block}. Repair semantic block "
+            "boundaries so every tool call batch and matching tool result batch "
+            "are contained in one semantic block."
+        )
+
+    def _tool_closure_refusal_message(self, violation: _ToolClosureViolation) -> str:
+        block = violation.block
+        envelope = violation.envelope
+        return (
+            f'Block {block.idx} "{block.title}" cannot be compacted because its '
+            f"semantic range {block.range.start_block}-{block.range.end_block} "
+            "splits a tool call/result envelope "
+            f"({_format_call_ids(envelope.call_ids)}, envelope "
+            f"{envelope.start_block}-{envelope.end_block}). Repair the "
+            "transcript's semantic block boundaries so each tool call batch and "
+            "matching tool result batch are contained in the same semantic block, "
+            "then try Forget again."
+        )
+
+    def _queue_tool_closure_refusal_footer(
+        self, block: IRSemanticBlock, message: str
+    ) -> None:
+        self._footer_c.queue_footer(
+            text=message,
+            footer_type="notif",
+            source="runtime",
+            key=f"forget:tool_closure:{block.id}",
+        )
+
+    def _log_detection_range_sanitization(
+        self,
+        *,
+        fork_id: str,
+        raw: BlockDetectorResult,
+        sanitized: BlockDetectorIntegration,
+    ) -> None:
+        raw_completed = _range_specs(raw.completed)
+        raw_buffered = _range_specs(raw.still_buffered)
+        sanitized_completed = _range_specs(sanitized.completed)
+        sanitized_buffered = _range_specs(sanitized.result.still_buffered)
+        logger.debug(
+            "block_detector.ranges_sanitized fork_id=%s raw_completed=%s "
+            "raw_buffered=%s sanitized_completed=%s sanitized_buffered=%s "
+            "deferred=%s discarded=%s",
+            fork_id,
+            raw_completed,
+            raw_buffered,
+            sanitized_completed,
+            sanitized_buffered,
+            _range_specs(sanitized.deferred_completed),
+            _range_specs(sanitized.discarded_ranges),
+        )
+        if raw_completed == sanitized_completed and raw_buffered == sanitized_buffered:
+            return
+        logger.info(
+            "block_detector.ranges_changed fork_id=%s completed=%s->%s "
+            "buffered=%s->%s deferred=%s discarded=%s",
+            fork_id,
+            raw_completed,
+            sanitized_completed,
+            raw_buffered,
+            sanitized_buffered,
+            _range_specs(sanitized.deferred_completed),
+            _range_specs(sanitized.discarded_ranges),
+        )
 
 
 def _identity_context_projector(blocks: Sequence[IRBlock]) -> list[IRBlock]:
     return list(blocks)
+
+
+def _ranges_overlap(
+    left_start: int,
+    left_end: int,
+    right_start: int,
+    right_end: int,
+) -> bool:
+    return left_start <= right_end and right_start <= left_end
+
+
+def _format_call_ids(call_ids: tuple[str, ...]) -> str:
+    if len(call_ids) == 1:
+        return f"call_id={call_ids[0]}"
+    return "call_ids=" + ",".join(call_ids)
+
+
+def _range_specs(ranges: Sequence[IRSemanticBlockRange]) -> list[str]:
+    return [f"{block.start_block}-{block.end_block}:{block.title}" for block in ranges]
 
 
 def _render_detection_failure(

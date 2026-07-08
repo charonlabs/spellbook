@@ -1,3 +1,6 @@
+import logging
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -45,6 +48,15 @@ from .recorder import Recorder, RecordingRoundLifecycle, RecordTap
 from .round_lifecycle import CompositeRoundLifecycle, RoundLifecycle
 
 SessionState = Literal["idle", "running", "dreaming", "suspended"]
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeBreadcrumb:
+    package_path: str
+    git_sha: str
+    git_state: str
 
 
 class SessionBuilder(Protocol):
@@ -286,6 +298,16 @@ class SessionManager:
         skill_manager = SkillManager(config=config)
         skill_manager.rehydrate(rehydrated)
         session_id = rehydrated.session_id
+        breadcrumb = _spellbook_runtime_breadcrumb()
+        logger.info(
+            "spellbook.startup_breadcrumb session_id=%s resume=%s "
+            "package_path=%s git_sha=%s git_state=%s",
+            session_id,
+            is_resume,
+            breadcrumb.package_path,
+            breadcrumb.git_sha,
+            breadcrumb.git_state,
+        )
         backend = build_backend(config)
         surface_builder = RequestSurfaceBuilder.from_config(
             backend=backend,
@@ -437,3 +459,37 @@ class SessionManager:
 
 def _include_quantum_submit(fork_config: ForkConfig | None) -> bool:
     return not isinstance(fork_config, QuantumForkConfig) or fork_config.submit_tool
+
+
+def _spellbook_runtime_breadcrumb() -> _RuntimeBreadcrumb:
+    package_path = Path(__file__).resolve().parent
+    repo_root = package_path.parent
+    git_sha = _git_output(repo_root, ["rev-parse", "--short", "HEAD"]) or "unknown"
+    git_status = _git_output(repo_root, ["status", "--short"])
+    if git_status is None:
+        git_state = "unknown"
+    elif git_status:
+        git_state = "dirty"
+    else:
+        git_state = "clean"
+    return _RuntimeBreadcrumb(
+        package_path=str(package_path),
+        git_sha=git_sha,
+        git_state=git_state,
+    )
+
+
+def _git_output(repo_root: Path, args: list[str]) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()

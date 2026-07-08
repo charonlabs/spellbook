@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Never, Sequence, cast
 
@@ -596,6 +597,31 @@ class TestSessionProfileBuild:
         assert _round_lifecycle_names(manager) == case["round_lifecycles"]
         assert _session_lifecycle_names(manager) == case["session_lifecycles"]
         assert isinstance(manager.executor.meta, case["meta_type"])
+
+    @pytest.mark.asyncio
+    async def test_build_logs_runtime_version_breadcrumb(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        transcript = tmp_path / "breadcrumb.jsonl"
+        config = _config(tmp_path)
+        caplog.set_level(logging.INFO, logger="spellbook.session_manager")
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        await SessionManager.build(transcript_path=transcript, config=config)
+
+        messages = [
+            record.message
+            for record in caplog.records
+            if record.message.startswith("spellbook.startup_breadcrumb")
+        ]
+        assert len(messages) == 1
+        assert "package_path=" in messages[0]
+        assert "git_sha=" in messages[0]
+        assert "git_state=" in messages[0]
 
     @pytest.mark.asyncio
     async def test_quantum_profile_suppresses_ambient_services(
