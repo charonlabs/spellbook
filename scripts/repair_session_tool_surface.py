@@ -101,7 +101,11 @@ def repair_session_tool_surface(
 
 
 def current_main_tool_surface(config: SpellbookConfig) -> list[IRToolRecord]:
-    registry = ToolRegistry.build(config.tool_categories, surface="main")
+    registry = ToolRegistry.build(
+        config.tool_categories,
+        surface="main",
+        body_url=config.body_url,
+    )
     return registry.records
 
 

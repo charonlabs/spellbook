@@ -256,6 +256,7 @@ class SessionManager:
                 surface=profile.tool_surface,
                 custom=custom_surface,
                 include_quantum_submit=_include_quantum_submit(fork_config),
+                body_url=config.body_url,
             )
             initial_recorder = Recorder(
                 config=config,
@@ -280,6 +281,7 @@ class SessionManager:
             surface=profile.tool_surface,
             custom=custom_surface,
             include_quantum_submit=_include_quantum_submit(fork_config),
+            body_url=config.body_url,
         )
         skill_manager = SkillManager(config=config)
         skill_manager.rehydrate(rehydrated)

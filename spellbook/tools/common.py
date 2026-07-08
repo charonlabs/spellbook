@@ -60,6 +60,7 @@ ToolCategory = Literal[
     "block_detection",
     "block_summarization",
     "chorus_tools",
+    "body",
 ]
 
 TOOL_DESCS_DIR = Path(__file__).parent / "descs"
@@ -84,6 +85,7 @@ class ToolMetadata:
     cancel_token: CancelToken | None = None
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
+    body_url: str | None = None
 
 
 # I'm using inheritance here b/c idk how to do the union thingy with dataclasses
@@ -149,6 +151,7 @@ def build_tool_metadata(
                 skill_manager=skill_manager,
                 chorus_url=config.chorus_url,
                 chorus_entity_name=config.chorus_entity_name,
+                body_url=config.body_url,
             )
         case "block_detector":
             assert isinstance(fork_config, BlockDetectorConfig)
@@ -185,6 +188,7 @@ def build_tool_metadata(
                 skill_manager=skill_manager,
                 chorus_url=config.chorus_url,
                 chorus_entity_name=config.chorus_entity_name,
+                body_url=config.body_url,
             )
 
 

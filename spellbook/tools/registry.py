@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from spellbook.custom import CustomSurface
 from spellbook.profiles import ToolSurface
+from spellbook.tools.body import BODY_TOOL
 from spellbook.tools.chorus import REACH_TOOL
 from spellbook.tools.skills import SKILL_TOOL
 from spellbook.tools.web import WEB_ANSWER_TOOL, WEB_READ_TOOL, WEB_SEARCH_TOOL
@@ -46,9 +47,17 @@ from .self_work import (
 
 CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
     "coding": frozenset({"filesystem", "thinking"}),
-    "main": frozenset({"filesystem", "thinking", "memory", "web", "skills"}),
+    "main": frozenset({"filesystem", "thinking", "memory", "web", "skills", "body"}),
     "chorus": frozenset(
-        {"filesystem", "thinking", "memory", "web", "skills", "chorus_tools"}
+        {
+            "filesystem",
+            "thinking",
+            "memory",
+            "web",
+            "skills",
+            "body",
+            "chorus_tools",
+        }
     ),
 }
 
@@ -81,21 +90,23 @@ class ToolRegistry(BaseModel, frozen=True):
         surface: ToolSurface = "main",
         custom: CustomSurface | None = None,
         include_quantum_submit: bool = True,
+        body_url: str | None = None,
     ) -> "ToolRegistry":
         if surface == "custom" and custom is None:
             raise ValueError("Custom tool surfaces require a CustomSurface.")
         if custom is not None:
             if surface != "custom":
                 raise ValueError(f"Found surface={surface} instead of `custom`.")
+            main_tools = _main_tools(body_enabled=body_url is not None)
             custom_tools = [
                 tool
-                for tool in TOOLS_BY_SURFACE["main"]
+                for tool in main_tools
                 if tool.category
                 in resolve_tool_categories(custom.include_tool_categories)
             ]
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
-        surface_tools = TOOLS_BY_SURFACE[surface]
+        surface_tools = _tools_for_surface(surface, body_enabled=body_url is not None)
         if surface == "quantum" and not include_quantum_submit:
             surface_tools = [
                 tool for tool in surface_tools if tool.name != SUBMIT_RESULT_TOOL.name
@@ -141,6 +152,8 @@ MAIN_TOOLS: list[Tool[Any]] = [
     REACH_TOOL,
 ]
 
+BODY_ENABLED_MAIN_TOOLS: list[Tool[Any]] = [*MAIN_TOOLS, BODY_TOOL]
+
 # Fork-scoped tools. These are protocol tools for child sessions, not part of
 # the normal model-facing Spellbook surface.
 BLOCK_DETECTOR_TOOLS: list[Tool[Any]] = [
@@ -166,9 +179,23 @@ TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
     "quantum": QUANTUM_TOOLS,
 }
 
+
+def _main_tools(*, body_enabled: bool) -> list[Tool[Any]]:
+    return BODY_ENABLED_MAIN_TOOLS if body_enabled else MAIN_TOOLS
+
+
+def _tools_for_surface(surface: ToolSurface, *, body_enabled: bool) -> list[Tool[Any]]:
+    if surface == "main":
+        return _main_tools(body_enabled=body_enabled)
+    return TOOLS_BY_SURFACE[surface]
+
+
 # Every tool this binary knows how to validate and execute.
 ALL_TOOLS: list[Tool[Any]] = (
-    MAIN_TOOLS + BLOCK_DETECTOR_TOOLS + BLOCK_SUMMARIZER_TOOLS + [SUBMIT_RESULT_TOOL]
+    BODY_ENABLED_MAIN_TOOLS
+    + BLOCK_DETECTOR_TOOLS
+    + BLOCK_SUMMARIZER_TOOLS
+    + [SUBMIT_RESULT_TOOL]
 )
 
 DEFAULT_TOOL_REGISTRY = ToolRegistry.build(categories=None, surface="main")

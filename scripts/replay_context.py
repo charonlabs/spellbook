@@ -387,6 +387,7 @@ async def replay_transcript(
     tool_registry = ToolRegistry.build(
         replay_build.config.tool_categories,
         surface=replay_build.config.profile.tool_surface,
+        body_url=replay_build.config.body_url,
     )
     record_printer = _ReplayRecordPrinter()
     if replay_build.rehydrated_output is not None:

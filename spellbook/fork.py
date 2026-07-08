@@ -562,6 +562,7 @@ class ForkRunner:
                     None,
                     surface=fork_config.profile.tool_surface,
                     include_quantum_submit=fork_config.submit_tool,
+                    body_url=config.body_url,
                 )
                 update.update({"config": config, "tools": tool_registry.records})
             records.append(record.model_copy(update=update))

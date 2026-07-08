@@ -53,6 +53,15 @@ def test_hearth_config_validates_interval_and_quiet_hours() -> None:
     assert config.hearth_quiet_hours == "23:00-07:00"
 
 
+def test_body_url_defaults_to_none_and_can_be_set() -> None:
+    config = SpellbookConfig(cwd=Path.cwd())
+
+    assert config.body_url is None
+
+    body_config = SpellbookConfig(cwd=Path.cwd(), body_url="http://127.0.0.1:8765")
+    assert body_config.body_url == "http://127.0.0.1:8765"
+
+
 @pytest.mark.parametrize(
     ("session_type", "expected_profile"),
     [

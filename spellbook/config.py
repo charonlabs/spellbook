@@ -96,6 +96,7 @@ class SpellbookConfig(BaseModel, frozen=True):
     tool_categories: set[str] | None = None
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
+    body_url: str | None = None
     session_type: SessionType = "main"
     profile: SessionProfile = Field(
         default_factory=lambda: profile_for_session_type("main")

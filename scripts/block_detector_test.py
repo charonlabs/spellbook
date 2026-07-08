@@ -65,6 +65,7 @@ async def main() -> None:
     tool_registry = ToolRegistry.build(
         config.tool_categories,
         surface=config.profile.tool_surface,
+        body_url=config.body_url,
     )
     recorder = Recorder(
         config=config,

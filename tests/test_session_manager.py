@@ -638,6 +638,25 @@ class TestSessionProfileBuild:
 
         assert manager.nursery.jobs(kind="detect_blocks") == []
 
+    @pytest.mark.asyncio
+    async def test_body_url_mounts_body_tool_and_metadata(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "body.jsonl"
+        config = _config(tmp_path).model_copy(
+            update={"body_url": "http://127.0.0.1:8765"}
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(transcript_path=transcript, config=config)
+
+        assert "Body" in manager.tool_registry.tool_names
+        assert manager.executor.meta.body_url == "http://127.0.0.1:8765"
+
 
 class TestInboundQueueSemantics:
     @pytest.mark.asyncio

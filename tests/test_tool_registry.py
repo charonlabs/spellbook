@@ -185,6 +185,7 @@ class TestDefaultRegistry:
             "Pin",
             "Recall",
         }
+        assert "Body" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "Reach" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "ProposeBlock" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "AmendBlock" not in DEFAULT_TOOL_REGISTRY.tool_names
@@ -211,6 +212,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Body",
             "Reach",
             "ProposeBlock",
             "AmendBlock",
@@ -241,6 +243,31 @@ class TestToolSurfaces:
             "Recall",
         }
         assert "Reach" not in registry.tool_names
+
+    def test_main_surface_includes_body_only_when_configured(self) -> None:
+        without_body = ToolRegistry.build(categories=None, surface="main")
+        with_body = ToolRegistry.build(
+            categories=None,
+            surface="main",
+            body_url="http://127.0.0.1:8765",
+        )
+
+        assert "Body" not in without_body.tool_names
+        assert with_body.tool_names == DEFAULT_TOOL_REGISTRY.tool_names | {"Body"}
+
+    def test_body_category_is_empty_without_body_url(self) -> None:
+        registry = ToolRegistry.build(categories={"body"}, surface="main")
+
+        assert registry.tool_names == set()
+
+    def test_body_category_mounts_body_when_body_url_is_configured(self) -> None:
+        registry = ToolRegistry.build(
+            categories={"body"},
+            surface="main",
+            body_url="http://127.0.0.1:8765",
+        )
+
+        assert registry.tool_names == {"Body"}
 
     def test_main_category_expands_to_normal_entity_registry(self) -> None:
         registry = ToolRegistry.build(categories={"main"}, surface="main")
@@ -314,6 +341,22 @@ class TestToolSurfaces:
     def test_quantum_surface_exposes_read_only_tools_and_submit(self) -> None:
         registry = ToolRegistry.build(categories=None, surface="quantum")
 
+        assert registry.tool_names == {
+            "Read",
+            "Reflect",
+            "ReflectToolResults",
+            "Recall",
+            "SubmitResult",
+        }
+
+    def test_quantum_surface_never_exposes_body(self) -> None:
+        registry = ToolRegistry.build(
+            categories=None,
+            surface="quantum",
+            body_url="http://127.0.0.1:8765",
+        )
+
+        assert "Body" not in registry.tool_names
         assert registry.tool_names == {
             "Read",
             "Reflect",

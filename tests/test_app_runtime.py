@@ -158,6 +158,7 @@ class _FakeSessionBuilder:
                 config.tool_categories,
                 surface=config.profile.tool_surface,
                 custom=custom_surface,
+                body_url=config.body_url,
             )
             Recorder(
                 config=config,

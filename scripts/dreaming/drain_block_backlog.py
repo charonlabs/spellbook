@@ -683,6 +683,7 @@ def _build_runtime(
     tool_registry = ToolRegistry.build(
         config.tool_categories,
         surface=config.profile.tool_surface,
+        body_url=config.body_url,
     )
     backend = build_backend(config)
     surface_builder = RequestSurfaceBuilder.from_config(
@@ -727,6 +728,7 @@ def _build_recorder(
     tool_registry = ToolRegistry.build(
         config.tool_categories,
         surface=config.profile.tool_surface,
+        body_url=config.body_url,
     )
     recorder = Recorder(
         config=config,

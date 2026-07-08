@@ -80,7 +80,9 @@ def _write_parent_transcript(tmp_path: Path) -> Path:
         config=config,
         transcript_path=transcript,
         session_id="parent_session",
-        tool_registry=ToolRegistry.build(config.tool_categories),
+        tool_registry=ToolRegistry.build(
+            config.tool_categories, body_url=config.body_url
+        ),
     )
     recorder.write_session_record(skill_catalog=IRSkillCatalog())
     recorder.start_turn(
@@ -101,7 +103,9 @@ def _unfinished_parent_transcript(tmp_path: Path) -> Path:
         config=config,
         transcript_path=transcript,
         session_id="parent_session",
-        tool_registry=ToolRegistry.build(config.tool_categories),
+        tool_registry=ToolRegistry.build(
+            config.tool_categories, body_url=config.body_url
+        ),
     )
     recorder.write_session_record(skill_catalog=IRSkillCatalog())
     recorder.start_turn(

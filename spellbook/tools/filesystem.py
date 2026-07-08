@@ -100,7 +100,7 @@ def _read_text_file(path: Path) -> str:
         raise ToolError(f"Could not read {path}: {e}") from e
 
 
-def _read_image_file(path: Path, transcript_path: Path) -> ToolExecutionResult:
+def read_image_file(path: Path, transcript_path: Path) -> ToolExecutionResult:
     try:
         image_bytes = path.read_bytes()
     except PermissionError as e:
@@ -180,7 +180,7 @@ async def exec_read(meta: ToolMetadata, input: ReadInput) -> ToolExecutionResult
 
     # Image files: base64-encode, store blob, return as image content block
     if path.suffix.lower() in _IMAGE_EXTENSIONS:
-        return _read_image_file(path, meta.transcript_path)
+        return read_image_file(path, meta.transcript_path)
 
     text = _read_text_file(path)
     lines = text.splitlines()
