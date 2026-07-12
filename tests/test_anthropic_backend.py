@@ -10,8 +10,8 @@ from spellbook.backends.anthropic import AnthropicBackend, AnthropicGenerationSt
 from spellbook.backends.model_backend import RequestSurface
 from spellbook.cancel_token import CancelToken
 from spellbook.ir_types import (
-    IRAssistantTextBlock,
     IRGeneration,
+    IRRefusalBlock,
     IRStreamTextDeltaEvent,
     IRStreamTextEndEvent,
     IRStreamTextStartEvent,
@@ -155,11 +155,11 @@ async def test_anthropic_refusal_after_text_appends_refusal_debug_block() -> Non
     assert final.stop_reason == "refusal"
     assert len(final.blocks) == 1
     block = final.blocks[0]
-    assert isinstance(block, IRAssistantTextBlock)
-    assert block.text.startswith("I can explain the boundary, but not that part.")
-    assert "<refusal>" in block.text
-    assert "category: reasoning_extraction" in block.text
-    assert "The request asks for hidden reasoning." in block.text
+    assert isinstance(block, IRRefusalBlock)
+    assert block.partial_text == "I can explain the boundary, but not that part."
+    assert block.details is not None
+    assert block.details.category == "reasoning_extraction"
+    assert block.details.explanation == "The request asks for hidden reasoning."
     assert final.usage is not None
     assert final.usage.input_tokens == 10
     assert final.usage.cache_read_tokens == 2
@@ -197,12 +197,12 @@ async def test_anthropic_refusal_after_thinking_collapses_summary_to_text() -> N
     assert final.stop_reason == "refusal"
     assert len(final.blocks) == 1
     block = final.blocks[0]
-    assert isinstance(block, IRAssistantTextBlock)
-    assert block.text.startswith("<thinking_summary>")
-    assert "I considered whether this is allowed." in block.text
-    assert "</thinking_summary>" in block.text
-    assert "<refusal>" in block.text
-    assert "Safety policy blocked the answer." in block.text
+    assert isinstance(block, IRRefusalBlock)
+    assert [(segment.kind, segment.text) for segment in block.segments] == [
+        ("thinking_summary", "I considered whether this is allowed.")
+    ]
+    assert block.details is not None
+    assert block.details.explanation == "Safety policy blocked the answer."
 
 
 @pytest.mark.asyncio
@@ -227,12 +227,12 @@ async def test_anthropic_refusal_during_tool_call_records_partial_json_text() ->
     assert final.stop_reason == "refusal"
     assert len(final.blocks) == 1
     block = final.blocks[0]
-    assert isinstance(block, IRAssistantTextBlock)
-    assert "<partial_tool_call_json>" in block.text
-    assert '{"path": "/tmp/secret.txt", "mode": "' in block.text
-    assert "</partial_tool_call_json>" in block.text
-    assert "<refusal>" in block.text
-    assert "Tool call refused." in block.text
+    assert isinstance(block, IRRefusalBlock)
+    assert [(segment.kind, segment.text) for segment in block.segments] == [
+        ("partial_tool_call_json", '{"path": "/tmp/secret.txt", "mode": "')
+    ]
+    assert block.details is not None
+    assert block.details.explanation == "Tool call refused."
 
 
 class _FakeMessages:

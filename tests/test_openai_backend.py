@@ -24,6 +24,7 @@ from spellbook.ir_types import (
     IRImageBase64Source,
     IRImageBlock,
     IRImageURLSource,
+    IRRefusalBlock,
     IRStreamTextDeltaEvent,
     IRStreamTextEndEvent,
     IRStreamTextStartEvent,
@@ -182,6 +183,29 @@ class TestOpenAIBlockTranslation:
         assert blocks[1].input == {"file_path": "/tmp/demo.py"}
         assert isinstance(blocks[2], IRAssistantTextBlock)
         assert blocks[2].text == "Done."
+
+    def test_normalize_openai_refusal_to_canonical_ir(self) -> None:
+        blocks, has_tool_call = _normalize_content_blocks(
+            [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Partial answer"},
+                        {"type": "refusal", "refusal": "Request refused."},
+                    ],
+                }
+            ]
+        )
+
+        assert has_tool_call is False
+        assert len(blocks) == 1
+        refusal = blocks[0]
+        assert isinstance(refusal, IRRefusalBlock)
+        assert refusal.partial_text == "Partial answer"
+        assert refusal.details is not None
+        assert refusal.details.provider == "openai"
+        assert refusal.details.explanation == "Request refused."
 
 
 class _NestedToolInput(BaseModel):

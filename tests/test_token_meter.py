@@ -11,6 +11,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRImageBlock,
+    IRRefusalBlock,
     IRThinkingBlock,
     IRToolCallBlock,
     IRToolResultBlock,
@@ -60,7 +61,12 @@ class _FakeTokenCounter:
         match block:
             case IRUserTextBlock() | IRImageBlock() | IRToolResultBlock():
                 return "user"
-            case IRAssistantTextBlock() | IRThinkingBlock() | IRToolCallBlock():
+            case (
+                IRAssistantTextBlock()
+                | IRRefusalBlock()
+                | IRThinkingBlock()
+                | IRToolCallBlock()
+            ):
                 return "assistant"
 
 

@@ -19,6 +19,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRImageBlock,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRSemanticBlockFacet,
     IRSemanticBlockPairNarrative,
@@ -520,7 +521,12 @@ class BlockManager:
         match block:
             case IRUserTextBlock() | IRImageBlock() | IRToolResultBlock():
                 return "user"
-            case IRAssistantTextBlock() | IRThinkingBlock() | IRToolCallBlock():
+            case (
+                IRAssistantTextBlock()
+                | IRRefusalBlock()
+                | IRThinkingBlock()
+                | IRToolCallBlock()
+            ):
                 return "assistant"
             case _:
                 raise TypeError(f"Unsupported IR block type: {type(block)}")

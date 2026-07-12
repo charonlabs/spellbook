@@ -6,6 +6,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRImageBlock,
+    IRRefusalBlock,
     IRThinkingBlock,
     IRTokenPrefixCount,
     IRTokenRangeCount,
@@ -249,7 +250,7 @@ class TokenMeter:
                         repaired.append(IRUserTextBlock(text=".", origin="human"))
                     pending[block.call_id] = block.tool
                     repaired.append(block)
-                case IRAssistantTextBlock() | IRThinkingBlock():
+                case IRAssistantTextBlock() | IRRefusalBlock() | IRThinkingBlock():
                     if not repaired:
                         repaired.append(IRUserTextBlock(text=".", origin="human"))
                     repaired.append(block)

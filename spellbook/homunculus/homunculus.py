@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Sequence
 from uuid import uuid4
 
@@ -59,6 +60,7 @@ class Homunculus:
         debug_emitter: "DebugEmitter | None" = None,
         hearth_settings: HearthSettings | None = None,
         enable_block_detection: bool = True,
+        analysis_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
     ):
         self._config = config
         self._footer_c = footer_c
@@ -73,6 +75,15 @@ class Homunculus:
         self._nursery = nursery
         self._planner = Planner(config=config)
         self._fork_runner = fork_runner
+
+        def project_context(blocks: Sequence[IRBlock]) -> list[IRBlock]:
+            collapsed = self._ttl_registry.collapse_blocks(blocks)
+            return (
+                analysis_projector(collapsed)
+                if analysis_projector is not None
+                else collapsed
+            )
+
         self._block_manager = BlockManager(
             config=config,
             fork_runner=fork_runner,
@@ -80,7 +91,7 @@ class Homunculus:
             nursery=nursery,
             recorder=recorder,
             token_meter=self._token_meter,
-            context_projector=self._ttl_registry.collapse_blocks,
+            context_projector=project_context,
             enable_block_detection=enable_block_detection,
             debug_emitter=debug_emitter,
         )

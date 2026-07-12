@@ -391,6 +391,30 @@ class TestFooterTypes:
 
 
 class TestIRRecordDiscrimination:
+    def test_refusal_block_round_trips_inside_event_record(self) -> None:
+        from spellbook.ir_types import (
+            IRBlockRecord,
+            IRRefusalBlock,
+            IRRefusalDetails,
+            IRRefusalSegment,
+        )
+
+        record = IRBlockRecord(
+            session_id="s1",
+            turn=4,
+            seq=2,
+            event=IRRefusalBlock(
+                segments=[IRRefusalSegment(kind="text", text="partial")],
+                details=IRRefusalDetails(provider="anthropic", category="test"),
+            ),
+        )
+
+        parsed = TypeAdapter(IRRecord).validate_json(record.model_dump_json())
+
+        assert isinstance(parsed, IRBlockRecord)
+        assert isinstance(parsed.event, IRRefusalBlock)
+        assert parsed.event.partial_text == "partial"
+
     def test_footer_queue_record_round_trips_through_ir_record_union(self) -> None:
         footer = IRFooter(
             text="queued footer",

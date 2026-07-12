@@ -46,6 +46,52 @@ class IRAssistantTextBlock(BaseModel, frozen=True):
     text: str
 
 
+RefusalSegmentKind = Literal[
+    "text",
+    "thinking_summary",
+    "partial_tool_call_json",
+]
+
+
+class IRRefusalSegment(BaseModel, frozen=True):
+    """One ordered piece of output observed before a provider refusal."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: RefusalSegmentKind
+    text: str
+
+
+class IRRefusalDetails(BaseModel, frozen=True):
+    """Provider refusal metadata retained as transcript truth."""
+
+    model_config = ConfigDict(extra="forbid")
+    provider: str
+    detail_type: str | None = None
+    category: str | None = None
+    explanation: str | None = None
+
+
+class IRRefusalBlock(BaseModel, frozen=True):
+    """Canonical refusal output, independent of its later rendering policy."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["refusal"] = "refusal"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    turn_id: str | None = None
+    event_id: str | None = None
+    origin: Literal["model"] = "model"
+
+    segments: list[IRRefusalSegment] = Field(default_factory=list)
+    details: IRRefusalDetails | None = None
+
+    @property
+    def partial_text(self) -> str:
+        """Model-visible text generated before the refusal fired."""
+        return "\n\n".join(
+            segment.text for segment in self.segments if segment.kind == "text"
+        )
+
+
 class IRImageBase64Source(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
     type: Literal["base64"] = "base64"
@@ -159,6 +205,7 @@ class IRToolResultBlock(BaseModel, frozen=True):
 IRBlock = Annotated[
     IRUserTextBlock
     | IRAssistantTextBlock
+    | IRRefusalBlock
     | IRImageBlock
     | IRThinkingBlock
     | IRToolCallBlock
@@ -251,7 +298,12 @@ StopReason = Literal[
 
 ToolResultTTLTrigger = Literal["end_turn", "seq"]
 ToolResultTTLSource = Literal["auto", "manual", "repair"]
-RuntimeConfigNamespace = Literal["tool_result_ttl", "debug_visibility", "hearth"]
+RuntimeConfigNamespace = Literal[
+    "tool_result_ttl",
+    "debug_visibility",
+    "hearth",
+    "refusal_rendering",
+]
 RuntimeConfigSource = Literal["model", "operator"]
 RuntimeConfigValue = int | bool | str
 

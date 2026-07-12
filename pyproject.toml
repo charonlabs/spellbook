@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.12.5,<2.13",
     "python-dotenv>=1.2.2",
     "rich>=14.3.3",
+    "tiktoken>=0.13.0",
 ]
 
 [project.optional-dependencies]

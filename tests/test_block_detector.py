@@ -478,14 +478,7 @@ class TestRehydrate:
         self, tmp_path: Path
     ) -> None:
         detector = _make_detector(tmp_path, detect_interval=4)
-        blocks: list[
-            IRUserTextBlock
-            | IRAssistantTextBlock
-            | IRImageBlock
-            | IRThinkingBlock
-            | IRToolCallBlock
-            | IRToolResultBlock
-        ] = [_user("done"), _assistant("buffered"), _user("raw")]
+        blocks: list[IRBlock] = [_user("done"), _assistant("buffered"), _user("raw")]
         completed = [IRSemanticBlockRange(title="Done", start_block=0, end_block=0)]
         buffered = [IRSemanticBlockRange(title="Buffered", start_block=1, end_block=1)]
 

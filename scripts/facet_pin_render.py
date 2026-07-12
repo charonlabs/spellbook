@@ -28,6 +28,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRImageBlock,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRSemanticBlockSummary,
     IRThinkingBlock,
@@ -39,6 +40,7 @@ from spellbook.ir_types import (
 from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.refusal import RefusalRenderer
 from spellbook.surface_builder import RequestSurfaceBuilder
 from spellbook.tools.registry import ToolRegistry
 
@@ -425,6 +427,10 @@ def _format_block(block: IRBlock) -> str:
             return f"role=user origin={block.origin}\n\n{block.text}"
         case IRAssistantTextBlock():
             return f"role=assistant\n\n{block.text}"
+        case IRRefusalBlock():
+            return "\n\n".join(
+                _format_block(item) for item in RefusalRenderer().render_refusal(block)
+            )
         case IRThinkingBlock():
             return (
                 f"role=assistant thinking signature={block.signature}\n\n{block.text}"

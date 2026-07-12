@@ -28,6 +28,7 @@ from spellbook.ir_types import (
     IRGeneration,
     IRInboundMessage,
     IRLoopResult,
+    IRRefusalBlock,
     IRRuntimeConfigRecord,
     IRSemanticBlockRange,
     IRSkillCatalog,
@@ -45,6 +46,14 @@ from spellbook.ir_types import (
 from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder, RecordingRoundLifecycle
 from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.refusal import (
+    DEFAULT_REFUSAL_RENDER_POLICY,
+    LEGACY_REFUSAL_RENDER_POLICY,
+    REFUSAL_RUNTIME_CONFIG_NAMESPACE,
+    SYSTEM_INTERRUPTION_TEXT,
+    refusal_policy_from_runtime_config_records,
+    refusal_policy_runtime_values,
+)
 from spellbook.round_lifecycle import (
     CompositeRoundLifecycle,
     RoundContext,
@@ -1340,6 +1349,127 @@ class TestBuildResumeBehavior:
 
         assert resumed.session_id == created.session_id
         assert resumed.transcript_path == created.transcript_path
+
+    @pytest.mark.asyncio
+    async def test_new_session_persists_effective_refusal_policy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+        default_path = tmp_path / "default_refusal_policy.jsonl"
+        legacy_path = tmp_path / "legacy_refusal_policy.jsonl"
+
+        await SessionManager.build(
+            transcript_path=default_path,
+            config=_config(tmp_path),
+        )
+        await SessionManager.build(
+            transcript_path=legacy_path,
+            config=_config(tmp_path),
+            refusal_render_policy=LEGACY_REFUSAL_RENDER_POLICY,
+        )
+
+        default = Rehydrator(default_path).run()
+        legacy = Rehydrator(legacy_path).run()
+        assert (
+            refusal_policy_from_runtime_config_records(default.runtime_config_updates)
+            == DEFAULT_REFUSAL_RENDER_POLICY
+        )
+        assert (
+            refusal_policy_from_runtime_config_records(legacy.runtime_config_updates)
+            == LEGACY_REFUSAL_RENDER_POLICY
+        )
+
+    @pytest.mark.asyncio
+    async def test_resume_projects_legacy_refusal_history_with_default_policy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "legacy_refusal_history.jsonl"
+        recorder = Recorder(
+            _config(tmp_path), transcript, "session_legacy", DEFAULT_TOOL_REGISTRY
+        )
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn("turn_1", [IRUserTextBlock(text="hello", origin="human")])
+        recorder.write_block(
+            IRAssistantTextBlock(
+                text=(
+                    "Past partial\n\n<refusal>\nstop_reason: refusal\n"
+                    "details: unavailable\n</refusal>"
+                )
+            )
+        )
+        recorder.end_turn("refusal")
+        backend = _ScriptedBackend([_gen(stop_reason="end_turn")])
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
+        )
+        manager = await SessionManager.build(transcript_path=transcript)
+
+        await manager.submit_message(_user_msg("try again"))
+        await manager._running_phase()
+
+        seen = backend.blocks_seen[0]
+        assert any(
+            isinstance(block, IRAssistantTextBlock) and block.text == "Past partial"
+            for block in seen
+        )
+        assert any(
+            isinstance(block, IRUserTextBlock)
+            and block.text == SYSTEM_INTERRUPTION_TEXT
+            for block in seen
+        )
+        assert not any(isinstance(block, IRRefusalBlock) for block in seen)
+        assert not any(
+            "<refusal>" in block.text
+            for block in seen
+            if isinstance(block, IRAssistantTextBlock | IRUserTextBlock)
+        )
+
+    @pytest.mark.asyncio
+    async def test_transcript_refusal_policy_overrides_production_default(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "explicit_legacy_refusal_policy.jsonl"
+        recorder = Recorder(
+            _config(tmp_path), transcript, "session_legacy", DEFAULT_TOOL_REGISTRY
+        )
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        values = refusal_policy_runtime_values(LEGACY_REFUSAL_RENDER_POLICY)
+        recorder.write_runtime_config(
+            namespace=REFUSAL_RUNTIME_CONFIG_NAMESPACE,
+            updates=values,
+            effective=values,
+            source="operator",
+        )
+        recorder.start_turn("turn_1", [IRUserTextBlock(text="hello", origin="human")])
+        legacy_text = (
+            "Past partial\n\n<refusal>\nstop_reason: refusal\n"
+            "details: unavailable\n</refusal>"
+        )
+        recorder.write_block(IRAssistantTextBlock(text=legacy_text))
+        recorder.end_turn("refusal")
+        backend = _ScriptedBackend([_gen(stop_reason="end_turn")])
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: backend,
+        )
+        manager = await SessionManager.build(transcript_path=transcript)
+
+        await manager.submit_message(_user_msg("try again"))
+        await manager._running_phase()
+
+        assert any(
+            isinstance(block, IRAssistantTextBlock) and block.text == legacy_text
+            for block in backend.blocks_seen[0]
+        )
+        assert not any(
+            isinstance(block, IRUserTextBlock)
+            and block.text == SYSTEM_INTERRUPTION_TEXT
+            for block in backend.blocks_seen[0]
+        )
 
     @pytest.mark.asyncio
     async def test_build_block_detector_session_uses_detector_surface_and_metadata(

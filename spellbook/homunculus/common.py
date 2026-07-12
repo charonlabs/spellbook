@@ -14,6 +14,7 @@ from spellbook.ir_types import (
     IRImageBlobSource,
     IRImageBlock,
     IRImageURLSource,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRSemanticBlockSummary,
     IRSemanticBlockRange,
@@ -23,6 +24,7 @@ from spellbook.ir_types import (
     IRToolTextBlock,
     IRUserTextBlock,
 )
+from spellbook.refusal import RefusalRenderer, canonical_refusal
 
 RegimeType = Literal["calm", "warning", "forced", "critical", "unknown"]
 
@@ -168,6 +170,15 @@ def estimate_intent_savings(
 
 
 def _render_block_markdown(block: IRBlock) -> str:
+    refusal = canonical_refusal(block)
+    if refusal is not None:
+        parts: list[str] = []
+        for projected in RefusalRenderer().render_refusal(refusal):
+            if isinstance(projected, IRAssistantTextBlock):
+                parts.append(f"**Assistant (partial):** {projected.text}")
+            elif isinstance(projected, IRUserTextBlock):
+                parts.append(f"**System:** {projected.text}")
+        return "\n\n".join(parts)
     match block:
         case IRUserTextBlock():
             label = {
@@ -178,6 +189,8 @@ def _render_block_markdown(block: IRBlock) -> str:
             return f"**{label}:** {block.text}"
         case IRAssistantTextBlock():
             return f"**Assistant:** {block.text}"
+        case IRRefusalBlock():
+            raise AssertionError("Canonical refusals are handled before dispatch.")
         case IRThinkingBlock():
             return f"**Thinking:** {block.text}"
         case IRToolCallBlock():

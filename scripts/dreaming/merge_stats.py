@@ -32,6 +32,7 @@ from spellbook.ir_types import (
     IRImageBlobSource,
     IRImageBlock,
     IRImageURLSource,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRSemanticBlockFacet,
     IRSemanticBlockPin,
@@ -46,6 +47,7 @@ from spellbook.ir_types import (
 from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.refusal import RefusalRenderer
 from spellbook.surface_builder import RequestSurfaceBuilder
 from spellbook.tools.registry import ToolRegistry
 
@@ -574,6 +576,20 @@ def _render_context_block_markdown(block: IRBlock, *, context_idx: int) -> list[
                 metadata,
                 "",
                 block.text.rstrip(),
+                "",
+            ]
+        case IRRefusalBlock():
+            rendered = RefusalRenderer().render_refusal(block)
+            text = "\n\n".join(
+                item.text
+                for item in rendered
+                if isinstance(item, IRAssistantTextBlock | IRUserTextBlock)
+            )
+            return [
+                f"### Refusal Projection (context block {context_idx})",
+                metadata,
+                "",
+                text.rstrip(),
                 "",
             ]
         case IRThinkingBlock():

@@ -48,6 +48,9 @@ from ..ir_types import (
     IRImageBlobSource,
     IRImageBlock,
     IRImageURLSource,
+    IRRefusalBlock,
+    IRRefusalDetails,
+    IRRefusalSegment,
     IRStreamEvent,
     IRStreamTextDeltaEvent,
     IRStreamTextEndEvent,
@@ -77,18 +80,6 @@ class _RefusalDebugSegment:
 
     def append(self, text: str) -> None:
         self.parts.append(text)
-
-    def render(self) -> str:
-        text = "".join(self.parts)
-        if self.kind == "text":
-            return text
-        if self.kind == "thinking":
-            if not text:
-                return ""
-            return f"<thinking_summary>\n{text}\n</thinking_summary>"
-        if not text:
-            return ""
-        return f"<partial_tool_call_json>\n{text}\n</partial_tool_call_json>"
 
 
 class AnthropicGenerationStream(GenerationStream):
@@ -148,11 +139,7 @@ class AnthropicGenerationStream(GenerationStream):
         if self._response.stop_reason == "refusal":
             return IRGeneration(
                 model=self._model,
-                blocks=[
-                    IRAssistantTextBlock(
-                        text=self._render_refusal_response(self._response)
-                    )
-                ],
+                blocks=[self._build_refusal_block(self._response)],
                 stop_reason="refusal",
                 usage=_normalize_usage(self._response.usage),
             )
@@ -249,14 +236,29 @@ class AnthropicGenerationStream(GenerationStream):
             segment = self._start_refusal_debug_segment(kind)
         segment.append(text)
 
-    def _render_refusal_response(self, response: ParsedMessage[NotGiven]) -> str:
-        sections = [
-            rendered
-            for segment in self._refusal_debug_segments
-            if (rendered := segment.render())
-        ]
-        sections.append(_render_refusal_block(response))
-        return "\n\n".join(sections)
+    def _build_refusal_block(self, response: ParsedMessage[NotGiven]) -> IRRefusalBlock:
+        segments: list[IRRefusalSegment] = []
+        for segment in self._refusal_debug_segments:
+            text = "".join(segment.parts)
+            if not text:
+                continue
+            if segment.kind == "text":
+                segments.append(IRRefusalSegment(kind="text", text=text))
+            elif segment.kind == "thinking":
+                segments.append(IRRefusalSegment(kind="thinking_summary", text=text))
+            else:
+                segments.append(
+                    IRRefusalSegment(kind="partial_tool_call_json", text=text)
+                )
+
+        stop_details = getattr(response, "stop_details", None)
+        details = IRRefusalDetails(
+            provider="anthropic",
+            detail_type=_details_string(stop_details, "type"),
+            category=_details_string(stop_details, "category"),
+            explanation=_details_string(stop_details, "explanation"),
+        )
+        return IRRefusalBlock(segments=segments, details=details)
 
 
 class AnthropicTokenCounter(TokenCounter):
@@ -315,7 +317,7 @@ class AnthropicTokenCounter(TokenCounter):
         return await self.count_blocks(blocks)
 
     async def count_blocks(self, blocks: list[IRBlock]) -> int | None:
-        msgs = _ir_blocks_to_message_params(blocks)
+        msgs = _ir_blocks_to_message_params(self._builder.project_blocks(blocks))
         try:
             count = await self._client.messages.count_tokens(
                 messages=msgs, model=self._model
@@ -519,32 +521,17 @@ def _normalize_partial_content_blocks(
     return blocks, has_tool_use
 
 
-def _render_refusal_block(response: ParsedMessage[NotGiven]) -> str:
-    stop_details = getattr(response, "stop_details", None)
-    detail_type = _details_value(stop_details, "type")
-    category = _details_value(stop_details, "category")
-    explanation = _details_value(stop_details, "explanation")
-
-    lines = ["<refusal>", "stop_reason: refusal"]
-    if detail_type is not None:
-        lines.append(f"type: {detail_type}")
-    if category is not None:
-        lines.append(f"category: {category}")
-    if explanation is not None:
-        lines.append("explanation:")
-        lines.append(str(explanation))
-    if stop_details is None:
-        lines.append("details: unavailable")
-    lines.append("</refusal>")
-    return "\n".join(lines)
-
-
 def _details_value(details: object, key: str) -> object:
     if details is None:
         return None
     if isinstance(details, Mapping):
         return cast(Mapping[str, object], details).get(key)
     return getattr(details, key, None)
+
+
+def _details_string(details: object, key: str) -> str | None:
+    value = _details_value(details, key)
+    return None if value is None else str(value)
 
 
 def _parse_image_block(block: IRImageBlock) -> ImageBlockParam:

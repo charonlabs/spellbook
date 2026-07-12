@@ -56,6 +56,7 @@ class RequestSurfaceBuilder:
         backend: ModelBackend,
         max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
         effort: str = _DEFAULT_EFFORT,
+        block_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
     ):
         self._model = model
         self._system_provider = system_provider
@@ -63,18 +64,24 @@ class RequestSurfaceBuilder:
         self._backend = backend
         self._max_output_tokens = max_output_tokens
         self._effort = effort
+        self._block_projector = block_projector or (lambda blocks: list(blocks))
 
     def build(self, blocks: Sequence[IRBlock]) -> RequestSurface:
         """Build a ``RequestSurface`` from this builder's config + the given messages."""
         system = self._system_provider()
+        projected = self.project_blocks(blocks)
         return self._backend.build_request_surface(
             model=self._model,
             system=system,
-            blocks=blocks,
+            blocks=projected,
             tools=self._tool_schemas,
             max_output_tokens=self._max_output_tokens,
             effort=self._effort,
         )
+
+    def project_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
+        """Apply the canonical-to-provider block projection."""
+        return self._block_projector(blocks)
 
     @property
     def model(self) -> str:
@@ -94,6 +101,7 @@ class RequestSurfaceBuilder:
         config: SpellbookConfig,
         tool_registry: ToolRegistry,
         fork_config: ForkConfig | None = None,
+        block_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
     ) -> "RequestSurfaceBuilder":
         """Build a live surface builder that delegates to a model backend.
 
@@ -111,6 +119,7 @@ class RequestSurfaceBuilder:
             backend=backend,
             max_output_tokens=config.max_output_tokens,
             effort=config.effort,
+            block_projector=block_projector,
         )
 
     # TODO: implement with NullBackend shape to appease new backend req

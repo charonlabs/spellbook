@@ -21,6 +21,14 @@ from spellbook.ir_types import IRInboundMessage, IRSkillCatalog
 from spellbook.loop import run_loop
 from spellbook.nursery import Nursery
 from spellbook.rehydrator import Rehydrator
+from spellbook.refusal import (
+    DEFAULT_REFUSAL_RENDER_POLICY,
+    REFUSAL_RUNTIME_CONFIG_NAMESPACE,
+    RefusalRenderer,
+    RefusalRenderPolicy,
+    refusal_policy_from_runtime_config_records,
+    refusal_policy_runtime_values,
+)
 from spellbook.session_lifecycle import (
     CompositeSessionLifecycle,
     SessionContext,
@@ -229,9 +237,14 @@ class SessionManager:
         post_round_lifecycle: RoundLifecycle | None = None,
         record_tap: RecordTap | None = None,
         custom_surface: CustomSurface | None = None,
+        refusal_render_policy: RefusalRenderPolicy | None = None,
     ) -> "SessionManager":
         """Build a `SessionManager`. Always needs a transcript path. If not resuming (i.e. the transcript
-        does not exist), must also pass a `SpellbookConfig` to intialize the new session"""
+        does not exist), must also pass a `SpellbookConfig` to intialize the new session.
+
+        ``refusal_render_policy`` is an explicit composition override used by
+        controlled runtimes. Normal sessions use the latest transcript policy,
+        falling back to the production partial-note default."""
         is_resume = transcript_path.exists()
         if not is_resume:
             if config is None:
@@ -279,6 +292,14 @@ class SessionManager:
             )
 
             initial_recorder.write_session_record(skill_catalog=initial_catalog)
+            initial_policy = refusal_render_policy or DEFAULT_REFUSAL_RENDER_POLICY
+            policy_values = refusal_policy_runtime_values(initial_policy)
+            initial_recorder.write_runtime_config(
+                namespace=REFUSAL_RUNTIME_CONFIG_NAMESPACE,
+                updates=policy_values,
+                effective=policy_values,
+                source="operator",
+            )
         custom_tools = custom_surface.tools if custom_surface is not None else None
         rehydrator = Rehydrator(
             transcript_path=transcript_path, custom_tools=custom_tools
@@ -309,10 +330,20 @@ class SessionManager:
             breadcrumb.git_state,
         )
         backend = build_backend(config)
+        transcript_refusal_policy = refusal_policy_from_runtime_config_records(
+            rehydrated.runtime_config_updates
+        )
+        active_refusal_policy = (
+            refusal_render_policy
+            or transcript_refusal_policy
+            or DEFAULT_REFUSAL_RENDER_POLICY
+        )
+        refusal_renderer = RefusalRenderer(active_refusal_policy)
         surface_builder = RequestSurfaceBuilder.from_config(
             backend=backend,
             config=config,
             tool_registry=tool_registry,
+            block_projector=refusal_renderer.project_surface,
         )
         token_counter = backend.build_token_counter(
             config=config, surface_builder=surface_builder
@@ -379,6 +410,7 @@ class SessionManager:
             debug_emitter=debug_emitter,
             hearth_settings=HearthSettings.from_config(config),
             enable_block_detection=profile.block_detection,
+            analysis_projector=refusal_renderer.project_analysis,
         )
         await homunculus.rehydrate(rehydrated)
         should_manage_skills = profile.should_discover_skills(

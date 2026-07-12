@@ -15,7 +15,14 @@ from spellbook.backends.model_backend import (
 )
 from spellbook.cancel_token import CancelToken
 from spellbook.config import SpellbookConfig
-from spellbook.ir_types import IRBlock, IRUserTextBlock
+from spellbook.ir_types import (
+    IRAssistantTextBlock,
+    IRBlock,
+    IRRefusalBlock,
+    IRRefusalSegment,
+    IRUserTextBlock,
+)
+from spellbook.refusal import RefusalRenderer
 from spellbook.surface_builder import RequestSurfaceBuilder
 from spellbook.tools.common import Tool, ToolExecutionResult, ToolMetadata
 from spellbook.tools.registry import ToolRegistry
@@ -139,6 +146,29 @@ class TestRequestSurfaceBuilderDirect:
         assert surface.output_config == {"kind": "fake"}
         assert surface.cache_control == {"scope": "test"}
         assert surface.max_output_tokens == 64_000
+
+    def test_build_projects_canonical_refusals_before_backend(self) -> None:
+        backend = _FakeBackend()
+        renderer = RefusalRenderer()
+        builder = RequestSurfaceBuilder(
+            model="test-model",
+            system_provider=lambda: "system prompt",
+            tool_schemas=[],
+            backend=backend,
+            block_projector=renderer.project_surface,
+        )
+        refusal = IRRefusalBlock(
+            segments=[IRRefusalSegment(kind="text", text="Partial answer")]
+        )
+
+        builder.build([refusal])
+
+        projected = backend.request_surface_calls[0]["blocks"]
+        assert len(projected) == 2
+        assert isinstance(projected[0], IRAssistantTextBlock)
+        assert projected[0].text == "Partial answer"
+        assert isinstance(projected[1], IRUserTextBlock)
+        assert projected[1].origin == "system"
 
     def test_system_provider_is_called_on_each_build(self) -> None:
         backend = _FakeBackend()

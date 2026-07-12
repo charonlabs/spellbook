@@ -26,6 +26,7 @@ from spellbook.ir_types import (
     IRBlock,
     IRInboundMessage,
     IRLoopResult,
+    IRRefusalBlock,
     IRStreamEvent,
     IRUserTextBlock,
     StopReason,
@@ -360,5 +361,7 @@ def _event_request_id(event: TurnStartedEvent) -> str | None:
 
 def _blocks_text(blocks: list[IRBlock]) -> str:
     return "\n\n".join(
-        block.text for block in blocks if isinstance(block, IRAssistantTextBlock)
+        (block.text if isinstance(block, IRAssistantTextBlock) else block.partial_text)
+        for block in blocks
+        if isinstance(block, IRAssistantTextBlock | IRRefusalBlock)
     )

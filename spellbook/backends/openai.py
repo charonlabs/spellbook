@@ -29,6 +29,9 @@ from ..ir_types import (
     IRImageBlobSource,
     IRImageBlock,
     IRImageURLSource,
+    IRRefusalBlock,
+    IRRefusalDetails,
+    IRRefusalSegment,
     IRStreamEvent,
     IRStreamTextDeltaEvent,
     IRStreamTextEndEvent,
@@ -253,7 +256,9 @@ class OpenAITokenCounter(TokenCounter):
     async def count_blocks(self, blocks: list[IRBlock]) -> int | None:
         surface = RequestSurface(
             model=self._model,
-            messages=_ir_blocks_to_response_input_items(blocks),
+            messages=_ir_blocks_to_response_input_items(
+                self._builder.project_blocks(blocks)
+            ),
         )
         return await self.count_surface(surface)
 
@@ -565,7 +570,7 @@ def _translate_openai_reasoning_item_to_ir_block(item: Any) -> IRThinkingBlock |
 
 def _translate_openai_message_item_to_ir_block(
     item: Any,
-) -> IRAssistantTextBlock | None:
+) -> IRAssistantTextBlock | IRRefusalBlock | None:
     if not isinstance(item, dict) or str(item.get("type") or "") != "message":
         return None
 
@@ -574,6 +579,7 @@ def _translate_openai_message_item_to_ir_block(
         raise ValueError("OpenAI message item content must be a list")
 
     text_parts: list[str] = []
+    refusal_parts: list[str] = []
     for part in content_parts:
         if not isinstance(part, dict):
             raise ValueError("OpenAI message content parts must be dicts")
@@ -590,8 +596,24 @@ def _translate_openai_message_item_to_ir_block(
             text = ""
         if not isinstance(text, str):
             raise ValueError("OpenAI message text content must be a string")
-        text_parts.append(text)
+        if part_type == "refusal":
+            refusal_parts.append(text)
+        else:
+            text_parts.append(text)
 
+    if refusal_parts:
+        segments = (
+            [IRRefusalSegment(kind="text", text="".join(text_parts))]
+            if text_parts
+            else []
+        )
+        return IRRefusalBlock(
+            segments=segments,
+            details=IRRefusalDetails(
+                provider="openai",
+                explanation="\n".join(refusal_parts),
+            ),
+        )
     return IRAssistantTextBlock(text="".join(text_parts))
 
 

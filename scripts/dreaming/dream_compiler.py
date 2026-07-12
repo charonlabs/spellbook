@@ -40,6 +40,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRImageBlock,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRThinkingBlock,
     IRToolCallBlock,
@@ -1172,7 +1173,10 @@ def _provider_message_count(blocks: tuple[IRBlock, ...] | list[IRBlock]) -> int:
 def _provider_role(block: IRBlock) -> Literal["user", "assistant"]:
     if isinstance(block, IRUserTextBlock | IRImageBlock | IRToolResultBlock):
         return "user"
-    if isinstance(block, IRAssistantTextBlock | IRThinkingBlock | IRToolCallBlock):
+    if isinstance(
+        block,
+        IRAssistantTextBlock | IRRefusalBlock | IRThinkingBlock | IRToolCallBlock,
+    ):
         return "assistant"
     raise TypeError(f"Unsupported IR block type: {type(block)}")
 

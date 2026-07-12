@@ -41,6 +41,7 @@ from spellbook.ir_types import (
     IRBlock,
     IRInboundMessage,
     IRLoopResult,
+    IRRefusalBlock,
     IRRecord,
     IRSemanticBlockRange,
     IRSemanticBlockSummary,
@@ -734,6 +735,8 @@ def _last_assistant_text(result: IRLoopResult) -> str:
         for block in reversed(generation.blocks):
             if isinstance(block, IRAssistantTextBlock):
                 return block.text
+            if isinstance(block, IRRefusalBlock):
+                return block.partial_text
     return ""
 
 

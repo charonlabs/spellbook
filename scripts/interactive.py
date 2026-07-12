@@ -35,6 +35,7 @@ from spellbook.ir_types import (
     IRExecution,
     IRGeneration,
     IRLoopResult,
+    IRRefusalBlock,
     IRStreamEvent,
     IRStreamTextDeltaEvent,
     IRStreamTextEndEvent,
@@ -142,6 +143,9 @@ def _print_generation_text_fallback(gen: IRGeneration, output: Console) -> None:
             if block.text.strip():
                 output.print()
                 output.print(Markdown(block.text))
+        elif isinstance(block, IRRefusalBlock) and block.partial_text.strip():
+            output.print()
+            output.print(Markdown(block.partial_text))
 
 
 def _print_tool_calls(gen: IRGeneration, output: Console) -> None:
