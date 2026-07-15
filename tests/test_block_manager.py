@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence, cast
 
@@ -36,7 +38,8 @@ from spellbook.ir_types import (
 )
 from spellbook.nursery import Nursery
 from spellbook.recorder import Recorder
-from spellbook.rehydrator import RehydrationResult
+from spellbook.rehydrator import RehydrationResult, Rehydrator
+from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
 
 
 def _user(text: str) -> IRUserTextBlock:
@@ -139,7 +142,8 @@ class _FakeMeter:
 
 
 class _FakeRecorder:
-    def __init__(self) -> None:
+    def __init__(self, transcript_path: Path | None = None) -> None:
+        self.transcript_path = transcript_path
         self.semantic_blocks: list[IRSemanticBlock] = []
         self.applied_modes: list[tuple[str, str]] = []
         self.artifacts: list[tuple[IRSemanticBlockSummary, str]] = []
@@ -275,8 +279,9 @@ def _manager(
     *,
     context_projector: Any | None = None,
     debug_emitter: _FakeDebugEmitter | None = None,
+    transcript_path: Path | None = None,
 ) -> tuple[BlockManager, _FakeRecorder, _FakeFooter, _FakeForkRunner]:
-    recorder = _FakeRecorder()
+    recorder = _FakeRecorder(transcript_path)
     footer = _FakeFooter()
     fork_runner = _FakeForkRunner()
     manager = BlockManager(
@@ -325,6 +330,14 @@ def _summary(
         open_thread=None,
         toks=toks,
     )
+
+
+def _forensics_records(transcript_path: Path) -> list[dict[str, Any]]:
+    forensics_path = transcript_path.with_name("detector_forensics.jsonl")
+    return [
+        json.loads(line)
+        for line in forensics_path.read_text(encoding="utf-8").splitlines()
+    ]
 
 
 def _rehydrate_manager(
@@ -787,6 +800,235 @@ async def test_detection_logs_raw_vs_sanitized_ranges_when_they_differ(
         for record in caplog.records
     )
     await manager._nursery.shutdown(cancel=True)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_accepted_detection_writes_one_forensics_line_beside_transcript(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "session" / "transcript.jsonl"
+    transcript.parent.mkdir()
+    manager, recorder, _, fork_runner = _manager(transcript_path=transcript)
+    manager._accept_background_work = False  # noqa: SLF001
+    manager.context_blocks = _user_blocks("a", "b")
+    _prime_detector(manager)
+    completed = IRSemanticBlockRange(
+        title="Accepted",
+        start_block=0,
+        end_block=0,
+        completed=True,
+    )
+    buffered = IRSemanticBlockRange(
+        title="Buffered",
+        start_block=1,
+        end_block=1,
+    )
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=[completed], still_buffered=[buffered]),
+        "detector_accepted",
+    )
+
+    records = _forensics_records(transcript)
+    assert len(records) == 1
+    event = records[0]
+    assert event["fork_id"] == "detector_accepted"
+    assert event["outcome"] == "accepted"
+    assert event["raw"]["completed"] == [completed.model_dump(mode="json")]
+    assert event["raw"]["still_buffered"] == [buffered.model_dump(mode="json")]
+    assert event["sanitized"]["completed"] == [completed.model_dump(mode="json")]
+    assert event["sanitized"]["still_buffered"] == [buffered.model_dump(mode="json")]
+    assert event["sanitized"]["deferred_completed"] == []
+    assert event["sanitized"]["discarded_ranges"] == []
+    assert event["validation_errors"] == []
+    assert datetime.fromisoformat(event["timestamp"]).tzinfo is not None
+    assert set(event["runtime_breadcrumb"]) == {
+        "package_path",
+        "git_sha",
+        "git_state",
+    }
+    assert recorder.detected
+    assert fork_runner.integrated_forks == ["detector_accepted"]
+    assert not (transcript.parent.parent / "detector_forensics.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_partially_deferred_detection_writes_one_forensics_line(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    manager, _, _, _ = _manager(transcript_path=transcript)
+    manager._accept_background_work = False  # noqa: SLF001
+    manager.context_blocks = _user_blocks("a", "b", "c")
+    _prime_detector(manager)
+    accepted = IRSemanticBlockRange(
+        title="Accepted",
+        start_block=0,
+        end_block=0,
+        completed=True,
+    )
+    missing = IRSemanticBlockRange(
+        title="Missing",
+        start_block=1,
+        end_block=1,
+    )
+    deferred = IRSemanticBlockRange(
+        title="Deferred",
+        start_block=2,
+        end_block=2,
+        completed=True,
+    )
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(
+            completed=[accepted, deferred],
+            still_buffered=[missing],
+        ),
+        "detector_deferred",
+    )
+
+    records = _forensics_records(transcript)
+    assert len(records) == 1
+    event = records[0]
+    assert event["outcome"] == "partially_deferred"
+    assert event["raw"]["completed"] == [
+        accepted.model_dump(mode="json"),
+        deferred.model_dump(mode="json"),
+    ]
+    assert event["sanitized"]["completed"] == [accepted.model_dump(mode="json")]
+    assert event["sanitized"]["still_buffered"] == [
+        missing.model_dump(mode="json"),
+        deferred.model_dump(mode="json"),
+    ]
+    assert event["sanitized"]["deferred_completed"] == [
+        deferred.model_dump(mode="json")
+    ]
+    assert event["validation_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_discarded_detection_writes_one_forensics_line_with_error(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    manager, recorder, _, fork_runner = _manager(transcript_path=transcript)
+    manager.context_blocks = _user_blocks("a", "b")
+    _prime_detector(manager)
+    rejected = IRSemanticBlockRange(
+        title="Starts after a hole",
+        start_block=1,
+        end_block=1,
+        completed=True,
+    )
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=[rejected], still_buffered=[]),
+        "detector_discarded",
+    )
+
+    records = _forensics_records(transcript)
+    assert len(records) == 1
+    event = records[0]
+    assert event["outcome"] == "discarded"
+    assert event["raw"]["completed"] == [rejected.model_dump(mode="json")]
+    assert event["sanitized"] is None
+    assert event["validation_errors"][0]["type"] == "ValueError"
+    assert "contiguous semantic range" in event["validation_errors"][0]["message"]
+    assert recorder.detected == []
+    assert fork_runner.integrated_forks == ["detector_discarded"]
+
+
+@pytest.mark.asyncio
+async def test_boundary_invalid_detection_writes_sanitized_ranges_and_error(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    manager, recorder, _, _ = _manager(transcript_path=transcript)
+    split = IRSemanticBlockRange(
+        title="Call side",
+        start_block=0,
+        end_block=0,
+        completed=True,
+    )
+    detector = _FakeDetector([split])
+    manager._detector = cast(Any, detector)  # noqa: SLF001
+    manager.context_blocks = [_tool_call("toolu_1"), _tool_result("toolu_1")]
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=[split], still_buffered=[]),
+        "detector_boundary_invalid",
+    )
+
+    records = _forensics_records(transcript)
+    assert len(records) == 1
+    event = records[0]
+    assert event["outcome"] == "boundary_invalid"
+    assert event["sanitized"]["completed"] == [split.model_dump(mode="json")]
+    assert event["validation_errors"][0]["type"] == "ValueError"
+    assert "tool-closure split" in event["validation_errors"][0]["message"]
+    assert recorder.detected == []
+    assert detector.integrated_forks == ["detector_boundary_invalid"]
+
+
+@pytest.mark.asyncio
+async def test_forensics_write_failure_does_not_break_detection_integration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    manager, recorder, _, fork_runner = _manager(transcript_path=transcript)
+    manager._accept_background_work = False  # noqa: SLF001
+    manager.context_blocks = _user_blocks("a")
+    _prime_detector(manager)
+    completed = IRSemanticBlockRange(
+        title="Accepted despite diagnostics failure",
+        start_block=0,
+        end_block=0,
+        completed=True,
+    )
+    caplog.set_level(logging.ERROR, logger="spellbook.homunculus.block_manager")
+
+    def _fail_open(*args: object, **kwargs: object) -> None:
+        raise OSError("forensics disk unavailable")
+
+    monkeypatch.setattr(Path, "open", _fail_open)
+
+    await manager._integrate_detection(  # noqa: SLF001
+        BlockDetectorResult(completed=[completed], still_buffered=[]),
+        "detector_write_failure",
+    )
+
+    assert recorder.detected
+    assert [block.title for block in manager.semantic_blocks] == [
+        "Accepted despite diagnostics failure"
+    ]
+    assert fork_runner.integrated_forks == ["detector_write_failure"]
+    assert any(
+        "block_detector.forensics_write_failed" in record.message
+        for record in caplog.records
+    )
+
+
+def test_rehydration_ignores_detector_forensics_sidecar(tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    config = SpellbookConfig(cwd=tmp_path)
+    recorder = Recorder(
+        config,
+        transcript,
+        "session_forensics",
+        DEFAULT_TOOL_REGISTRY,
+    )
+    recorder.write_session_record(skill_catalog=IRSkillCatalog())
+    transcript.with_name("detector_forensics.jsonl").write_text(
+        "not transcript json\n",
+        encoding="utf-8",
+    )
+
+    rehydrated = Rehydrator(transcript).run()
+
+    assert rehydrated.session_id == "session_forensics"
+    assert len(rehydrated.records) == 1
 
 
 @pytest.mark.asyncio

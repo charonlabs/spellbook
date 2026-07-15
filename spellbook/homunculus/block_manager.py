@@ -1,6 +1,9 @@
+import json
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from spellbook.config import HomunculusConfig
@@ -39,6 +42,7 @@ from spellbook.ir_types import (
 from spellbook.nursery import Nursery, NurseryJob, NurseryJobResult
 from spellbook.recorder import Recorder
 from spellbook.rehydrator import RehydrationResult
+from spellbook.runtime_breadcrumb import spellbook_runtime_breadcrumb
 
 if TYPE_CHECKING:
     from spellbook.debug_visibility import DebugNoticeLevel, DebugEmitter
@@ -51,6 +55,13 @@ ForgetBlockStatus = Literal[
     "summary_queued",
     "summary_in_flight",
     "summary_unavailable",
+]
+
+_DetectionIntegrationOutcome = Literal[
+    "accepted",
+    "partially_deferred",
+    "discarded",
+    "boundary_invalid",
 ]
 
 
@@ -108,6 +119,12 @@ class BlockManager:
         self._fork_runner = fork_runner
         self._meter = token_meter
         self._recorder = recorder
+        transcript_path = getattr(recorder, "transcript_path", None)
+        self._detector_forensics_path = (
+            transcript_path.with_name("detector_forensics.jsonl")
+            if isinstance(transcript_path, Path)
+            else None
+        )
         self._debug = debug_emitter
         self._footer_c = footer_c
         self._nursery = nursery
@@ -541,11 +558,23 @@ class BlockManager:
     ) -> None:
         try:
             integration = self._detector.simulate_result(result)
-            self._log_detection_range_sanitization(
+        except ValueError as exc:
+            self._write_detection_forensics(
                 fork_id=fork_id,
+                outcome="discarded",
                 raw=result,
-                sanitized=integration,
+                sanitized=None,
+                error=exc,
             )
+            self._discard_detection_result(fork_id=fork_id, result=result, error=exc)
+            return
+
+        self._log_detection_range_sanitization(
+            fork_id=fork_id,
+            raw=result,
+            sanitized=integration,
+        )
+        try:
             new_blocks = self._semantic_blocks_for_completed(integration.completed)
             candidate_blocks = [*self.semantic_blocks, *new_blocks]
             self._validate_semantic_blocks(
@@ -553,8 +582,23 @@ class BlockManager:
                 validate_tool_closure=True,
             )
         except ValueError as exc:
+            self._write_detection_forensics(
+                fork_id=fork_id,
+                outcome="boundary_invalid",
+                raw=result,
+                sanitized=integration,
+                error=exc,
+            )
             self._discard_detection_result(fork_id=fork_id, result=result, error=exc)
             return
+
+        self._write_detection_forensics(
+            fork_id=fork_id,
+            outcome="partially_deferred" if integration.partial else "accepted",
+            raw=result,
+            sanitized=integration,
+            error=None,
+        )
 
         self._debug_event(
             subsystem="block_detector",
@@ -1508,6 +1552,63 @@ class BlockManager:
             _range_specs(sanitized.discarded_ranges),
         )
 
+    def _write_detection_forensics(
+        self,
+        *,
+        fork_id: str,
+        outcome: _DetectionIntegrationOutcome,
+        raw: BlockDetectorResult,
+        sanitized: BlockDetectorIntegration | None,
+        error: ValueError | None,
+    ) -> None:
+        path = self._detector_forensics_path
+        if path is None:
+            return
+        try:
+            breadcrumb = spellbook_runtime_breadcrumb()
+            payload = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "fork_id": fork_id,
+                "outcome": outcome,
+                "raw": {
+                    "completed": _range_payloads(raw.completed),
+                    "still_buffered": _range_payloads(raw.still_buffered),
+                },
+                "sanitized": (
+                    {
+                        "completed": _range_payloads(sanitized.completed),
+                        "still_buffered": _range_payloads(
+                            sanitized.result.still_buffered
+                        ),
+                        "deferred_completed": _range_payloads(
+                            sanitized.deferred_completed
+                        ),
+                        "discarded_ranges": _range_payloads(sanitized.discarded_ranges),
+                    }
+                    if sanitized is not None
+                    else None
+                ),
+                "validation_errors": (
+                    [{"type": type(error).__name__, "message": str(error)}]
+                    if error is not None
+                    else []
+                ),
+                "runtime_breadcrumb": {
+                    "package_path": breadcrumb.package_path,
+                    "git_sha": breadcrumb.git_sha,
+                    "git_state": breadcrumb.git_state,
+                },
+            }
+            with path.open("a", encoding="utf-8") as sink:
+                sink.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        except Exception:  # noqa: BLE001 - diagnostics must never affect integration.
+            logger.exception(
+                "block_detector.forensics_write_failed fork_id=%s outcome=%s path=%s",
+                fork_id,
+                outcome,
+                path,
+            )
+
 
 def _identity_context_projector(blocks: Sequence[IRBlock]) -> list[IRBlock]:
     return list(blocks)
@@ -1530,6 +1631,12 @@ def _format_call_ids(call_ids: tuple[str, ...]) -> str:
 
 def _range_specs(ranges: Sequence[IRSemanticBlockRange]) -> list[str]:
     return [f"{block.start_block}-{block.end_block}:{block.title}" for block in ranges]
+
+
+def _range_payloads(
+    ranges: Sequence[IRSemanticBlockRange],
+) -> list[dict[str, Any]]:
+    return [block.model_dump(mode="json") for block in ranges]
 
 
 def _render_detection_failure(
