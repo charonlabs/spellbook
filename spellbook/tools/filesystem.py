@@ -6,14 +6,18 @@ assembled into a ``Tool`` constant at module bottom that the registry
 picks up.
 
 ``Bash`` runs a shell command under the entity's cwd with a configurable
-timeout. Stderr merges into stdout for single-stream output. On
-timeout, the subprocess is killed and partial output is returned as a
-``ToolError``.
+timeout. Stderr merges into stdout for single-stream output. Commands run in
+their own process group so timeout and cancellation can stop descendants. A
+shell that exits while a deliberate background process keeps its output pipe
+open gets a short drain grace, then returns without stopping that process.
 """
 
 import asyncio
 import base64
 import difflib
+import os
+import signal
+from contextlib import suppress
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -340,6 +344,14 @@ async def exec_edit(meta: ToolMetadata, input: EditInput) -> ToolExecutionResult
 # --- Bash ---
 BASH_TOOL_DEFAULT_TIMEOUT_MS = 30000
 BASH_TOOL_MAX_TIMEOUT_MS = 600000
+BASH_TOOL_PIPE_DRAIN_GRACE_S = 1.0
+BASH_TOOL_TERMINATE_GRACE_S = 0.25
+
+_BASH_BACKGROUND_OUTPUT_NOTE = (
+    "a background process is still running and holds the output stream; "
+    "output may be incomplete."
+)
+_BASH_OUTPUT_DRAIN_TASKS: set[asyncio.Task[None]] = set()
 
 
 class BashInput(BaseModel):
@@ -354,44 +366,152 @@ class BashInput(BaseModel):
     )
 
 
-# TODO: backgrounding, and threading the CancelToken
+async def _read_bash_output(
+    stream: asyncio.StreamReader,
+    collected: list[bytes],
+    capture_output: asyncio.Event,
+) -> None:
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            return
+        if capture_output.is_set():
+            collected.append(chunk)
+
+
+async def _drain_bash_output(reader_task: asyncio.Task[None]) -> bool:
+    """Drain inherited output briefly, returning false when a child holds it open."""
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(reader_task), timeout=BASH_TOOL_PIPE_DRAIN_GRACE_S
+        )
+    except TimeoutError:
+        return False
+    return True
+
+
+def _continue_draining_bash_output(
+    reader_task: asyncio.Task[None], output_transport: asyncio.ReadTransport
+) -> None:
+    """Keep a detached writer unblocked while discarding post-grace output."""
+    _BASH_OUTPUT_DRAIN_TASKS.add(reader_task)
+
+    def finish(completed: asyncio.Task[None]) -> None:
+        _BASH_OUTPUT_DRAIN_TASKS.discard(completed)
+        with suppress(asyncio.CancelledError, Exception):
+            completed.result()
+        output_transport.close()
+
+    reader_task.add_done_callback(finish)
+
+
+def _signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process_group_id, sig)
+    except ProcessLookupError:
+        # An already-dead process group is the desired postcondition.
+        pass
+
+
+async def _stop_process_group(
+    proc: asyncio.subprocess.Process, wait_task: asyncio.Task[int]
+) -> None:
+    _signal_process_group(proc.pid, signal.SIGTERM)
+    await asyncio.sleep(BASH_TOOL_TERMINATE_GRACE_S)
+    _signal_process_group(proc.pid, signal.SIGKILL)
+    await wait_task
+
+
 async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult:
     timeout_ms = input.timeout or BASH_TOOL_DEFAULT_TIMEOUT_MS
     timeout_ms = min(timeout_ms, BASH_TOOL_MAX_TIMEOUT_MS)
     timeout_s = timeout_ms / 1000
 
     start = perf_counter()
-    proc = await asyncio.create_subprocess_shell(
-        input.command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,  # merge for clean backgrounding
-        cwd=meta.cwd,
-    )
+    read_fd, write_fd = os.pipe()
+    read_file = os.fdopen(read_fd, "rb", buffering=0)
+    write_file = os.fdopen(write_fd, "wb", buffering=0)
+    reader = asyncio.StreamReader()
+    reader_protocol = asyncio.StreamReaderProtocol(reader)
+    try:
+        output_transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+            lambda: reader_protocol, read_file
+        )
+    except BaseException:
+        read_file.close()
+        write_file.close()
+        raise
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            input.command,
+            stdout=write_file,
+            stderr=asyncio.subprocess.STDOUT,  # merge for clean backgrounding
+            cwd=meta.cwd,
+            start_new_session=True,
+        )
+    except BaseException:
+        output_transport.close()
+        raise
+    finally:
+        write_file.close()
 
     collected: list[bytes] = []
+    capture_output = asyncio.Event()
+    capture_output.set()
+    reader_task = asyncio.create_task(
+        _read_bash_output(reader, collected, capture_output)
+    )
+    wait_task = asyncio.create_task(proc.wait())
+    timed_out = False
+    keep_output_drain = False
     try:
+        try:
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=timeout_s)
+        except TimeoutError:
+            # Let a process-exit callback that raced the timeout publish returncode.
+            await asyncio.sleep(0)
+            if proc.returncode is None:
+                timed_out = True
+                await _stop_process_group(proc, wait_task)
+            else:
+                await wait_task
 
-        async def _read_all() -> None:
-            while True:
-                chunk = await proc.stdout.read(8192)  # type: ignore
-                if not chunk:
-                    break
-                collected.append(chunk)
-            await proc.wait()
+        if timed_out:
+            output_complete = await _drain_bash_output(reader_task)
+            if not output_complete:
+                capture_output.clear()
+                keep_output_drain = True
+            partial_output = b"".join(collected).decode(errors="replace").rstrip()
+            raise ToolError(
+                f"Command timed out after {timeout_s:.0f}s\n{partial_output}"
+            )
 
-        await asyncio.wait_for(_read_all(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        partial_output = b"".join(collected).decode(errors="replace").rstrip()
-        raise ToolError(f"Command timed out after {timeout_s:.0f}s\n{partial_output}")
+        output_complete = await _drain_bash_output(reader_task)
+        if not output_complete:
+            capture_output.clear()
+            keep_output_drain = True
     except asyncio.CancelledError:
         if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+            await _stop_process_group(proc, wait_task)
+        else:
+            await wait_task
+        capture_output.clear()
+        keep_output_drain = not reader_task.done()
         raise
+    finally:
+        if keep_output_drain:
+            _continue_draining_bash_output(reader_task, output_transport)
+        else:
+            output_transport.close()
+
     duration_ms = int((perf_counter() - start) * 1000)
     output = b"".join(collected).decode(errors="replace").rstrip()
+    if not output_complete:
+        output = (
+            f"{output}\n\n{_BASH_BACKGROUND_OUTPUT_NOTE}"
+            if output
+            else _BASH_BACKGROUND_OUTPUT_NOTE
+        )
     if proc.returncode != 0:
         output = (
             f"Exit code {proc.returncode}\n{output}"
