@@ -34,7 +34,9 @@ def main() -> int:
         description="Render the last turns of a Spellbook JSONL transcript."
     )
     parser.add_argument("transcript_path", type=Path)
-    parser.add_argument("--last", type=int, required=True, help="number of turns to show")
+    parser.add_argument(
+        "--last", type=int, required=True, help="number of turns to show"
+    )
     args = parser.parse_args()
 
     if args.last < 1:
@@ -73,7 +75,9 @@ def read_transcript(path: Path) -> "OrderedDict[int | str, Turn]":
     return turns
 
 
-def ingest_record(turns: "OrderedDict[int | str, Turn]", record: dict[str, Any]) -> None:
+def ingest_record(
+    turns: "OrderedDict[int | str, Turn]", record: dict[str, Any]
+) -> None:
     event = record.get("event") if isinstance(record.get("event"), dict) else None
     block = event or record
     block_type = block.get("type") or block.get("kind")
@@ -107,7 +111,9 @@ def ingest_record(turns: "OrderedDict[int | str, Turn]", record: dict[str, Any])
     elif block_type in {"assistant_text", "assistant_message", "assistant"}:
         append_text(turn.assistant, block)
     elif block_type == "tool_call":
-        name = str(block.get("tool") or block.get("name") or block.get("function") or "?")
+        name = str(
+            block.get("tool") or block.get("name") or block.get("function") or "?"
+        )
         turn.tool_calls.append(ToolCall(name=name, input=tool_input(block)))
 
 
