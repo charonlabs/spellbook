@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Homunculus state machine — Spellbook</title>
+  <style>
+    :root {
+      --ink: #e8edf5;
+      --muted: #98a4b7;
+      --faint: #667085;
+      --paper: #080b12;
+      --panel: #0e131d;
+      --panel-2: #121927;
+      --line: #263248;
+      --session: #6ee7b7;
+      --round: #7dd3fc;
+      --awareness: #c4b5fd;
+      --memory: #fbbf24;
+      --pressure: #fb7185;
+      --inbound: #67e8f9;
+      --failure: #f87171;
+      --future: #e879f9;
+      --warning: #f59e0b;
+      --focus: #ffffff;
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% -5%, rgba(124, 58, 237, .16), transparent 30rem),
+        radial-gradient(circle at 92% 12%, rgba(14, 165, 233, .12), transparent 32rem),
+        var(--paper);
+      font: 15px/1.55 var(--sans);
+    }
+    a { color: #a5d8ff; text-underline-offset: 3px; }
+    code, .mono { font-family: var(--mono); }
+    code { color: #d8e5ff; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, a:focus-visible {
+      outline: 2px solid #fff;
+      outline-offset: 3px;
+    }
+
+    .shell { width: min(1760px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 56px 0 30px; }
+    .kicker {
+      color: var(--session);
+      font: 700 12px/1 var(--mono);
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 1000px;
+      margin: 15px 0 12px;
+      font-size: clamp(38px, 6vw, 78px);
+      line-height: .98;
+      letter-spacing: -.055em;
+      font-weight: 760;
+    }
+    .lede {
+      max-width: 920px;
+      color: #bcc6d7;
+      font-size: clamp(16px, 2vw, 21px);
+    }
+    .meta-row { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 22px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(14, 19, 29, .72);
+      color: #b6c0d0;
+      font: 12px/1.2 var(--mono);
+    }
+    .pill b { color: #fff; }
+
+    .notice {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      margin: 10px 0 28px;
+      padding: 15px 17px;
+      border: 1px solid rgba(232, 121, 249, .38);
+      border-radius: var(--radius);
+      background: rgba(79, 20, 91, .18);
+    }
+    .notice strong { color: #f0abfc; }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 14px;
+      align-items: start;
+    }
+    .map-card, .inspector, .section-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(14, 19, 29, .92);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .2);
+    }
+    .map-card { min-width: 0; overflow: hidden; }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #0b1019;
+    }
+    .tool-button, .layer-button, .walk-button {
+      border: 1px solid #2a3850;
+      border-radius: 9px;
+      background: #121a28;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .tool-button:hover, .layer-button:hover, .walk-button:hover { border-color: #52627c; }
+    .layer-button[aria-pressed="false"] { opacity: .42; filter: grayscale(.7); }
+    .layer-button::before {
+      content: "";
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: var(--layer-color, #fff);
+      box-shadow: 0 0 12px var(--layer-color, #fff);
+    }
+    .search {
+      min-width: 180px;
+      flex: 1 1 180px;
+      border: 1px solid #2a3850;
+      border-radius: 9px;
+      background: #090d15;
+      color: #fff;
+      padding: 7px 10px;
+    }
+    .viewport {
+      position: relative;
+      height: min(73vh, 900px);
+      min-height: 560px;
+      overflow: hidden;
+      cursor: grab;
+      background:
+        linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        #080c13;
+      background-size: 24px 24px;
+    }
+    .viewport.dragging { cursor: grabbing; }
+    #machine { width: 100%; height: 100%; display: block; user-select: none; }
+    .map-help {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(8, 12, 19, .86);
+      color: var(--muted);
+      font: 11px/1.3 var(--mono);
+      pointer-events: none;
+    }
+
+    .lane { fill: rgba(255,255,255,.011); stroke: #1c2638; stroke-width: 1; }
+    .lane-title { fill: #65738a; font: 700 14px var(--mono); letter-spacing: .1em; }
+    .edge-line { fill: none; stroke: #516079; stroke-width: 2; opacity: .72; marker-end: url(#arrow); }
+    .edge-line.future { stroke: var(--future); stroke-dasharray: 9 7; }
+    .edge-line.failure { stroke: var(--failure); }
+    .edge-hit { fill: none; stroke: transparent; stroke-width: 15; cursor: pointer; }
+    .edge-label-bg { fill: #080c13; stroke: #273349; stroke-width: 1; }
+    .edge-label { fill: #b2bfd1; font: 11px var(--mono); pointer-events: none; }
+    .edge-group:hover .edge-line, .edge-group.selected .edge-line { stroke: #fff; stroke-width: 3.2; opacity: 1; }
+    .edge-group.dim { opacity: .08; }
+    .edge-group.hidden { display: none; }
+    .edge-group.walk-active .edge-line { stroke: #fff; stroke-width: 4; opacity: 1; filter: drop-shadow(0 0 5px rgba(255,255,255,.8)); }
+
+    .node { cursor: pointer; transition: opacity .18s; }
+    .node-plate { fill: #111927; stroke: var(--node-color); stroke-width: 1.6; rx: 14; }
+    .node:hover .node-plate, .node.selected .node-plate { stroke: #fff; stroke-width: 3; }
+    .node-kicker { fill: var(--node-color); font: 700 11px var(--mono); letter-spacing: .06em; }
+    .node-title { fill: #f3f6fb; font: 700 16px var(--sans); }
+    .node-sub { fill: #9da9bb; font: 12px var(--sans); }
+    .node.dim { opacity: .11; }
+    .node.hidden { display: none; }
+    .node.walk-active .node-plate { stroke: #fff; stroke-width: 4; filter: drop-shadow(0 0 8px rgba(255,255,255,.6)); }
+    .node.find-match .node-plate { stroke: #fde68a; stroke-width: 4; filter: drop-shadow(0 0 6px rgba(251,191,36,.55)); }
+
+    .inspector {
+      position: sticky;
+      top: 12px;
+      overflow: hidden;
+    }
+    .inspector-head { padding: 15px 17px; border-bottom: 1px solid var(--line); }
+    .inspector-head small { color: var(--muted); font-family: var(--mono); }
+    .inspector-body { padding: 17px; max-height: calc(100vh - 130px); overflow: auto; }
+    .inspector h2 { margin: 4px 0 10px; font-size: 23px; line-height: 1.1; }
+    .inspector p { color: #bac4d3; }
+    .refs { display: grid; gap: 7px; margin-top: 16px; }
+    .ref {
+      display: block;
+      padding: 8px 9px;
+      border: 1px solid #2a3850;
+      border-radius: 8px;
+      background: #0a0f18;
+      font: 11px/1.35 var(--mono);
+      overflow-wrap: anywhere;
+    }
+    .inspector-note { padding: 11px; border-left: 3px solid var(--warning); background: rgba(245,158,11,.08); color: #fbd38d; }
+
+    .walkthrough-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: #0b1019;
+    }
+    .walk-button.active { border-color: #fff; background: #1d2a3f; }
+    .walk-status { margin-left: auto; color: var(--muted); font: 11px var(--mono); }
+
+    main > section { padding-top: 64px; }
+    .section-title { margin: 0 0 10px; font-size: clamp(27px, 4vw, 46px); letter-spacing: -.035em; }
+    .section-intro { max-width: 900px; color: #aeb9ca; font-size: 17px; }
+    .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
+    .section-card { padding: 18px; }
+    .section-card h3 { margin: 0 0 8px; font-size: 18px; }
+    .section-card p { margin: 0; color: #aeb9ca; }
+    .eyebrow { color: var(--muted); font: 700 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+
+    .table-wrap { margin-top: 22px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; background: #0c111a; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid #202b3d; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; z-index: 1; background: #131b2a; color: #e9eef7; font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    td { color: #b7c1d1; }
+    tr:last-child td { border-bottom: 0; }
+
+    .walk-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 22px; }
+    .walk-card { border-top: 3px solid var(--round); }
+    .walk-card:nth-child(2) { border-top-color: var(--pressure); }
+    .walk-card:nth-child(3) { border-top-color: var(--awareness); }
+    .walk-card ol { padding-left: 22px; color: #b6c0d0; }
+    .walk-card li { margin: 9px 0; }
+
+    .surprises { display: grid; gap: 10px; margin-top: 22px; }
+    .surprise {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      padding: 17px;
+      border: 1px solid rgba(248, 113, 113, .28);
+      border-radius: 14px;
+      background: rgba(82, 20, 25, .13);
+    }
+    .surprise-index { color: var(--failure); font: 800 20px var(--mono); }
+    .surprise h3 { margin: 0 0 5px; }
+    .surprise p { margin: 0; color: #bbc4d2; }
+
+    .future-box { border-color: rgba(232,121,249,.38); background: rgba(67,19,76,.14); }
+    footer { margin-top: 80px; padding: 28px 0 50px; border-top: 1px solid var(--line); color: var(--muted); }
+
+    @media (max-width: 1100px) {
+      .workspace { grid-template-columns: 1fr; }
+      .inspector { position: static; }
+      .inspector-body { max-height: none; }
+      .card-grid, .walk-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 700px) {
+      .shell { width: min(100% - 18px, 1760px); }
+      header { padding-top: 36px; }
+      .viewport { height: 68vh; min-height: 480px; }
+      .card-grid, .walk-grid { grid-template-columns: 1fr; }
+      .walk-status { width: 100%; margin-left: 0; }
+      .surprise { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="shell">
+    <div class="kicker">Spellbook / permanent runtime reference</div>
+    <h1>The Homunculus,<br>all at once.</h1>
+    <p class="lede">Every current state, transition, lifecycle hook, background integration boundary, memory projection, ambient route, and failure edge—traced to the code that makes it true.</p>
+    <div class="meta-row">
+      <span class="pill"><b>branch</b> dev</span>
+      <span class="pill"><b>commit</b> 7f4ea63</span>
+      <span class="pill"><b>traced</b> 2026-07-15</span>
+      <span class="pill"><b>artifact</b> offline / single file</span>
+      <a class="pill" href="homunculus-state-machine.md"><b>prose</b> open Markdown reference</a>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="notice">
+      <span aria-hidden="true">◇</span>
+      <div><strong>How to read this map.</strong> Solid edges are current runtime behavior. Dashed magenta edges are the only future Sleep attachment points supported by the design. Click any node or edge for its cited implementation. Drag to pan; wheel or controls zoom.</div>
+    </div>
+
+    <section aria-labelledby="map-heading" style="padding-top:0">
+      <h2 id="map-heading" class="visually-hidden" style="position:absolute;left:-10000px">Interactive state machine</h2>
+      <div class="workspace">
+        <div class="map-card">
+          <div class="toolbar" id="toolbar">
+            <button class="tool-button" type="button" data-action="zoom-in" aria-label="Zoom in">＋</button>
+            <button class="tool-button" type="button" data-action="zoom-out" aria-label="Zoom out">−</button>
+            <button class="tool-button" type="button" data-action="reset">Reset view</button>
+            <input id="search" class="search" type="search" placeholder="Find a state, edge, file…" aria-label="Search map">
+          </div>
+          <div class="toolbar" id="layer-controls" aria-label="Diagram layers"></div>
+          <div class="viewport" id="viewport">
+            <svg id="machine" viewBox="0 0 1800 2760" role="img" aria-labelledby="svg-title svg-desc">
+              <title id="svg-title">Interactive Homunculus state machine</title>
+              <desc id="svg-desc">A layered diagram of session, round, awareness, memory, pressure, inbound, failure, and future Sleep states.</desc>
+            </svg>
+            <div class="map-help">drag · wheel zoom · click for provenance</div>
+          </div>
+          <div class="walkthrough-bar" id="walk-controls">
+            <span class="eyebrow">Narrated paths</span>
+            <button class="walk-button" type="button" data-walk="message">A · Message arrives</button>
+            <button class="walk-button" type="button" data-walk="planner">B · Planner compacts</button>
+            <button class="walk-button" type="button" data-walk="detection">C · Detection completes</button>
+            <button class="tool-button" type="button" data-action="walk-prev">←</button>
+            <button class="tool-button" type="button" data-action="walk-next">→</button>
+            <button class="tool-button" type="button" data-action="walk-clear">Clear</button>
+            <span class="walk-status" id="walk-status">Choose a walkthrough</span>
+          </div>
+        </div>
+
+        <aside class="inspector" aria-live="polite">
+          <div class="inspector-head"><small id="inspector-kind">MAP KEY</small></div>
+          <div class="inspector-body" id="inspector">
+            <h2>Four machines, one runtime</h2>
+            <p><b>SessionManager</b> owns outer phases. <b>run_loop</b> owns round order. <b>Homunculus / BlockManager</b> own awareness and memory projections. <b>CoreAppRuntime</b> owns transport and ambient activity.</p>
+            <p>The transcript is canonical. Provider context, detector buffers, TTL collapse, gas pressure, and the frontier are projections or derived state.</p>
+            <div class="refs">
+              <a class="ref" href="../spellbook/session_manager.py#L134">spellbook/session_manager.py:134-187</a>
+              <a class="ref" href="../spellbook/loop.py#L29">spellbook/loop.py:29-105</a>
+              <a class="ref" href="../spellbook/homunculus/homunculus.py#L49">spellbook/homunculus/homunculus.py:49-100</a>
+              <a class="ref" href="../spellbook/app/runtime.py#L47">spellbook/app/runtime.py:47-110</a>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="profiles" aria-labelledby="profiles-title">
+      <div class="eyebrow">Composition seam</div>
+      <h2 class="section-title" id="profiles-title">SessionProfile gates the machine</h2>
+      <p class="section-intro"><code>session_type</code> persists the alias; <code>SessionProfile</code> supplies orthogonal runtime capabilities. Fork profiles deliberately lack ambient, detection, injection, and conduit surfaces.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Profile</th><th>Hom hooks</th><th>Detection</th><th>Skills</th><th>Injection</th><th>Time</th><th>Hearth</th><th>Conduits</th><th>Source</th></tr></thead>
+          <tbody>
+            <tr><td><code>MAIN</code></td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td><a href="../spellbook/profiles.py#L65">profiles.py:65-76</a></td></tr>
+            <tr><td><code>CUSTOM</code></td><td>yes</td><td>yes</td><td>conditional</td><td>no</td><td>no</td><td>no</td><td>yes</td><td><a href="../spellbook/profiles.py#L78">profiles.py:78-89</a></td></tr>
+            <tr><td><code>BLOCK_DETECTOR</code></td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td><a href="../spellbook/profiles.py#L91">profiles.py:91-103</a></td></tr>
+            <tr><td><code>BLOCK_SUMMARIZER</code></td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td><a href="../spellbook/profiles.py#L105">profiles.py:105-117</a></td></tr>
+            <tr><td><code>QUANTUM</code></td><td>yes</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td>no</td><td><a href="../spellbook/profiles.py#L119">profiles.py:119-131</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="hooks" aria-labelledby="hooks-title">
+      <div class="eyebrow">Round anatomy</div>
+      <h2 class="section-title" id="hooks-title">The five hooks, in actual order</h2>
+      <p class="section-intro">Composite subscribers run serially: app event lifecycle first, then recording, Homunculus, optional skills, optional active injection, optional timekeeper, and FooterController last. That final position lets same-hook producers queue a footer that becomes visible immediately.</p>
+      <div class="card-grid">
+        <article class="section-card"><div class="eyebrow">before_round</div><h3>Assemble this request</h3><p>Refresh skills → inject active inbound → observe clock rollover → drain/dedup/render all footers as one system block. <a href="../spellbook/session_manager.py#L421">session_manager.py:421-450</a></p></article>
+        <article class="section-card"><div class="eyebrow">after_generate</div><h3>Make output canonical</h3><p>Publish, record, append global block ids, store token boundary observations, accumulate detector input, update gas. <a href="../spellbook/homunculus/homunculus.py#L499">homunculus.py:499-505</a></p></article>
+        <article class="section-card"><div class="eyebrow">after_execute</div><h3>Absorb consequences</h3><p>Publish and record tool results, append ids, accumulate detector input, register large result TTLs. <a href="../spellbook/homunculus/homunculus.py#L507">homunculus.py:507-510</a></p></article>
+        <article class="section-card"><div class="eyebrow">between_rounds</div><h3>Integrate at the boundary</h3><p>Harvest Nursery → tick round TTLs → check planner → rerender if memory projection changed. <a href="../spellbook/homunculus/homunculus.py#L919">homunculus.py:919-925</a></p></article>
+        <article class="section-card"><div class="eyebrow">on_loop_exit</div><h3>Close the loop</h3><p>Harvest Nursery for every stop reason; tick end-turn TTLs only for literal <code>end_turn</code>. <a href="../spellbook/homunculus/homunculus.py#L927">homunculus.py:927-930</a></p></article>
+        <article class="section-card"><div class="eyebrow">session hooks</div><h3>Frame the turn</h3><p>Idle enter/exit, turn start/end, system response, and shutdown stay outside the round machine. <a href="../spellbook/session_lifecycle.py#L15">session_lifecycle.py:15-40</a></p></article>
+      </div>
+    </section>
+
+    <section id="forks" aria-labelledby="forks-title">
+      <div class="eyebrow">Derived work</div>
+      <h2 class="section-title" id="forks-title">Three forks; one integration law</h2>
+      <p class="section-intro">A <code>PreparedFork</code> is only a coroutine plus an id. Nursery completion makes a result available. Parent-owned boundary code validates, records, applies, discards, announces, and writes fork shutdown.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Config</th><th>Child sees</th><th>Returns</th><th>Source</th></tr></thead>
+          <tbody>
+            <tr><td><code>block_detector</code></td><td>Completed ranges, semantic draft buffer, raw context suffix, detector tools/orientation</td><td>Completed and still-buffered ranges</td><td><a href="../spellbook/fork.py#L70">fork.py:70-80, 201-279</a></td></tr>
+            <tr><td><code>block_summarizer</code></td><td>One block plus prior summary context; parent model by default</td><td>One summary artifact</td><td><a href="../spellbook/fork.py#L83">fork.py:83-88, 391-465</a></td></tr>
+            <tr><td><code>quantum</code></td><td>A quiescent copied transcript, rewritten session id/profile/tools, linked assets</td><td>Final text, optional JSON, rounds, stop reason, durable path</td><td><a href="../spellbook/fork.py#L91">fork.py:91-126, 281-389</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card-grid">
+        <article class="section-card"><div class="eyebrow">1 · snapshot</div><h3>Assert quiescence</h3><p>Quantum refuses an unfinished parent turn, copies the transcript, rewrites child records, and symlinks assets. <a href="../spellbook/fork.py#L508">fork.py:508-573</a></p></article>
+        <article class="section-card"><div class="eyebrow">2 · run</div><h3>Summon before work</h3><p>Parent records summon, child receives one inbound instruction, and the runner races turn end against child exit. <a href="../spellbook/fork.py#L281">fork.py:281-341, 467-506</a></p></article>
+        <article class="section-card"><div class="eyebrow">3 · result</div><h3>Consumer applies explicitly</h3><p><code>SubmitResult</code> ends the child turn, but the parent is untouched until its consumer integrates and records shutdown. <a href="../spellbook/tools/quantum.py#L13">quantum.py:13-30</a></p></article>
+      </div>
+    </section>
+
+    <section id="walkthroughs" aria-labelledby="walks-title">
+      <div class="eyebrow">Narrated traces</div>
+      <h2 class="section-title" id="walks-title">Three ways through the machine</h2>
+      <p class="section-intro">Use the controls beneath the diagram for step-by-step highlighting. These prose versions remain searchable and printable.</p>
+      <div class="walk-grid">
+        <article class="section-card walk-card">
+          <h3>A · A message arrives</h3>
+          <ol>
+            <li>Runtime notes activity and enqueues a turn/injection.</li>
+            <li>Idle selects the first eligible message and enters running.</li>
+            <li>Turn start and inbound blocks become transcript truth.</li>
+            <li>Homunculus assigns ids, accumulates detection, and renders active memory plus tail.</li>
+            <li>Before-round producers run; FooterController injects one system footer block.</li>
+            <li>Generate/execute records and integrates blocks; eligible tool results register TTLs.</li>
+            <li>Between rounds harvests Nursery, ticks TTLs, checks Planner, and rerenders.</li>
+            <li>Detection may schedule whenever an append crosses its interval.</li>
+            <li>Loop exit harvests again; literal <code>end_turn</code> ticks end-turn TTLs; turn is closed.</li>
+          </ol>
+          <a class="ref" href="homunculus-state-machine.md#walkthrough-a--a-message-arrives">Full cited walkthrough in Markdown</a>
+        </article>
+        <article class="section-card walk-card">
+          <h3>B · The planner proposes compaction</h3>
+          <ol>
+            <li>Generation input usage updates TokenMeter and GasGauge.</li>
+            <li>Warning pressure selects the oldest ready full unpinned block.</li>
+            <li>Proposal is recorded, reflected, and delivered as a footer.</li>
+            <li>The entity may call Forget, with boundary and summary rechecks.</li>
+            <li>At forced pressure Planner consumes the proposal itself.</li>
+            <li>Apply-mode changes full to summary and invalidates render/count/gauge/proposal.</li>
+            <li>The next generation observes the smaller context and shows the gauge drop.</li>
+          </ol>
+          <a class="ref" href="homunculus-state-machine.md#walkthrough-b--the-planner-proposes-compaction">Full cited walkthrough in Markdown</a>
+        </article>
+        <article class="section-card walk-card">
+          <h3>C · A detection completes</h3>
+          <ol>
+            <li>Fork completion marks a Nursery job ready; memory stays untouched.</li>
+            <li>An explicit lifecycle boundary harvests it.</li>
+            <li>Simulation sorts, bounds, closes tool pairs, and finds a contiguous safe prefix.</li>
+            <li>Validation checks the semantic tiling and complete tool envelopes.</li>
+            <li>Success records shutdown/detection/block birth and schedules metrics/summary.</li>
+            <li>Each summary integration schedules the next oldest missing one.</li>
+            <li>Failure leaves semantic state untouched and queues a courtesy footer; partial success lands only the safe prefix.</li>
+          </ol>
+          <a class="ref" href="homunculus-state-machine.md#walkthrough-c--a-detection-completes">Full cited walkthrough in Markdown</a>
+        </article>
+      </div>
+    </section>
+
+    <section id="sleep" aria-labelledby="sleep-title">
+      <div class="eyebrow">Future, deliberately bounded</div>
+      <h2 class="section-title" id="sleep-title">Where Sleep may attach</h2>
+      <p class="section-intro">These four dashed edges are design annotations, not implemented behavior. No Sleep edge is drawn from detector completion, summary completion, hearth, or arbitrary quantum completion.</p>
+      <div class="card-grid">
+        <article class="section-card future-box"><div class="eyebrow">future 1</div><h3>Quiescent waking → dreaming</h3><p>Manual Sleep is an entity action; waking and dreaming are sequential and mutually exclusive. Current quantum snapshotting independently requires no unfinished turn. <span class="ref">memory-tree.md:83-111 · fork.py:508-535</span></p></article>
+        <article class="section-card future-box"><div class="eyebrow">future 2</div><h3>Dreaming → apply frontier</h3><p>The frontier already derives and plans without mutation. Slice 2 must execute through existing apply-mode records and report only transitions that landed. <a class="ref" href="../spellbook/dreaming/frontier.py#L1">frontier.py:1-10, 294-465</a></p></article>
+        <article class="section-card future-box"><div class="eyebrow">future 3</div><h3>Critical → forced Sleep</h3><p>Forced Sleep attaches at a quiescent boundary and advances existing consented narratives only; it authors nothing at the hard limit. <span class="ref">memory-tree.md:115-120 · frontier.py:650-658</span></p></article>
+        <article class="section-card future-box"><div class="eyebrow">future 4</div><h3>Manifest → wake / idle</h3><p>Every wake announces deltas, debts, and chapter-bearing dream transcript locations. Courtesy is part of the transition. <a class="ref" href="../spellbook/dreaming/frontier.py#L477">frontier.py:477-595</a></p></article>
+      </div>
+    </section>
+
+    <section id="surprises" aria-labelledby="surprises-title">
+      <div class="eyebrow">Trace findings</div>
+      <h2 class="section-title" id="surprises-title">⚠ Surprises</h2>
+      <p class="section-intro">These are behaviors that were not obvious from the intended architecture. They are findings, not edits made by this documentation card.</p>
+      <div class="surprises">
+        <article class="surprise"><div class="surprise-index">01</div><div><h3>Active injection is recorded but not integrated into Homunculus coordinates</h3><p><code>InboundInjectionRoundLifecycle</code> appends to the round and transcript, never to BlockManager. The next live generation reuses the omitted id; replay later includes the recorded injection. Live and canonical coordinates can drift. <a href="../spellbook/inbound.py#L84">inbound.py:84-94</a> · <a href="../spellbook/homunculus/homunculus.py#L105">homunculus.py:105-108, 499-510</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">02</div><div><h3><code>dreaming</code> exists only in the state types</h3><p>Current runtime assignments enter suspended, idle, and running only. Slice 2 needs an actual entrance, exit, and failure contract. <a href="../spellbook/session_manager.py#L58">session_manager.py:58, 122-140</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">03</div><div><h3>End-turn TTL means literal <code>end_turn</code></h3><p>Refusal, cancellation, max tokens, error, pause-turn, stop-sequence, and unspecified exits all close a manager turn but do not decrement end-turn TTLs. <a href="../spellbook/homunculus/homunculus.py#L927">homunculus.py:927-930</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">04</div><div><h3>Fatal exceptions bypass <code>on_loop_exit</code></h3><p>Retry exhaustion or a non-<code>ToolError</code> tool exception can escape before <code>end_turn</code>, leaving replay to identify an unfinished turn. <a href="../spellbook/loop.py#L48">loop.py:48-105</a> · <a href="../spellbook/rehydrator.py#L290">rehydrator.py:290-315</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">05</div><div><h3>A detector success may intentionally land only a prefix</h3><p>Out-of-order completions can be deferred and later buffered ranges discarded while a contiguous prefix safely crystallizes. This degraded success is disclosed by footer. <a href="../spellbook/homunculus/block_detector.py#L165">block_detector.py:165-190</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">06</div><div><h3>Forget is also a summary scheduler</h3><p>If its target summary is missing, Forget can queue that block immediately instead of waiting for the oldest-first cascade, then asks the entity to retry. <a href="../spellbook/homunculus/block_manager.py#L901">block_manager.py:901-953</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">07</div><div><h3>Bash timeout and background detach intentionally diverge</h3><p>Timeout kills the process group. A shell already exited while a descendant holds stdout returns after drain grace and leaves the descendant running, with an incomplete-output note. <a href="../spellbook/tools/filesystem.py#L382">filesystem.py:382-422, 469-514</a></p></div></article>
+      </div>
+    </section>
+
+    <section id="ledger" aria-labelledby="ledger-title">
+      <div class="eyebrow">Audit surface</div>
+      <h2 class="section-title" id="ledger-title">Diagram edge ledger</h2>
+      <p class="section-intro">Generated from the diagram’s own edge data. If an edge is visible above, its trigger and provenance are visible here.</p>
+      <div class="table-wrap"><table><thead><tr><th>Edge</th><th>Trigger</th><th>Layer</th><th>Provenance</th></tr></thead><tbody id="edge-ledger"></tbody></table></div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">Code is source of truth. Re-audit line provenance after runtime edits. Companion: <a href="homunculus-state-machine.md">greppable Markdown reference</a>.</div>
+  </footer>
+
+  <script>
+    "use strict";
+
+    const layerMeta = {
+      session: { label: "Session", color: "#6ee7b7" },
+      round: { label: "Round hooks", color: "#7dd3fc" },
+      awareness: { label: "Detection / forks", color: "#c4b5fd" },
+      memory: { label: "Memory / TTL", color: "#fbbf24" },
+      pressure: { label: "Gauge / planner", color: "#fb7185" },
+      inbound: { label: "Inbound / ambient", color: "#67e8f9" },
+      failure: { label: "Failure", color: "#f87171" },
+      future: { label: "Future Sleep", color: "#e879f9" }
+    };
+
+    const nodes = [
+      {id:"build", layer:"session", x:45, y:80, kicker:"S0", title:"Build / resume", sub:"new or existing transcript", desc:"New sessions write session and refusal-policy records; both new and resumed sessions converge on strict typed rehydration.", refs:["spellbook/session_manager.py:228-307"]},
+      {id:"rehydrate", layer:"session", x:290, y:80, kicker:"S1", title:"Rehydrated world", sub:"transcript → runtime state", desc:"Reconstruct blocks, semantic ranges/artifacts/modes/pins, plan proposal, pending footers, TTLs, runtime config, skills, and unfinished-turn state.", refs:["spellbook/rehydrator.py:112-315"]},
+      {id:"suspended", layer:"session", x:535, y:80, kicker:"S2 / S14", title:"Suspended", sub:"built or fully shut down", desc:"Managers are returned suspended; after shutdown the outer loop returns here after Homunculus nursery and lifecycle closure.", refs:["spellbook/session_manager.py:122-143"]},
+      {id:"idle", layer:"session", x:780, y:80, kicker:"S3", title:"Idle", sub:"waiting for eligible inbound", desc:"Enter-idle hooks fire, then the queue waits for turn or inject. Footer-only messages do not wake it; slash commands are handled without a model turn.", refs:["spellbook/session_manager.py:148-160","spellbook/inbound.py:60-76"]},
+      {id:"running", layer:"session", x:1025, y:80, kicker:"S4", title:"Running / turn", sub:"record, render, loop", desc:"Each pending turn receives a UUID, canonical turn-start records, session hooks, a cancel token, Homunculus rendering, and one run_loop invocation.", refs:["spellbook/session_manager.py:162-187"]},
+      {id:"turn-ended", layer:"session", x:1270, y:80, kicker:"SESSION HOOK", title:"Turn ended", sub:"record + activity + queue decision", desc:"The manager records turn_end, clears the cancel token, and invokes on_turn_ended before choosing the next queued turn or idle.", refs:["spellbook/session_manager.py:184-187","spellbook/recorder.py:199-206"]},
+      {id:"shutdown", layer:"session", x:1515, y:80, kicker:"S14", title:"Shutdown", sub:"cancel, wake queue, harvest", desc:"Shutdown requests cancellation, wakes idle, stops hearth, cancels/harvests Nursery, closes debug and session hooks, then app shutdown requests process SIGTERM.", refs:["spellbook/session_manager.py:134-143","spellbook/session_manager.py:213-217","spellbook/app/runtime.py:505-533"]},
+      {id:"dreaming", layer:"future", x:1270, y:235, kicker:"FUTURE S5", title:"Dreaming", sub:"reserved; never assigned today", desc:"The type admits dreaming, but current runtime code never enters it. Design makes waking and dreaming sequential, mutually exclusive states.", note:"Future only. The current runtime has no entrance, exit, or failure recovery for this state.", refs:["spellbook/session_manager.py:58","spellbook/app/protocol.py:36-52","Forge memory-tree.md:100-111"]},
+      {id:"frontier", layer:"future", x:1515, y:235, kicker:"FUTURE", title:"Apply frontier + manifest", sub:"existing modes → honest wake", desc:"The existing pure frontier computes requested mode transitions. Slice 2 must apply them through current apply-mode records and build a manifest from actual deltas and debts.", refs:["spellbook/dreaming/frontier.py:1-10","spellbook/dreaming/frontier.py:294-465","spellbook/dreaming/frontier.py:477-595"]},
+
+      {id:"before", layer:"round", x:45, y:500, kicker:"R0 · HOOK", title:"before_round", sub:"skills → inject → time → footer", desc:"Last request-assembly boundary. Main-profile active injection and same-hook footer producers run before FooterController drains and records one system footer block.", refs:["spellbook/session_manager.py:421-450","spellbook/footer.py:164-185"]},
+      {id:"generate", layer:"round", x:290, y:500, kicker:"R1", title:"Generate / stream", sub:"surface once; stream or retry", desc:"Build the provider surface, stream events through lifecycle, and race every next event against cooperative cancellation.", refs:["spellbook/generator.py:67-170"]},
+      {id:"after-generate", layer:"round", x:535, y:500, kicker:"R2 · HOOK", title:"after_generate", sub:"record + ids + usage + gas", desc:"Generation blocks become transcript truth and Homunculus context; token boundary observations, detector accumulation, and GasGauge input update here.", refs:["spellbook/loop.py:53-59","spellbook/homunculus/homunculus.py:499-505"]},
+      {id:"execute", layer:"round", x:780, y:500, kicker:"R3", title:"Execute tools", sub:"ordered, cancellable dispatch", desc:"On handled paths each declared call gets one result. Unknown tools, bad inputs, and ToolError become error results; cancellation fills pending results. Unexpected tool exceptions escape.", refs:["spellbook/executor.py:61-145"]},
+      {id:"after-execute", layer:"round", x:1025, y:500, kicker:"R4 · HOOK", title:"after_execute", sub:"record + ids + TTL register", desc:"Tool result blocks become transcript and Homunculus context; eligible large text/image results auto-register for TTL collapse.", refs:["spellbook/loop.py:70-75","spellbook/homunculus/homunculus.py:507-510"]},
+      {id:"between", layer:"round", x:1270, y:500, kicker:"R5 · HOOK", title:"between_rounds", sub:"harvest → TTL → planner → render", desc:"Explicit awareness integration boundary after a complete nonterminal tool round.", refs:["spellbook/homunculus/homunculus.py:919-925"]},
+      {id:"loop-exit", layer:"round", x:1515, y:500, kicker:"R6 · HOOK", title:"on_loop_exit", sub:"harvest; end_turn TTL only", desc:"Every normal loop stop harvests Nursery. Only the literal end_turn stop reason ticks end-turn TTLs.", note:"Fatal exceptions can bypass this node because run_loop has no enclosing try/finally.", refs:["spellbook/homunculus/homunculus.py:927-930","spellbook/loop.py:48-105"]},
+
+      {id:"append", layer:"awareness", x:45, y:885, kicker:"C0", title:"Append context", sub:"assign global block ids", desc:"Extend canonical in-memory context, monotonically advance next_block_id, store generation usage boundaries, and invoke maybe_detect.", refs:["spellbook/homunculus/block_manager.py:135-151"]},
+      {id:"accumulate", layer:"awareness", x:290, y:885, kicker:"C1", title:"Detector accumulation", sub:"canonical source + derived suffix", desc:"The detector extends its accumulated source, counts blocks toward the interval, and derives remaining raw context from semantic ranges.", refs:["spellbook/homunculus/block_detector.py:1-29","spellbook/homunculus/block_detector.py:108-123"]},
+      {id:"prepared", layer:"awareness", x:535, y:885, kicker:"C2", title:"Prepared detector fork", sub:"typed config + coroutine + id", desc:"At interval or force-detect, the detector builds structured completed/buffered/raw context and asks ForkRunner for a PreparedFork.", refs:["spellbook/homunculus/block_detector.py:125-148","spellbook/fork.py:135-138"]},
+      {id:"nursery", layer:"awareness", x:780, y:885, kicker:"ASYNC", title:"Nursery running / ready", sub:"completion is not mutation", desc:"Best-effort tasks may complete, fail, cancel, or become stale. Completion only queues an id for later owner-controlled harvest.", refs:["spellbook/nursery.py:1-5","spellbook/nursery.py:115-165"]},
+      {id:"simulate", layer:"awareness", x:1025, y:885, kicker:"C3", title:"Simulate + sanitize", sub:"sort, bound, close, split", desc:"Before mutation: bound ranges to known context, normalize tool pairs, accept a contiguous completed prefix, and classify safe/deferred/discarded buffers.", refs:["spellbook/homunculus/block_detector.py:156-190","spellbook/homunculus/block_detector.py:222-383"]},
+      {id:"validate", layer:"awareness", x:1270, y:885, kicker:"C4", title:"Validate candidates", sub:"tiling + tool closure", desc:"Candidate semantic blocks must be ordered, form a gapless canonical prefix, stay in known context, and contain complete tool-call/result envelopes.", refs:["spellbook/homunculus/block_manager.py:1308-1435"]},
+      {id:"crystallize", layer:"awareness", x:1515, y:885, kicker:"C5", title:"Block crystallizes", sub:"records + footer + metrics + summary", desc:"Only after validation: record shutdown and sanitized detection, append/record semantic blocks, queue courtesy, and schedule metrics and summary work.", refs:["spellbook/homunculus/block_detector.py:192-200","spellbook/homunculus/block_manager.py:602-643"]},
+      {id:"discard", layer:"failure", x:1270, y:1050, kicker:"F2", title:"Graceful discard", sub:"no semantic mutation", desc:"Validation failure records fork shutdown, emits debug detail, and queues a courtesy footer without persisting the rejected detection.", refs:["spellbook/homunculus/block_manager.py:539-557","spellbook/homunculus/block_manager.py:661-692"]},
+      {id:"summary-job", layer:"awareness", x:290, y:1215, kicker:"C7", title:"Summary job", sub:"oldest missing or Forget target", desc:"Normal cascade schedules the oldest missing summary with up to five prior summaries. Forget can schedule its own target on demand.", refs:["spellbook/homunculus/block_manager.py:836-953"]},
+      {id:"summary-ready", layer:"awareness", x:535, y:1215, kicker:"C8", title:"Summary integrated", sub:"stable id validation + cascade", desc:"Integration validates index, stable id, and absence of an artifact, records summary, then schedules the next missing block.", refs:["spellbook/homunculus/block_manager.py:745-834"]},
+      {id:"metrics", layer:"awareness", x:780, y:1215, kicker:"C6", title:"Metrics integrated", sub:"direct slice count + stable id", desc:"Metrics integration ignores stale index/id targets and records full/current token counts only for the still-matching block.", refs:["spellbook/homunculus/block_manager.py:694-708","spellbook/homunculus/token_meter.py:111-127"]},
+      {id:"fork-types", layer:"awareness", x:1025, y:1215, kicker:"FORK UNION", title:"Detector · Summary · Quantum", sub:"three typed configs", desc:"ForkRunner dispatches exactly three config kinds. Each records summon; parent-owned integration records shutdown on success, discard, error, cancellation, or shutdown.", refs:["spellbook/fork.py:70-138","spellbook/fork.py:185-200","spellbook/recorder.py:306-327"]},
+      {id:"quantum", layer:"awareness", x:1270, y:1215, kicker:"QUANTUM", title:"Quiescent snapshot", sub:"copy + rewrite + linked assets", desc:"Quantum asserts no unfinished turn, copies and rewrites transcript/session/tool records, links assets, runs one inbound instruction, and returns without applying to parent.", refs:["spellbook/fork.py:281-389","spellbook/fork.py:508-573"]},
+      {id:"fork-failure", layer:"failure", x:1515, y:1215, kicker:"F6", title:"Fork failure", sub:"shutdown note; no fabricated result", desc:"Nursery exposes errors/cancellation for harvest. Quantum preserves its directory and writes an error-noted shutdown record.", refs:["spellbook/nursery.py:164-202","spellbook/homunculus/block_manager.py:1132-1158","spellbook/fork.py:367-387"]},
+
+      {id:"full", layer:"memory", x:45, y:1515, kicker:"M0", title:"Full block", sub:"original context slice", desc:"Full mode projects the block's canonical context range. New semantic blocks are born here without summary or metrics.", refs:["spellbook/homunculus/block_manager.py:179-188","spellbook/homunculus/block_manager.py:645-659"]},
+      {id:"summary", layer:"memory", x:290, y:1515, kicker:"M1", title:"Summary block", sub:"labeled memory projection", desc:"Summary mode renders a spellbook-memory block. Pinned facets splice expanded original conversation while preserving provider/tool-pair validity.", refs:["spellbook/homunculus/common.py:78-106","spellbook/homunculus/block_manager.py:233-251"]},
+      {id:"pair-parent", layer:"memory", x:535, y:1515, kicker:"M2", title:"Pair parent", sub:"narrative blocks render here", desc:"The even-index parent of an adjacent dream chapter owns the narrative rendering and provenance paths.", refs:["spellbook/ir_types.py:483-504","spellbook/homunculus/block_manager.py:279-328"]},
+      {id:"pair-child", layer:"memory", x:780, y:1515, kicker:"M3", title:"Pair child", sub:"zero-token pointer", desc:"The odd-index child renders nothing, holds zero tokens, and points to its parent. Both halves must share active mode and narrative id.", refs:["spellbook/ir_types.py:507-541","spellbook/homunculus/block_manager.py:279-328"]},
+      {id:"pin", layer:"memory", x:1025, y:1515, kicker:"MEMORY TOOL", title:"Pin block / facet", sub:"protect full or splice detail", desc:"Whole-block Pin restores full mode if needed; facet Pin keeps summary mode but expands selected original conversation. Both record pins and invalidate Planner.", refs:["spellbook/homunculus/block_manager.py:989-1026"]},
+      {id:"recall", layer:"memory", x:1270, y:1515, kicker:"MEMORY TOOL", title:"Recall", sub:"temporary tool-result detail", desc:"Recall returns original source in a tool result; it does not write a mode record. Pair memory redirects to chapter Recall for both source blocks.", refs:["spellbook/homunculus/block_manager.py:1028-1080"]},
+      {id:"reflect", layer:"memory", x:1515, y:1515, kicker:"MEMORY TOOL", title:"Reflect / Configure", sub:"inspect state; tune TTL + hearth", desc:"Reflect shows budget, proposal, blocks, facets and tail or previews one summary. Configure reads/writes replayable TTL and hearth runtime tenants.", refs:["spellbook/homunculus/homunculus.py:163-324","spellbook/homunculus/homunculus.py:366-497"]},
+
+      {id:"ttl-untracked", layer:"memory", x:45, y:1805, kicker:"T0", title:"Tool result", sub:"canonical full output", desc:"Eligible non-error text/image results save full output to tool-outputs and record a replacement policy while preserving canonical transcript content.", refs:["spellbook/homunculus/tool_result_ttl.py:263-305","spellbook/homunculus/tool_result_ttl.py:521-556"]},
+      {id:"ttl-pending", layer:"memory", x:290, y:1805, kicker:"T1", title:"Pending TTL", sub:"round or end_turn ticks", desc:"Auto TTL defaults to three end turns. Manual ForgetToolResult registers zero immediately. Matching ticks decrement mutable derived state.", refs:["spellbook/homunculus/tool_result_ttl.py:269-371"]},
+      {id:"ttl-collapsed", layer:"memory", x:535, y:1805, kicker:"T2", title:"Collapsed projection", sub:"replacement at render time", desc:"At zero, only provider-facing tool result content changes. Transcript remains full; rerender and counts are invalidated.", refs:["spellbook/homunculus/tool_result_ttl.py:169-174","spellbook/homunculus/tool_result_ttl.py:511-519"]},
+      {id:"token-observe", layer:"pressure", x:780, y:1805, kicker:"G0", title:"Token observations", sub:"usage prefixes + direct slices", desc:"Provider generation usage seeds prefix observations and GasGauge input. Semantic metrics use direct slice counting with repair/chunk fallback.", refs:["spellbook/homunculus/token_meter.py:53-217","spellbook/homunculus/homunculus.py:499-505"]},
+      {id:"gauge", layer:"pressure", x:1025, y:1805, kicker:"G1", title:"Gas gauge", sub:"50K buckets; numeric regimes", desc:"Bucket changes queue a keyed priority-10 footer. Default regimes: warning 700K, forced 850K, critical 933K; invalidation yields unknown.", refs:["spellbook/homunculus/gas_gauge.py:28-68","spellbook/config.py:32-38"]},
+      {id:"proposal", layer:"pressure", x:1270, y:1805, kicker:"P1", title:"Planner proposal", sub:"oldest ready full block", desc:"At warning pressure Planner records and announces the oldest full, unpinned, summary-ready block. Reflect also exposes the proposal.", refs:["spellbook/homunculus/planner.py:25-63","spellbook/homunculus/homunculus.py:524-610"]},
+      {id:"planner-action", layer:"pressure", x:1515, y:1805, kicker:"P2", title:"Forget / forced action", sub:"entity or Planner consumes", desc:"The entity may call Forget in response; at medium pressure Planner calls the same path with source planner. Apply-mode invalidates rendering and gauge.", refs:["spellbook/homunculus/homunculus.py:574-610","spellbook/homunculus/block_manager.py:955-985"]},
+
+      {id:"queue", layer:"inbound", x:45, y:2110, kicker:"I0", title:"Inbound queue", sub:"turn · inject · footer", desc:"Turn and inject are turn-eligible. Footer waits for a round drain. Runtime distinguishes queued vs started based on running/pending state.", refs:["spellbook/inbound.py:9-81","spellbook/app/runtime.py:358-378"]},
+      {id:"inject", layer:"inbound", x:290, y:2110, kicker:"I1", title:"Active injection", sub:"round + transcript only ⚠", desc:"While running, injection drains into RoundContext and Recorder at before_round. It does not enter BlockManager, creating a live/replay coordinate drift risk.", note:"High-priority finding: the next generation is assigned live coordinates that omit this recorded block; replay later includes it.", refs:["spellbook/inbound.py:84-94","spellbook/homunculus/homunculus.py:105-108","spellbook/homunculus/homunculus.py:499-510"]},
+      {id:"footer", layer:"inbound", x:535, y:2110, kicker:"I2", title:"Footer pending", sub:"keyed, deduped, replayable", desc:"FooterController owns last-write-wins pending state. At before_round it drains priority order, records the drain, and injects one system spellbook block.", refs:["spellbook/footer.py:36-135","spellbook/footer.py:164-185"]},
+      {id:"conduit", layer:"inbound", x:780, y:2110, kicker:"I3", title:"Conduit routing", sub:"context · message · notification", desc:"Context becomes footer; message becomes inject; notification wakes only idle/turn-empty sessions and otherwise becomes footer.", refs:["spellbook/app/runtime.py:146-309"]},
+      {id:"hearth-wait", layer:"inbound", x:1025, y:2110, kicker:"H0", title:"Hearth waiting / skipped", sub:"disabled here; guarded tick", desc:"Scheduler exists only for a hearth-capable profile, then skips disabled settings, quiet hours, non-idle state, any pending inbound, or insufficient idle time.", refs:["spellbook/app/runtime.py:105-110","spellbook/hearth.py:251-278"]},
+      {id:"crackle", layer:"inbound", x:1270, y:2110, kicker:"H1", title:"Crackle turn", sub:"heartbeat + hour + gauge + amber", desc:"An eligible tick builds a system-origin normal turn, rechecks idle/queue under lock, submits it, and only then records last crackle time.", refs:["spellbook/hearth.py:149-196","spellbook/hearth.py:280-293","spellbook/app/runtime.py:137-144"]},
+      {id:"conduit-refuse", layer:"failure", x:1515, y:2110, kicker:"FAILURE", title:"Conduit refused", sub:"bodyless profile gate", desc:"Before type routing, profiles with conduit_surfaces=false raise. Detector, summarizer, and quantum profiles all disable conduits.", refs:["spellbook/app/runtime.py:163-169","spellbook/profiles.py:91-131"]},
+
+      {id:"retry", layer:"failure", x:290, y:2425, kicker:"F0", title:"Transient retry", sub:"up to 5; backoff + cancel", desc:"Retryable 500/529, overload/api, connection, and timeout errors reuse the same built surface with capped exponential backoff and jitter.", refs:["spellbook/generator.py:32-38","spellbook/generator.py:88-124"]},
+      {id:"refusal", layer:"failure", x:535, y:2425, kicker:"F1", title:"Refusal", sub:"canonical debug segments", desc:"Anthropic accumulates ordered text/thinking/partial-tool-json stream segments and emits canonical refusal truth, which exits as a non-tool stop reason.", refs:["spellbook/backends/anthropic.py:76-97","spellbook/backends/anthropic.py:189-261","spellbook/refusal.py:75-166"]},
+      {id:"forget-refuse", layer:"failure", x:780, y:2425, kicker:"F3", title:"Forget refused", sub:"torn tool closure", desc:"A semantic block splitting a call/result envelope remains full and receives a keyed footer explaining that boundaries must be repaired.", refs:["spellbook/homunculus/block_manager.py:955-985","spellbook/homunculus/block_manager.py:1364-1472"]},
+      {id:"bash-timeout", layer:"failure", x:1025, y:2425, kicker:"F4", title:"Bash timeout", sub:"TERM → 250ms → KILL group", desc:"Timeout kills the process group and raises ToolError with partial merged output; Executor returns that error to the model.", refs:["spellbook/tools/filesystem.py:408-487","spellbook/executor.py:123-131"]},
+      {id:"bash-detach", layer:"failure", x:1270, y:2425, kicker:"F4b", title:"Detached drain", sub:"shell exited; child holds pipe", desc:"After one-second drain grace, Bash returns an incomplete-output note and keeps a discard drain task so the background writer can continue.", refs:["spellbook/tools/filesystem.py:350-405","spellbook/tools/filesystem.py:489-514"]},
+      {id:"crash", layer:"failure", x:1515, y:2425, kicker:"F6", title:"Unfinished / crashed turn", sub:"normal exit hooks bypassed", desc:"Exhausted generation or unexpected tool exceptions can escape run_loop before end_turn. App logs task crash; replay marks the turn unfinished.", refs:["spellbook/generator.py:92-97","spellbook/session_manager.py:171-187","spellbook/rehydrator.py:290-315"]},
+      {id:"force-cancel", layer:"failure", x:1270, y:2600, kicker:"F5", title:"Forced task cancellation", sub:"CLI after 5s graceful wait", desc:"Interactive shutdown force-cancels the session task after five seconds, which can bypass manager finalization if cancellation lands inside shutdown work.", refs:["scripts/interactive.py:466-480"]}
+    ];
+
+    const edges = [
+      {id:"e-build-rehydrate", from:"build", to:"rehydrate", label:"typed read", layer:"session", ref:"spellbook/session_manager.py:248-307"},
+      {id:"e-rehydrate-suspended", from:"rehydrate", to:"suspended", label:"wire services", layer:"session", ref:"spellbook/session_manager.py:332-481"},
+      {id:"e-suspended-idle", from:"suspended", to:"idle", label:"run()", layer:"session", ref:"spellbook/session_manager.py:134-150"},
+      {id:"e-idle-running", from:"idle", to:"running", label:"eligible message", layer:"session", ref:"spellbook/session_manager.py:151-164"},
+      {id:"e-running-before", from:"running", to:"before", label:"start + render", layer:"session", ref:"spellbook/session_manager.py:171-184"},
+      {id:"e-exit-ended", from:"loop-exit", to:"turn-ended", label:"loop result", layer:"session", ref:"spellbook/session_manager.py:184-187"},
+      {id:"e-ended-running", from:"turn-ended", to:"running", label:"next queued turn", layer:"session", ref:"spellbook/session_manager.py:164-187"},
+      {id:"e-ended-idle", from:"turn-ended", to:"idle", label:"queue empty", layer:"session", ref:"spellbook/session_manager.py:134-140"},
+      {id:"e-idle-shutdown", from:"idle", to:"shutdown", label:"queue shutdown", layer:"session", ref:"spellbook/session_manager.py:145-155"},
+      {id:"e-running-shutdown", from:"running", to:"shutdown", label:"cancel active", layer:"failure", ref:"spellbook/session_manager.py:213-217"},
+      {id:"e-shutdown-suspended", from:"shutdown", to:"suspended", label:"harvest + close", layer:"session", ref:"spellbook/session_manager.py:134-143"},
+
+      {id:"e-before-generate", from:"before", to:"generate", label:"request ready", layer:"round", ref:"spellbook/loop.py:48-53"},
+      {id:"e-generate-after", from:"generate", to:"after-generate", label:"response", layer:"round", ref:"spellbook/loop.py:53-59"},
+      {id:"e-after-execute", from:"after-generate", to:"execute", label:"tool_use", layer:"round", ref:"spellbook/loop.py:60-75"},
+      {id:"e-after-exit", from:"after-generate", to:"loop-exit", label:"non-tool stop", layer:"round", ref:"spellbook/loop.py:60-68"},
+      {id:"e-execute-after", from:"execute", to:"after-execute", label:"result blocks", layer:"round", ref:"spellbook/loop.py:70-75"},
+      {id:"e-after-between", from:"after-execute", to:"between", label:"nonterminal", layer:"round", ref:"spellbook/loop.py:77-96"},
+      {id:"e-afterexec-exit", from:"after-execute", to:"loop-exit", label:"cancel / terminal", layer:"round", ref:"spellbook/loop.py:77-94"},
+      {id:"e-between-before", from:"between", to:"before", label:"next round", layer:"round", ref:"spellbook/loop.py:48-52"},
+
+      {id:"e-running-append", from:"running", to:"append", label:"inbound render", layer:"awareness", ref:"spellbook/homunculus/homunculus.py:153-161"},
+      {id:"e-aftergen-append", from:"after-generate", to:"append", label:"generation blocks", layer:"awareness", ref:"spellbook/homunculus/homunculus.py:499-505"},
+      {id:"e-afterexec-append", from:"after-execute", to:"append", label:"tool results", layer:"awareness", ref:"spellbook/homunculus/homunculus.py:507-510"},
+      {id:"e-append-accumulate", from:"append", to:"accumulate", label:"ids + counter", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:135-151"},
+      {id:"e-accumulate-prepared", from:"accumulate", to:"prepared", label:"interval / force", layer:"awareness", ref:"spellbook/homunculus/block_detector.py:108-148"},
+      {id:"e-prepared-nursery", from:"prepared", to:"nursery", label:"best effort", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:729-743"},
+      {id:"e-nursery-simulate", from:"nursery", to:"simulate", label:"boundary harvest", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:1100-1140"},
+      {id:"e-simulate-validate", from:"simulate", to:"validate", label:"safe candidates", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:539-554"},
+      {id:"e-validate-crystallize", from:"validate", to:"crystallize", label:"valid prefix", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:602-643"},
+      {id:"e-validate-discard", from:"validate", to:"discard", label:"ValueError", layer:"failure", ref:"spellbook/homunculus/block_manager.py:555-557,661-692"},
+      {id:"e-crystal-summary", from:"crystallize", to:"summary-job", label:"cascade", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:642-643,836-894"},
+      {id:"e-crystal-metrics", from:"crystallize", to:"metrics", label:"stable-id count", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:627-641"},
+      {id:"e-summaryjob-nursery", from:"summary-job", to:"nursery", label:"keyed job", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:853-894"},
+      {id:"e-nursery-summary", from:"nursery", to:"summary-ready", label:"harvest result", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:1143-1158"},
+      {id:"e-summary-cascade", from:"summary-ready", to:"summary-job", label:"next missing", layer:"awareness", ref:"spellbook/homunculus/block_manager.py:817-849"},
+      {id:"e-forktypes-quantum", from:"fork-types", to:"quantum", label:"quantum config", layer:"awareness", ref:"spellbook/fork.py:185-192,281-389"},
+      {id:"e-nursery-forkfail", from:"nursery", to:"fork-failure", label:"error / cancel", layer:"failure", ref:"spellbook/homunculus/block_manager.py:1132-1158"},
+
+      {id:"e-crystal-full", from:"crystallize", to:"full", label:"born full", layer:"memory", ref:"spellbook/homunculus/block_manager.py:645-659"},
+      {id:"e-summaryready-full", from:"summary-ready", to:"full", label:"mode now available", layer:"memory", ref:"spellbook/homunculus/block_manager.py:795-818"},
+      {id:"e-full-summary", from:"full", to:"summary", label:"Forget / Planner", layer:"memory", ref:"spellbook/homunculus/block_manager.py:955-985"},
+      {id:"e-summary-pin", from:"summary", to:"pin", label:"Pin", layer:"memory", ref:"spellbook/homunculus/block_manager.py:989-1026"},
+      {id:"e-pin-full", from:"pin", to:"full", label:"block pin restores", layer:"memory", ref:"spellbook/homunculus/block_manager.py:989-1003"},
+      {id:"e-summary-recall", from:"summary", to:"recall", label:"tool result only", layer:"memory", ref:"spellbook/homunculus/block_manager.py:1028-1046"},
+      {id:"e-pairparent-child", from:"pair-parent", to:"pair-child", label:"atomic chapter", layer:"memory", ref:"spellbook/homunculus/block_manager.py:279-328"},
+      {id:"e-full-reflect", from:"full", to:"reflect", label:"inspect", layer:"memory", ref:"spellbook/homunculus/homunculus.py:163-254"},
+      {id:"e-summary-reflect", from:"summary", to:"reflect", label:"inspect / preview", layer:"memory", ref:"spellbook/homunculus/homunculus.py:163-254"},
+      {id:"e-full-forgetref", from:"full", to:"forget-refuse", label:"torn boundary", layer:"failure", ref:"spellbook/homunculus/block_manager.py:955-985,1364-1472"},
+
+      {id:"e-afterexec-ttl", from:"after-execute", to:"ttl-untracked", label:"observe result", layer:"memory", ref:"spellbook/homunculus/tool_result_ttl.py:263-267"},
+      {id:"e-ttl-pending", from:"ttl-untracked", to:"ttl-pending", label:"eligible / manual", layer:"memory", ref:"spellbook/homunculus/tool_result_ttl.py:269-345"},
+      {id:"e-ttl-collapse", from:"ttl-pending", to:"ttl-collapsed", label:"ticks → 0", layer:"memory", ref:"spellbook/homunculus/tool_result_ttl.py:347-376"},
+      {id:"e-collapse-between", from:"ttl-collapsed", to:"between", label:"rerender", layer:"memory", ref:"spellbook/homunculus/homunculus.py:612-618,919-925"},
+      {id:"e-aftergen-token", from:"after-generate", to:"token-observe", label:"usage", layer:"pressure", ref:"spellbook/homunculus/homunculus.py:499-505"},
+      {id:"e-token-gauge", from:"token-observe", to:"gauge", label:"exact input", layer:"pressure", ref:"spellbook/homunculus/gas_gauge.py:50-63"},
+      {id:"e-gauge-proposal", from:"gauge", to:"proposal", label:">= 700K", layer:"pressure", ref:"spellbook/homunculus/planner.py:46-63"},
+      {id:"e-proposal-action", from:"proposal", to:"planner-action", label:"entity or >=850K", layer:"pressure", ref:"spellbook/homunculus/homunculus.py:574-610"},
+      {id:"e-action-summary", from:"planner-action", to:"summary", label:"apply mode", layer:"pressure", ref:"spellbook/homunculus/block_manager.py:1251-1290"},
+      {id:"e-summary-token", from:"summary", to:"token-observe", label:"next generation", layer:"pressure", ref:"spellbook/homunculus/gas_gauge.py:41-63"},
+
+      {id:"e-queue-running", from:"queue", to:"running", label:"turn / idle inject", layer:"inbound", ref:"spellbook/session_manager.py:148-187"},
+      {id:"e-queue-inject", from:"queue", to:"inject", label:"active inject", layer:"inbound", ref:"spellbook/inbound.py:46-58,84-94"},
+      {id:"e-inject-before", from:"inject", to:"before", label:"round + record only ⚠", layer:"failure", ref:"spellbook/inbound.py:84-94"},
+      {id:"e-queue-footer", from:"queue", to:"footer", label:"footer delivery", layer:"inbound", ref:"spellbook/inbound.py:32-44"},
+      {id:"e-footer-before", from:"footer", to:"before", label:"drain + inject", layer:"inbound", ref:"spellbook/footer.py:164-185"},
+      {id:"e-conduit-inject", from:"conduit", to:"inject", label:"message / idle notif", layer:"inbound", ref:"spellbook/app/runtime.py:197-283"},
+      {id:"e-conduit-footer", from:"conduit", to:"footer", label:"context / busy notif", layer:"inbound", ref:"spellbook/app/runtime.py:170-195,285-309"},
+      {id:"e-conduit-refuse", from:"conduit", to:"conduit-refuse", label:"profile gate", layer:"failure", ref:"spellbook/app/runtime.py:163-169"},
+      {id:"e-hearth-crackle", from:"hearth-wait", to:"crackle", label:"eligible tick", layer:"inbound", ref:"spellbook/hearth.py:251-293"},
+      {id:"e-crackle-queue", from:"crackle", to:"queue", label:"normal turn", layer:"inbound", ref:"spellbook/app/runtime.py:137-144"},
+
+      {id:"e-generate-retry", from:"generate", to:"retry", label:"transient", layer:"failure", ref:"spellbook/generator.py:88-124"},
+      {id:"e-retry-generate", from:"retry", to:"generate", label:"same surface", layer:"failure", ref:"spellbook/generator.py:73-91"},
+      {id:"e-generate-crash", from:"generate", to:"crash", label:"exhausted / fatal", layer:"failure", ref:"spellbook/generator.py:92-97"},
+      {id:"e-after-refusal", from:"after-generate", to:"refusal", label:"refusal stop", layer:"failure", ref:"spellbook/backends/anthropic.py:139-145"},
+      {id:"e-refusal-exit", from:"refusal", to:"loop-exit", label:"non-tool exit", layer:"failure", ref:"spellbook/loop.py:60-68"},
+      {id:"e-execute-timeout", from:"execute", to:"bash-timeout", label:"timeout", layer:"failure", ref:"spellbook/tools/filesystem.py:469-487"},
+      {id:"e-execute-detach", from:"execute", to:"bash-detach", label:"shell exited", layer:"failure", ref:"spellbook/tools/filesystem.py:489-514"},
+      {id:"e-shutdown-force", from:"shutdown", to:"force-cancel", label:"CLI > 5s", layer:"failure", ref:"scripts/interactive.py:466-480"},
+
+      {id:"e-ended-dreaming", from:"turn-ended", to:"dreaming", label:"future: quiescent Sleep", layer:"future", future:true, ref:"Forge memory-tree.md:83-111; spellbook/fork.py:508-535"},
+      {id:"e-gauge-dreaming", from:"gauge", to:"dreaming", label:"future: forced hard limit", layer:"future", future:true, ref:"Forge memory-tree.md:115-120; spellbook/dreaming/frontier.py:650-658"},
+      {id:"e-dreaming-frontier", from:"dreaming", to:"frontier", label:"future: dream / plan", layer:"future", future:true, ref:"spellbook/dreaming/frontier.py:1-10,294-465"},
+      {id:"e-frontier-idle", from:"frontier", to:"idle", label:"future: manifest + wake", layer:"future", future:true, ref:"Forge memory-tree.md:141-156; spellbook/dreaming/frontier.py:477-595"},
+      {id:"e-frontier-summary", from:"frontier", to:"summary", label:"future: apply modes", layer:"future", future:true, ref:"spellbook/homunculus/block_manager.py:1251-1290; spellbook/dreaming/frontier.py:1-10"},
+      {id:"e-frontier-pair", from:"frontier", to:"pair-parent", label:"future: narrative mode", layer:"future", future:true, ref:"spellbook/dreaming/frontier.py:294-465"}
+    ];
+
+    const walkthroughs = {
+      message: {
+        name: "A · A message arrives",
+        steps: [
+          {title:"Inbound is accepted", body:"Runtime notes activity and enqueues a turn or injection. A busy session reports it queued.", nodes:["queue"], edges:["e-queue-running"], ref:"spellbook/app/runtime.py:358-378"},
+          {title:"Idle hands off to running", body:"The first turn-eligible message exits idle, is pushed back, and is consumed by the running phase.", nodes:["idle","running"], edges:["e-idle-running"], ref:"spellbook/session_manager.py:148-164"},
+          {title:"Turn becomes transcript truth", body:"The manager records turn start and inbound blocks, fires turn-start hooks, and creates a fresh cancellation token.", nodes:["running"], edges:["e-running-before"], ref:"spellbook/session_manager.py:162-184"},
+          {title:"Context joins awareness", body:"Homunculus assigns global ids, feeds detection, then renders semantic memory, raw tail, and TTL projections.", nodes:["running","append"], edges:["e-running-append"], ref:"spellbook/homunculus/homunculus.py:153-161"},
+          {title:"Footers enter before generation", body:"Skills, injection, and time may queue signals; FooterController drains them into one system block.", nodes:["before","footer"], edges:["e-footer-before","e-before-generate"], ref:"spellbook/session_manager.py:421-450; spellbook/footer.py:164-185"},
+          {title:"Generate and execute", body:"Generation becomes canonical, updates ids/usage/gas/detection, then tool use produces canonical result blocks and TTL registrations.", nodes:["generate","after-generate","execute","after-execute"], edges:["e-generate-after","e-after-execute","e-execute-after"], ref:"spellbook/loop.py:52-96"},
+          {title:"Boundary awareness work", body:"Nursery harvest, round TTLs, Planner, and rerender run only after a full nonterminal tool round.", nodes:["between","nursery","proposal"], edges:["e-after-between","e-nursery-simulate"], ref:"spellbook/homunculus/homunculus.py:919-925"},
+          {title:"Detection may already be running", body:"Any append crossing the interval prepares and submits a detector fork; completion cannot mutate memory yet.", nodes:["append","accumulate","prepared","nursery"], edges:["e-append-accumulate","e-accumulate-prepared","e-prepared-nursery"], ref:"spellbook/homunculus/block_detector.py:108-148"},
+          {title:"Turn ends and TTLs tick", body:"Loop exit harvests again. Literal end_turn ticks end-turn TTLs; the manager records closure and goes next-turn or idle.", nodes:["loop-exit","turn-ended","idle"], edges:["e-exit-ended","e-ended-idle"], ref:"spellbook/homunculus/homunculus.py:927-930; spellbook/session_manager.py:184-187"}
+        ]
+      },
+      planner: {
+        name: "B · The planner proposes compaction",
+        steps: [
+          {title:"Pressure is observed", body:"Provider input usage updates prefix observations and exact GasGauge input.", nodes:["token-observe","gauge"], edges:["e-aftergen-token","e-token-gauge"], ref:"spellbook/homunculus/homunculus.py:499-505"},
+          {title:"Warning creates a proposal", body:"At soft pressure Planner picks the oldest full, unpinned, summary-ready block.", nodes:["gauge","proposal"], edges:["e-gauge-proposal"], ref:"spellbook/homunculus/planner.py:25-63"},
+          {title:"The proposal becomes visible", body:"It is recorded, appears in Reflect, and queues a compaction footer for the next request.", nodes:["proposal","footer","reflect"], edges:["e-queue-footer","e-footer-before"], ref:"spellbook/homunculus/homunculus.py:538-610"},
+          {title:"The entity may choose Forget", body:"Before forced pressure, the model can consume the proposal through Forget with model-sourced provenance.", nodes:["proposal","full","summary"], edges:["e-full-summary"], ref:"spellbook/tools/self_work.py:79-93; spellbook/homunculus/block_manager.py:955-985"},
+          {title:"Or Planner consumes it", body:"At medium pressure Planner consumes its still-valid proposal through the same path with planner provenance.", nodes:["proposal","planner-action"], edges:["e-proposal-action"], ref:"spellbook/homunculus/homunculus.py:574-610"},
+          {title:"Apply mode", body:"BlockManager rechecks pin, summary, and tool closure, writes apply-mode, and changes full to summary.", nodes:["full","summary","planner-action"], edges:["e-full-summary","e-action-summary"], ref:"spellbook/homunculus/block_manager.py:955-985,1251-1290"},
+          {title:"Invalidate then observe the drop", body:"Render, token prefixes, gauge, and proposal go invalid. The next generation establishes the smaller exact input count.", nodes:["summary","token-observe","gauge"], edges:["e-summary-token","e-token-gauge"], ref:"spellbook/homunculus/homunculus.py:860-878; spellbook/homunculus/gas_gauge.py:41-68"}
+        ]
+      },
+      detection: {
+        name: "C · A detection completes",
+        steps: [
+          {title:"Ready, not integrated", body:"Child completion only marks its Nursery job ready. Canonical and semantic state are unchanged.", nodes:["prepared","nursery"], edges:["e-prepared-nursery"], ref:"spellbook/nursery.py:164-185"},
+          {title:"A lifecycle boundary harvests", body:"Between-round, loop-exit, explicit drain, or shutdown dispatches the ready detect_blocks result.", nodes:["between","loop-exit","nursery"], edges:["e-nursery-simulate"], ref:"spellbook/homunculus/block_manager.py:1100-1166"},
+          {title:"Simulate and sanitize", body:"Sort, bound to known context, close tool pairs, accept the contiguous prefix, and classify deferred/discarded ranges.", nodes:["simulate"], edges:["e-nursery-simulate","e-simulate-validate"], ref:"spellbook/homunculus/block_detector.py:156-190"},
+          {title:"Validate the candidate world", body:"The full candidate semantic list must tile canonical coordinates and contain complete tool-call/result envelopes.", nodes:["validate"], edges:["e-simulate-validate"], ref:"spellbook/homunculus/block_manager.py:1308-1435"},
+          {title:"Success crystallizes", body:"Only now: shutdown/detection/block records, courtesy footer, metric job, and summary cascade.", nodes:["crystallize","metrics","summary-job"], edges:["e-validate-crystallize","e-crystal-metrics","e-crystal-summary"], ref:"spellbook/homunculus/block_manager.py:602-643"},
+          {title:"Summaries self-sustain", body:"Stable-id-validated integration records one artifact and schedules the next oldest missing summary.", nodes:["summary-job","summary-ready","nursery"], edges:["e-summaryjob-nursery","e-nursery-summary","e-summary-cascade"], ref:"spellbook/homunculus/block_manager.py:745-894"},
+          {title:"Failure stays graceful", body:"A rejected result shuts down its fork, mutates no semantic state, and queues courtesy. Partial results land only the safe prefix.", nodes:["validate","discard"], edges:["e-validate-discard"], ref:"spellbook/homunculus/block_manager.py:539-600,661-692"}
+        ]
+      }
+    };
+
+    const svg = document.getElementById("machine");
+    const NS = "http://www.w3.org/2000/svg";
+    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    const activeLayers = new Set(Object.keys(layerMeta));
+    let selected = null;
+    let activeWalk = null;
+    let walkIndex = 0;
+    let viewBox = {x:0, y:0, w:1800, h:2760};
+    const initialViewBox = {...viewBox};
+
+    function svgEl(name, attrs = {}) {
+      const el = document.createElementNS(NS, name);
+      for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
+      return el;
+    }
+
+    function pathFor(a, b) {
+      const aw = a.w || 210, ah = a.h || 92, bw = b.w || 210, bh = b.h || 92;
+      const ac = {x:a.x + aw / 2, y:a.y + ah / 2};
+      const bc = {x:b.x + bw / 2, y:b.y + bh / 2};
+      const dx = bc.x - ac.x, dy = bc.y - ac.y;
+      let start, end;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        start = {x: ac.x + Math.sign(dx || 1) * aw / 2, y: ac.y};
+        end = {x: bc.x - Math.sign(dx || 1) * bw / 2, y: bc.y};
+      } else {
+        start = {x: ac.x, y: ac.y + Math.sign(dy || 1) * ah / 2};
+        end = {x: bc.x, y: bc.y - Math.sign(dy || 1) * bh / 2};
+      }
+      if (Math.abs(dx) < 330 && Math.abs(dy) < 210) return {d:`M ${start.x} ${start.y} L ${end.x} ${end.y}`, mid:{x:(start.x+end.x)/2,y:(start.y+end.y)/2}};
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        const mx = (start.x + end.x) / 2;
+        return {d:`M ${start.x} ${start.y} C ${mx} ${start.y}, ${mx} ${end.y}, ${end.x} ${end.y}`, mid:{x:mx,y:(start.y+end.y)/2}};
+      }
+      const my = (start.y + end.y) / 2;
+      return {d:`M ${start.x} ${start.y} C ${start.x} ${my}, ${end.x} ${my}, ${end.x} ${end.y}`, mid:{x:(start.x+end.x)/2,y:my}};
+    }
+
+    function renderMap() {
+      svg.replaceChildren();
+      const defs = svgEl("defs");
+      const marker = svgEl("marker", {id:"arrow", viewBox:"0 0 10 10", refX:9, refY:5, markerWidth:6, markerHeight:6, orient:"auto-start-reverse"});
+      marker.append(svgEl("path", {d:"M 0 0 L 10 5 L 0 10 z", fill:"context-stroke"}));
+      defs.append(marker);
+      svg.append(defs);
+
+      const lanes = [
+        {y:35,h:360,title:"SESSION PHASES · transcript lifecycle"},
+        {y:450,h:220,title:"ROUND HEARTBEAT · ordered hooks"},
+        {y:825,h:535,title:"AWARENESS · global coordinates, forks, integrate-at-boundaries"},
+        {y:1455,h:520,title:"MEMORY + PRESSURE · render projections and self-state"},
+        {y:2050,h:210,title:"INBOUND + AMBIENT · queue, conduit, hearth"},
+        {y:2365,h:330,title:"FAILURE STATES · same weight as the happy path"}
+      ];
+      for (const lane of lanes) {
+        svg.append(svgEl("rect", {class:"lane", x:18, y:lane.y, width:1764, height:lane.h, rx:18}));
+        const title = svgEl("text", {class:"lane-title", x:38, y:lane.y + 27});
+        title.textContent = lane.title;
+        svg.append(title);
+      }
+
+      const edgeLayer = svgEl("g", {id:"edges"});
+      for (const edge of edges) {
+        const from = nodeById.get(edge.from), to = nodeById.get(edge.to);
+        if (!from || !to) continue;
+        const geometry = pathFor(from, to);
+        const group = svgEl("g", {class:`edge-group ${edge.future ? "future" : ""}`, "data-edge":edge.id, tabindex:"0", role:"button", "aria-label":`${from.title} to ${to.title}: ${edge.label}`});
+        const klass = `edge-line ${edge.future ? "future" : ""} ${edge.layer === "failure" ? "failure" : ""}`;
+        group.append(svgEl("path", {class:klass, d:geometry.d}));
+        const hit = svgEl("path", {class:"edge-hit", d:geometry.d});
+        group.append(hit);
+        if (edge.label) {
+          const width = Math.max(62, Math.min(185, edge.label.length * 6.6 + 14));
+          group.append(svgEl("rect", {class:"edge-label-bg", x:geometry.mid.x-width/2, y:geometry.mid.y-10, width, height:19, rx:7}));
+          const label = svgEl("text", {class:"edge-label", x:geometry.mid.x, y:geometry.mid.y+4, "text-anchor":"middle"});
+          label.textContent = edge.label;
+          group.append(label);
+        }
+        group.addEventListener("click", event => { event.stopPropagation(); inspectEdge(edge); });
+        group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") inspectEdge(edge); });
+        edgeLayer.append(group);
+      }
+      svg.append(edgeLayer);
+
+      const nodeLayer = svgEl("g", {id:"nodes"});
+      for (const node of nodes) {
+        node.w = node.w || 210; node.h = node.h || 92;
+        const group = svgEl("g", {class:"node", transform:`translate(${node.x} ${node.y})`, "data-node":node.id, tabindex:"0", role:"button", "aria-label":`${node.kicker}: ${node.title}`});
+        group.style.setProperty("--node-color", layerMeta[node.layer].color);
+        group.append(svgEl("rect", {class:"node-plate", width:node.w, height:node.h, rx:14}));
+        const kicker = svgEl("text", {class:"node-kicker", x:14, y:20}); kicker.textContent = node.kicker; group.append(kicker);
+        const title = svgEl("text", {class:"node-title", x:14, y:45}); title.textContent = node.title; group.append(title);
+        const sub = svgEl("text", {class:"node-sub", x:14, y:70}); sub.textContent = node.sub; group.append(sub);
+        group.addEventListener("click", event => { event.stopPropagation(); inspectNode(node); });
+        group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") inspectNode(node); });
+        nodeLayer.append(group);
+      }
+      svg.append(nodeLayer);
+      applyVisibility();
+      applyViewBox();
+    }
+
+    function refHref(ref) {
+      const match = ref.match(/^(spellbook|scripts)\/([^:]+):(\d+)/);
+      if (!match) return null;
+      return `../${match[1]}/${match[2]}#L${match[3]}`;
+    }
+
+    function renderRefs(refs) {
+      return `<div class="refs">${refs.map(ref => { const href = refHref(ref); return href ? `<a class="ref" href="${href}">${ref}</a>` : `<span class="ref">${ref}</span>`; }).join("")}</div>`;
+    }
+
+    function clearSelection() {
+      document.querySelectorAll(".selected").forEach(el => el.classList.remove("selected"));
+      selected = null;
+    }
+
+    function inspectNode(node) {
+      clearSelection();
+      selected = {type:"node", id:node.id};
+      document.querySelector(`[data-node="${node.id}"]`)?.classList.add("selected");
+      document.getElementById("inspector-kind").textContent = `${layerMeta[node.layer].label.toUpperCase()} · ${node.kicker}`;
+      document.getElementById("inspector").innerHTML = `<h2>${node.title}</h2><p>${node.desc}</p>${node.note ? `<p class="inspector-note">⚠ ${node.note}</p>` : ""}${renderRefs(node.refs)}`;
+    }
+
+    function inspectEdge(edge) {
+      clearSelection();
+      selected = {type:"edge", id:edge.id};
+      document.querySelector(`[data-edge="${edge.id}"]`)?.classList.add("selected");
+      const from = nodeById.get(edge.from), to = nodeById.get(edge.to);
+      document.getElementById("inspector-kind").textContent = `${edge.future ? "FUTURE DESIGN" : layerMeta[edge.layer].label.toUpperCase()} · TRANSITION`;
+      document.getElementById("inspector").innerHTML = `<h2>${from.title} → ${to.title}</h2><p><b>Trigger / guard:</b> ${edge.label}</p>${edge.future ? `<p class="inspector-note">Dashed edge: documented attachment point, not current runtime behavior.</p>` : ""}${renderRefs([edge.ref])}`;
+    }
+
+    function buildControls() {
+      const controls = document.getElementById("layer-controls");
+      for (const [key, meta] of Object.entries(layerMeta)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "layer-button";
+        button.dataset.layer = key;
+        button.setAttribute("aria-pressed", "true");
+        button.style.setProperty("--layer-color", meta.color);
+        button.textContent = meta.label;
+        button.addEventListener("click", () => {
+          if (activeLayers.has(key)) activeLayers.delete(key); else activeLayers.add(key);
+          button.setAttribute("aria-pressed", String(activeLayers.has(key)));
+          applyVisibility();
+        });
+        controls.append(button);
+      }
+    }
+
+    function applyVisibility() {
+      const query = document.getElementById("search")?.value.trim().toLowerCase() || "";
+      for (const node of nodes) {
+        const el = document.querySelector(`[data-node="${node.id}"]`);
+        if (!el) continue;
+        el.classList.toggle("hidden", !activeLayers.has(node.layer));
+        const haystack = `${node.title} ${node.sub} ${node.desc} ${node.refs.join(" ")}`.toLowerCase();
+        el.classList.toggle("find-match", Boolean(query && haystack.includes(query)));
+        el.classList.toggle("dim", Boolean(query && !haystack.includes(query)));
+      }
+      for (const edge of edges) {
+        const el = document.querySelector(`[data-edge="${edge.id}"]`);
+        if (!el) continue;
+        const endpointsVisible = activeLayers.has(nodeById.get(edge.from).layer) && activeLayers.has(nodeById.get(edge.to).layer);
+        el.classList.toggle("hidden", !activeLayers.has(edge.layer) || !endpointsVisible);
+        const haystack = `${edge.label} ${edge.ref} ${nodeById.get(edge.from).title} ${nodeById.get(edge.to).title}`.toLowerCase();
+        el.classList.toggle("dim", Boolean(query && !haystack.includes(query)));
+      }
+    }
+
+    function applyWalk() {
+      document.querySelectorAll(".walk-active").forEach(el => el.classList.remove("walk-active"));
+      document.querySelectorAll(".walk-button").forEach(el => el.classList.toggle("active", el.dataset.walk === activeWalk));
+      if (!activeWalk) { document.getElementById("walk-status").textContent = "Choose a walkthrough"; return; }
+      const walk = walkthroughs[activeWalk], step = walk.steps[walkIndex];
+      for (const id of step.nodes) document.querySelector(`[data-node="${id}"]`)?.classList.add("walk-active");
+      for (const id of step.edges) document.querySelector(`[data-edge="${id}"]`)?.classList.add("walk-active");
+      document.getElementById("walk-status").textContent = `${walk.name} · ${walkIndex + 1}/${walk.steps.length}`;
+      document.getElementById("inspector-kind").textContent = `WALKTHROUGH · STEP ${walkIndex + 1}`;
+      document.getElementById("inspector").innerHTML = `<h2>${step.title}</h2><p>${step.body}</p>${renderRefs([step.ref])}`;
+      const targets = step.nodes.map(id => nodeById.get(id)).filter(Boolean);
+      if (targets.length) centerOn(targets);
+    }
+
+    function centerOn(targets) {
+      const minX = Math.min(...targets.map(n => n.x));
+      const maxX = Math.max(...targets.map(n => n.x + (n.w || 210)));
+      const minY = Math.min(...targets.map(n => n.y));
+      const maxY = Math.max(...targets.map(n => n.y + (n.h || 92)));
+      const desiredW = Math.max(760, (maxX-minX) + 360);
+      const aspect = document.getElementById("viewport").clientWidth / document.getElementById("viewport").clientHeight;
+      const desiredH = desiredW / Math.max(.5, aspect);
+      viewBox = {x:(minX+maxX)/2-desiredW/2, y:(minY+maxY)/2-desiredH/2, w:desiredW, h:desiredH};
+      clampView(); applyViewBox();
+    }
+
+    function walkMove(delta) {
+      if (!activeWalk) return;
+      const length = walkthroughs[activeWalk].steps.length;
+      walkIndex = (walkIndex + delta + length) % length;
+      applyWalk();
+    }
+
+    function applyViewBox() { svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`); }
+    function clampView() {
+      viewBox.w = Math.max(480, Math.min(2400, viewBox.w));
+      viewBox.h = Math.max(420, Math.min(3300, viewBox.h));
+      viewBox.x = Math.max(-160, Math.min(1960 - viewBox.w, viewBox.x));
+      viewBox.y = Math.max(-120, Math.min(2880 - viewBox.h, viewBox.y));
+    }
+    function zoom(factor, cx = viewBox.x + viewBox.w/2, cy = viewBox.y + viewBox.h/2) {
+      const nw = viewBox.w * factor, nh = viewBox.h * factor;
+      viewBox.x = cx - (cx - viewBox.x) * factor;
+      viewBox.y = cy - (cy - viewBox.y) * factor;
+      viewBox.w = nw; viewBox.h = nh; clampView(); applyViewBox();
+    }
+
+    function buildLedger() {
+      const body = document.getElementById("edge-ledger");
+      for (const edge of edges) {
+        const row = document.createElement("tr");
+        const href = refHref(edge.ref);
+        row.innerHTML = `<td>${edge.future ? "Future: " : ""}${nodeById.get(edge.from).title} → ${nodeById.get(edge.to).title}</td><td>${edge.label}</td><td>${layerMeta[edge.layer].label}</td><td>${href ? `<a href="${href}">${edge.ref}</a>` : edge.ref}</td>`;
+        body.append(row);
+      }
+    }
+
+    document.getElementById("search").addEventListener("input", applyVisibility);
+    document.getElementById("toolbar").addEventListener("click", event => {
+      const action = event.target.closest("button")?.dataset.action;
+      if (action === "zoom-in") zoom(.78);
+      if (action === "zoom-out") zoom(1.28);
+      if (action === "reset") { viewBox = {...initialViewBox}; applyViewBox(); }
+    });
+    document.getElementById("walk-controls").addEventListener("click", event => {
+      const button = event.target.closest("button"); if (!button) return;
+      if (button.dataset.walk) { activeWalk = button.dataset.walk; walkIndex = 0; applyWalk(); return; }
+      if (button.dataset.action === "walk-prev") walkMove(-1);
+      if (button.dataset.action === "walk-next") walkMove(1);
+      if (button.dataset.action === "walk-clear") { activeWalk = null; applyWalk(); viewBox = {...initialViewBox}; applyViewBox(); }
+    });
+
+    const viewport = document.getElementById("viewport");
+    viewport.addEventListener("wheel", event => {
+      event.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      const cx = viewBox.x + (event.clientX - rect.left) / rect.width * viewBox.w;
+      const cy = viewBox.y + (event.clientY - rect.top) / rect.height * viewBox.h;
+      zoom(event.deltaY > 0 ? 1.12 : .89, cx, cy);
+    }, {passive:false});
+    let drag = null;
+    viewport.addEventListener("pointerdown", event => {
+      if (event.target.closest(".node,.edge-group")) return;
+      drag = {x:event.clientX, y:event.clientY, vx:viewBox.x, vy:viewBox.y};
+      viewport.setPointerCapture(event.pointerId); viewport.classList.add("dragging");
+    });
+    viewport.addEventListener("pointermove", event => {
+      if (!drag) return;
+      const rect = viewport.getBoundingClientRect();
+      viewBox.x = drag.vx - (event.clientX-drag.x) / rect.width * viewBox.w;
+      viewBox.y = drag.vy - (event.clientY-drag.y) / rect.height * viewBox.h;
+      clampView(); applyViewBox();
+    });
+    viewport.addEventListener("pointerup", event => { drag = null; viewport.releasePointerCapture(event.pointerId); viewport.classList.remove("dragging"); });
+    svg.addEventListener("click", clearSelection);
+
+    buildControls();
+    renderMap();
+    buildLedger();
+  </script>
+</body>
+</html>
