@@ -99,8 +99,20 @@ git clone https://github.com/charonlabs/spellbook.git
 cd spellbook
 uv sync
 
-# Run as an app server
-uv run python -m scripts.server --port 8765 --model claude-opus-4-7 --user-name {name}
+# Create an entity config
+cat > philosopher.toml <<'TOML'
+[entity]
+model = "claude-opus-4-7"
+
+[prompt]
+role = "You are a philosopher: curious, rigorous, and candid."
+TOML
+
+# Run it as an app server
+uv run spellbook serve philosopher.toml
+
+# Resume a specific transcript (the transcript's recorded config stays canonical)
+uv run spellbook serve --config philosopher.toml --transcript ./transcript.jsonl
 
 # Run tests
 uv run pytest tests/

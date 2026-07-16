@@ -6,6 +6,7 @@ import platform
 from pathlib import Path
 
 ORIENTATION_DIR = Path(__file__).resolve().parent
+DEFAULT_ORIENTATION_FILENAME = "claude-4-6.md"
 ORIENTATION_BY_MODEL_SLUG = {
     "claude-opus-4-7": "claude-4-7.md",
     "claude-opus-4-6": "claude-4-6.md",
@@ -39,6 +40,9 @@ def model_slug_to_name(slug: str) -> str:
 
 
 def orientation_filename_for_model(model: str) -> str:
+    exact_match = ORIENTATION_DIR / f"{model}.md"
+    if exact_match.is_file():
+        return exact_match.name
     if model in ORIENTATION_BY_MODEL_SLUG:
         return ORIENTATION_BY_MODEL_SLUG[model]
     if model.startswith("claude-") and "-4-7" in model:
@@ -51,7 +55,34 @@ def orientation_filename_for_model(model: str) -> str:
 
 
 def build_core_orientation(model: str, *, cwd: Path, user_name: str) -> str:
-    orientation_path = ORIENTATION_DIR / orientation_filename_for_model(model)
+    return build_orientation_from_file(
+        ORIENTATION_DIR / orientation_filename_for_model(model),
+        model=model,
+        cwd=cwd,
+        user_name=user_name,
+    )
+
+
+def build_default_orientation(model: str, *, cwd: Path, user_name: str) -> str:
+    """Render the general harness orientation for an unrecognized model slug."""
+
+    return build_orientation_from_file(
+        ORIENTATION_DIR / DEFAULT_ORIENTATION_FILENAME,
+        model=model,
+        cwd=cwd,
+        user_name=user_name,
+    )
+
+
+def build_orientation_from_file(
+    orientation_path: Path,
+    *,
+    model: str,
+    cwd: Path,
+    user_name: str,
+) -> str:
+    """Render one orientation template with runtime identity placeholders."""
+
     template = orientation_path.read_text(encoding="utf-8")
     model_name = model_slug_to_name(model)
     replacements = {
