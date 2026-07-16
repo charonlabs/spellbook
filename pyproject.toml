@@ -15,6 +15,9 @@ dependencies = [
     "tiktoken>=0.13.0",
 ]
 
+[project.scripts]
+spellbook = "spellbook.cli:main"
+
 [project.optional-dependencies]
 sandbox = ["pyyaml>=6.0"]
 
