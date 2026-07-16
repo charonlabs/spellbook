@@ -184,7 +184,6 @@ class TestDefaultRegistry:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
         assert "Body" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "Reach" not in DEFAULT_TOOL_REGISTRY.tool_names
@@ -213,7 +212,6 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
             "Body",
             "Reach",
             "ProposeBlock",
@@ -243,7 +241,6 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
         assert "Reach" not in registry.tool_names
 
@@ -310,7 +307,6 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
 
     def test_block_detector_surface_default_exposes_detector_tools(self) -> None:
@@ -404,9 +400,29 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
 
     def test_custom_surface_requires_custom_surface_definition(self) -> None:
         with pytest.raises(ValueError, match="Custom tool surfaces require"):
             ToolRegistry.build(surface="custom")
+
+
+class TestSleepGating:
+    def test_sleep_absent_from_main_by_default(self) -> None:
+        registry = ToolRegistry.build(categories=None, surface="main")
+        assert "Sleep" not in registry.tool_names
+
+    def test_sleep_present_when_enabled(self) -> None:
+        registry = ToolRegistry.build(
+            categories=None, surface="main", sleep_enabled=True
+        )
+        assert "Sleep" in registry.tool_names
+
+    def test_sleep_enabled_composes_with_body(self) -> None:
+        registry = ToolRegistry.build(
+            categories=None,
+            surface="main",
+            body_url="http://127.0.0.1:8765",
+            sleep_enabled=True,
+        )
+        assert {"Sleep", "Body"} <= registry.tool_names

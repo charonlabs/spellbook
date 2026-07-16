@@ -97,6 +97,7 @@ class SpellbookConfig(BaseModel, frozen=True):
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
     body_url: str | None = None
+    sleep_enabled: bool = False
     session_type: SessionType = "main"
     profile: SessionProfile = Field(
         default_factory=lambda: profile_for_session_type("main")

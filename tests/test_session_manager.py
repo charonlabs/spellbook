@@ -544,7 +544,6 @@ class TestSessionProfileBuild:
                     "Configure",
                     "Pin",
                     "Recall",
-                    "Sleep",
                 },
                 "round_lifecycles": [
                     "RecordingRoundLifecycle",
@@ -1716,7 +1715,6 @@ class TestBuildResumeBehavior:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
         assert isinstance(manager.executor.meta, ToolMetadata)
         assert manager.executor.meta.cwd == tmp_path
@@ -1738,7 +1736,6 @@ class TestBuildResumeBehavior:
             "Configure",
             "Pin",
             "Recall",
-            "Sleep",
         }
 
     @pytest.mark.asyncio

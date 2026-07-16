@@ -92,13 +92,16 @@ class ToolRegistry(BaseModel, frozen=True):
         custom: CustomSurface | None = None,
         include_quantum_submit: bool = True,
         body_url: str | None = None,
+        sleep_enabled: bool = False,
     ) -> "ToolRegistry":
         if surface == "custom" and custom is None:
             raise ValueError("Custom tool surfaces require a CustomSurface.")
         if custom is not None:
             if surface != "custom":
                 raise ValueError(f"Found surface={surface} instead of `custom`.")
-            main_tools = _main_tools(body_enabled=body_url is not None)
+            main_tools = _main_tools(
+                body_enabled=body_url is not None, sleep_enabled=sleep_enabled
+            )
             custom_tools = [
                 tool
                 for tool in main_tools
@@ -107,7 +110,9 @@ class ToolRegistry(BaseModel, frozen=True):
             ]
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
-        surface_tools = _tools_for_surface(surface, body_enabled=body_url is not None)
+        surface_tools = _tools_for_surface(
+            surface, body_enabled=body_url is not None, sleep_enabled=sleep_enabled
+        )
         if surface == "quantum" and not include_quantum_submit:
             surface_tools = [
                 tool for tool in surface_tools if tool.name != SUBMIT_RESULT_TOOL.name
@@ -150,7 +155,6 @@ MAIN_TOOLS: list[Tool[Any]] = [
     CONFIGURE_TOOL,
     PIN_TOOL,
     RECALL_TOOL,
-    SLEEP_TOOL,
     REACH_TOOL,
 ]
 
@@ -182,13 +186,18 @@ TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
 }
 
 
-def _main_tools(*, body_enabled: bool) -> list[Tool[Any]]:
-    return BODY_ENABLED_MAIN_TOOLS if body_enabled else MAIN_TOOLS
+def _main_tools(*, body_enabled: bool, sleep_enabled: bool = False) -> list[Tool[Any]]:
+    tools = BODY_ENABLED_MAIN_TOOLS if body_enabled else MAIN_TOOLS
+    if sleep_enabled:
+        return [*tools, SLEEP_TOOL]
+    return list(tools)
 
 
-def _tools_for_surface(surface: ToolSurface, *, body_enabled: bool) -> list[Tool[Any]]:
+def _tools_for_surface(
+    surface: ToolSurface, *, body_enabled: bool, sleep_enabled: bool = False
+) -> list[Tool[Any]]:
     if surface == "main":
-        return _main_tools(body_enabled=body_enabled)
+        return _main_tools(body_enabled=body_enabled, sleep_enabled=sleep_enabled)
     return TOOLS_BY_SURFACE[surface]
 
 
