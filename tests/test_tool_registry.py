@@ -184,6 +184,7 @@ class TestDefaultRegistry:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
         assert "Body" not in DEFAULT_TOOL_REGISTRY.tool_names
         assert "Reach" not in DEFAULT_TOOL_REGISTRY.tool_names
@@ -212,6 +213,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
             "Body",
             "Reach",
             "ProposeBlock",
@@ -241,6 +243,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
         assert "Reach" not in registry.tool_names
 
@@ -307,6 +310,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
 
     def test_block_detector_surface_default_exposes_detector_tools(self) -> None:
@@ -348,6 +352,7 @@ class TestToolSurfaces:
             "Recall",
             "SubmitResult",
         }
+        assert "Sleep" not in registry.tool_names
 
     def test_quantum_surface_never_exposes_body(self) -> None:
         registry = ToolRegistry.build(
@@ -399,6 +404,7 @@ class TestToolSurfaces:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
 
     def test_custom_surface_requires_custom_surface_definition(self) -> None:

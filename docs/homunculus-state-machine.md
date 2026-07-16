@@ -1,8 +1,9 @@
 # Homunculus state machine: the complete map
 
-Code reference: `dev` at `7f4ea63` plus the pre-existing working-tree edits,
-traced 2026-07-15. The transcript and current implementation are authoritative;
-future Sleep edges are explicitly labeled as design, not runtime behavior.
+Code reference: `dev` at `40e55cb` plus the current Sleep and pre-existing
+working-tree edits, traced 2026-07-16. The transcript and current implementation
+are authoritative; only forced Sleep and later authored-dream edges remain
+future behavior.
 
 The companion interactive map is
 [`homunculus-state-machine.html`](homunculus-state-machine.html). It contains the
@@ -15,9 +16,10 @@ The map combines four coordinated state machines without pretending that they
 are one object:
 
 1. `SessionManager` owns the outer phases: constructed/suspended, idle, running,
-   and shutdown. `dreaming` is already admitted by the type but is not entered by
-   current runtime code. [`session_manager.py:58`](../spellbook/session_manager.py#L58),
-   [`session_manager.py:122-143`](../spellbook/session_manager.py#L122)
+   dreaming, and shutdown. Self-triggered Sleep enters dreaming synchronously
+   from tool execution and returns to the interrupted running turn.
+   [`session_manager.py`](../spellbook/session_manager.py),
+   [`sleep.py`](../spellbook/tools/sleep.py)
 2. `run_loop` owns the round state: before-round, generate, after-generate,
    execute, after-execute, between-rounds, and loop exit.
    [`loop.py:29-105`](../spellbook/loop.py#L29)
@@ -130,15 +132,19 @@ returns and the outer loop enters idle again.
 [`session_manager.py:134-140`](../spellbook/session_manager.py#L134),
 [`session_manager.py:162-187`](../spellbook/session_manager.py#L162)
 
-### S5 — Dreaming (reserved, not entered)
+### S5 — Dreaming
 
-`dreaming` is present in both `SessionState` and app `RuntimeState`, but no current
-assignment sets `session.state = "dreaming"`. It is a reserved runtime state, not
-an implemented transition.
-[`session_manager.py:58`](../spellbook/session_manager.py#L58),
-[`protocol.py:36-52`](../spellbook/app/protocol.py#L36)
+`Sleep(dry_run=false)` enters this mutually-exclusive state from `running`
+tool execution. Session lifecycle hooks publish `dreaming`, then publish
+`running` again before the tool result continues through normal `after_execute`
+recording and awareness integration. Success, whole-frontier refusal, and
+unexpected failure all take the exit hook; dry-run preview never enters.
+[`session_manager.py`](../spellbook/session_manager.py),
+[`lifecycle.py`](../spellbook/app/lifecycle.py),
+[`sleep.py`](../spellbook/tools/sleep.py)
 
-The future attachment is documented in [§12](#12-future-sleep-attachment-points).
+The complete entry/exit/failure contract is documented in
+[§12](#12-sleep-runtime-contract).
 
 ### S14 — Shutdown / suspended
 
@@ -944,40 +950,51 @@ shutdown while preserving their snapshot directory.
    [`block_manager.py:555-600`](../spellbook/homunculus/block_manager.py#L555),
    [`block_manager.py:661-692`](../spellbook/homunculus/block_manager.py#L661)
 
-## 12. Future Sleep attachment points
+## 12. Sleep runtime contract
 
-These are the only future edges drawn on the map. They are not claims about
-current runtime behavior.
-
-1. **Quiescent waking boundary -> `dreaming`.** Self-triggered Sleep is a manual
-   entity action and the dreaming mind is sequentially in a different,
-   mutually-exclusive state. The current quantum primitive also requires a
-   transcript with no in-progress turn. Therefore the map attaches the future
-   transition after the current turn is closed, not inside live generation or
-   nursery mutation.
-   [Memory Tree design `memory-tree.md:83-91,100-111`](../../../.forge/spellbook/workspace/design/memory-tree.md),
-   [`fork.py:508-535`](../spellbook/fork.py#L508)
-2. **`dreaming` -> frontier plan application -> wake/idle.** The existing
-   frontier derives a pure view and computes mode transitions; it intentionally
-   does not mutate or record. Slice 2 is expected to execute those transitions
-   through existing apply-mode machinery, then report actual deltas/debts in a
-   morning manifest. [`frontier.py:1-10`](../spellbook/dreaming/frontier.py#L1),
-   [`frontier.py:294-465`](../spellbook/dreaming/frontier.py#L294),
-   [`frontier.py:477-595`](../spellbook/dreaming/frontier.py#L477)
-3. **Critical pressure -> future forced Sleep at a quiescent boundary.** Design
-   limits forced Sleep to frontier advancement over existing consented narratives;
-   it may not author new memory at the hard limit.
-   [Memory Tree design `memory-tree.md:115-120`](../../../.forge/spellbook/workspace/design/memory-tree.md),
-   [`frontier.py:650-658`](../spellbook/dreaming/frontier.py#L650)
-4. **Wake courtesy is part of the transition.** Every wake must announce what
-   moved, what remains owed, and where chapter-bearing dream transcripts live.
-   [Memory Tree design `memory-tree.md:141-156`](../../../.forge/spellbook/workspace/design/memory-tree.md),
-   [`frontier.py:520-574`](../spellbook/dreaming/frontier.py#L520)
+1. **Entry — tool execution -> `dreaming`.** `Sleep()` is a model-authored
+   memory tool call, and the call itself is consent. The session enters dreaming
+   after generation, while the executor owns the call, rather than waiting for
+   turn end. This keeps the morning manifest available to the same waking turn.
+   `Sleep(dry_run=true)` is only a preview and stays running.
+   [`sleep.py`](../spellbook/tools/sleep.py),
+   [`session_manager.py`](../spellbook/session_manager.py)
+2. **Execution — pure plan, then existing records.** Homunculus derives and
+   plans the default frontier with no mutation. BlockManager preflights every
+   stable block id, current mode, and target artifact before writing. It then
+   applies only `semantic_block_apply_mode` records with `source="model"`.
+   Parent/child narrative changes serialize and append as one logical record
+   batch, then install together in memory.
+   [`frontier.py`](../spellbook/dreaming/frontier.py),
+   [`block_manager.py`](../spellbook/homunculus/block_manager.py),
+   [`recorder.py`](../spellbook/recorder.py)
+3. **Exit — morning manifest -> interrupted waking turn.** The manifest is
+   built from transitions that actually landed plus every planner/execution
+   debt. Session state returns to `running` before the result follows normal
+   tool-result recording, Homunculus integration, and between-round rerendering.
+   There are no model calls in the sleeping window.
+   [`sleep.py`](../spellbook/tools/sleep.py),
+   [`frontier.py`](../spellbook/dreaming/frontier.py)
+4. **Refusal — kind result, zero frontier mutation.** A missing required
+   artifact refuses the complete plan. No mode record lands; the result names
+   every reason as manifest debt and the runtime wakes normally.
+   [`frontier.py`](../spellbook/dreaming/frontier.py),
+   [`test_sleep_tool.py`](../tests/test_sleep_tool.py)
+5. **Unexpected failure — restore state and fail loudly.** Preflight failures
+   happen before any transition. A later append failure escapes as an exception
+   after the runtime returns to `running`; its recovery account lists exactly
+   the deltas already present in append-only truth. If a record observer fails
+   after a complete batch lands, both the in-memory state and account recognize
+   the landed batch.
+   [`sleep.py`](../spellbook/tools/sleep.py),
+   [`block_manager.py`](../spellbook/homunculus/block_manager.py)
+6. **Still future — forced Sleep and authored Deep Sleep.** Critical-pressure
+   scheduling, forced Sleep, dream authoring, and tiredness nudges remain outside
+   this slice.
 
 No Sleep edge is attached directly to detector completion, summary completion,
-hearth tick, or arbitrary quantum fork completion: current nursery and quantum
-contracts make consumers integrate explicitly, and the design specifies Sleep
-as the waking/dreaming state boundary.
+hearth tick, or arbitrary quantum fork completion. The QUANTUM surface excludes
+Sleep, and nursery work still integrates only at its owning boundary.
 
 ## 13. ⚠ Surprises and findings
 
@@ -999,14 +1016,14 @@ integration, then proves the live range is identical after fresh rehydration.
 [`homunculus.py`](../spellbook/homunculus/homunculus.py),
 [`test_session_manager.py`](../tests/test_session_manager.py)
 
-### ⚠ 2. `dreaming` is a type-level state with no runtime entrance or exit
+### ✓ 2. `dreaming` has a runtime entrance, exit, refusal, and failure contract
 
-Both session and app state unions expose `dreaming`, but current assignments only
-set `suspended`, `idle`, and `running`. Sleep slice 2 must add an actual transition
-rather than treating the enum member as implemented.
-[`session_manager.py:58`](../spellbook/session_manager.py#L58),
-[`session_manager.py:122-140`](../spellbook/session_manager.py#L122),
-[`protocol.py:43-52`](../spellbook/app/protocol.py#L43)
+Sleep now enters from model tool execution and always restores `running` before
+returning or raising. Session lifecycle hooks make the state visible to app
+clients; dry-run preview stays waking.
+[`session_manager.py`](../spellbook/session_manager.py),
+[`lifecycle.py`](../spellbook/app/lifecycle.py),
+[`sleep.py`](../spellbook/tools/sleep.py)
 
 ### ⚠ 3. End-turn TTL means “only the literal `end_turn` stop reason”
 
@@ -1055,7 +1072,7 @@ surface signal of that detached state.
 
 ## 14. Compact transition ledger
 
-This ledger is intended for grep and code review. Its 82 rows are generated from
+This ledger is intended for grep and code review. Its 83 rows are generated from
 the same edge inventory rendered by the HTML diagram.
 
 | Edge | Trigger / guard | Layer | Provenance |
@@ -1136,12 +1153,13 @@ the same edge inventory rendered by the HTML diagram.
 | Execute tools -> Bash timeout | timeout | failure | `spellbook/tools/filesystem.py:469-487` |
 | Execute tools -> Detached drain | shell exited | failure | `spellbook/tools/filesystem.py:489-514` |
 | Shutdown -> Forced task cancellation | CLI > 5s | failure | `scripts/interactive.py:466-480` |
-| Future: Turn ended -> Dreaming | future: quiescent Sleep | future | `Forge memory-tree.md:83-111; spellbook/fork.py:508-535` |
+| Execute tools -> Dreaming | model calls `Sleep()` | session | `spellbook/tools/sleep.py; spellbook/session_manager.py` |
 | Future: Gas gauge -> Dreaming | future: forced hard limit | future | `Forge memory-tree.md:115-120; spellbook/dreaming/frontier.py:650-658` |
-| Future: Dreaming -> Apply frontier + manifest | future: dream / plan | future | `spellbook/dreaming/frontier.py:1-10,294-465` |
-| Future: Apply frontier + manifest -> Idle | future: manifest + wake | future | `Forge memory-tree.md:141-156; spellbook/dreaming/frontier.py:477-595` |
-| Future: Apply frontier + manifest -> Summary block | future: apply modes | future | `spellbook/homunculus/block_manager.py:1251-1290; spellbook/dreaming/frontier.py:1-10` |
-| Future: Apply frontier + manifest -> Pair parent | future: narrative mode | future | `spellbook/dreaming/frontier.py:294-465` |
+| Dreaming -> Apply frontier + manifest | pure plan, then actual deltas | memory | `spellbook/tools/sleep.py; spellbook/dreaming/frontier.py` |
+| Apply frontier + manifest -> Execute tools | manifest + wake to running | session | `spellbook/tools/sleep.py; spellbook/session_manager.py` |
+| Apply frontier + manifest -> Summary block | model-source apply mode | memory | `spellbook/homunculus/block_manager.py; spellbook/recorder.py` |
+| Apply frontier + manifest -> Pair parent | atomic parent + child apply modes | memory | `spellbook/homunculus/block_manager.py; spellbook/recorder.py` |
+| Dreaming -> Unfinished / crashed turn | unexpected failure after state restore | failure | `spellbook/tools/sleep.py; spellbook/executor.py:61-137` |
 
 ## Open concerns
 
@@ -1149,12 +1167,11 @@ the same edge inventory rendered by the HTML diagram.
   detections computed in live coordinates that omitted active injections or
   rendered footers. This fix restores one coordinate truth going forward; it
   does not rewrite historical detection records.
-- The implementation has no actual Sleep entry/exit yet. The future edges above
-  should be revalidated when slice 2 chooses its terminal tool result, session
-  lifecycle hooks, and failure recovery semantics.
-- Fatal exceptions and interactive force-cancel do not guarantee all normal
-  loop/session exit hooks. Sleep should not assume those hooks always ran when
-  recovering a transcript flagged `is_unfinished_turn`.
+- Unexpected Sleep exceptions deliberately use the existing fatal-tool path
+  after restoring the runtime to `running`. The turn can remain unfinished, but
+  any landed apply-mode records are explicit truth and rehydrate normally.
+- Forced Sleep, authored Deep Sleep, scheduling, and tiredness nudges still have
+  no runtime edges; this slice does not imply them.
 - This reference cites the current working tree, which already contained
   unrelated refusal/IR/rehydrator edits. Re-run the provenance audit if those
   files change before the card lands.

@@ -16,7 +16,11 @@ from spellbook.ir_types import (
     IRStreamEvent,
 )
 from spellbook.round_lifecycle import RoundContext, RoundLifecycle
-from spellbook.session_lifecycle import SessionContext, SessionLifecycle
+from spellbook.session_lifecycle import (
+    DreamingOutcome,
+    SessionContext,
+    SessionLifecycle,
+)
 from spellbook.system_response import SystemResponse
 
 TurnStartedHook = Callable[[SessionContext, str], Awaitable[None]]
@@ -90,6 +94,16 @@ class AppSessionLifecycle(SessionLifecycle):
         self._bus.publish(
             event=TurnEndedEvent(turn=ctx.turn_idx, turn_id=turn_id, result=result)
         )
+
+    async def on_enter_dreaming(self, ctx: SessionContext) -> None:
+        self._bus.publish(event=RuntimeStateEvent(state="dreaming"))
+
+    async def on_exit_dreaming(
+        self,
+        ctx: SessionContext,
+        outcome: DreamingOutcome,
+    ) -> None:
+        self._bus.publish(event=RuntimeStateEvent(state="running"))
 
     async def on_system_response(
         self, ctx: SessionContext, response: SystemResponse

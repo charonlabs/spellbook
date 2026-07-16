@@ -60,6 +60,10 @@ if TYPE_CHECKING:
 RecordTap = Callable[[IRRecord], None]
 
 
+class RecordsPersistedError(RuntimeError):
+    """A record observer failed after a complete batch reached the transcript."""
+
+
 class Recorder:
     """Persists blocks and records to the transcript.
 
@@ -284,15 +288,62 @@ class Recorder:
         block_id: str,
         source: SemanticBlockApplyModeSource,
     ) -> None:
-        apply_mode_record = IRSemanticBlockApplyModeRecord(
-            session_id=self._session_id,
-            block_id=block_id,
-            mode=mode,
-            source=source,
-            turn=self._turn,
-            turn_id=self._curr_turn_id,
+        self.apply_semantic_block_modes(((mode, block_id),), source=source)
+
+    def apply_semantic_block_modes(
+        self,
+        applications: Sequence[tuple[SemanticBlockMode, str]],
+        *,
+        source: SemanticBlockApplyModeSource,
+    ) -> None:
+        """Append one logical batch of existing apply-mode records.
+
+        Sleep uses this for a parent/child narrative pair. All records are
+        constructed and serialized before the transcript is opened, then
+        appended with one write so no Python-level failure can land only one
+        half of the pair.
+        """
+
+        records = tuple(
+            IRSemanticBlockApplyModeRecord(
+                session_id=self._session_id,
+                block_id=block_id,
+                mode=mode,
+                source=source,
+                turn=self._turn,
+                turn_id=self._curr_turn_id,
+            )
+            for mode, block_id in applications
         )
-        self._write_record(apply_mode_record)
+        if not records:
+            return
+        payload = "".join(
+            record.model_dump_json() + "\n" for record in records
+        ).encode()
+        with open(self._path, "ab") as f:
+            f.seek(0, 2)
+            original_size = f.tell()
+            try:
+                written = f.write(payload)
+                if written != len(payload):
+                    raise OSError(
+                        "Apply-mode record batch was only partially appended."
+                    )
+                f.flush()
+            except BaseException:
+                # The batch is one logical transition. Removing only its
+                # incomplete tail is corruption recovery, not history editing.
+                f.truncate(original_size)
+                f.flush()
+                raise
+        if self._record_tap is not None:
+            try:
+                for record in records:
+                    self._record_tap(record)
+            except Exception as exc:
+                raise RecordsPersistedError(
+                    "Apply-mode records landed, but a record observer failed."
+                ) from exc
 
     def propose_plan(self, proposal: IRContextPlan) -> None:
         propose_plan_record = IRContextPlanProposalRecord(

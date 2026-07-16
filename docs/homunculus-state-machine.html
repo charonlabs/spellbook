@@ -296,8 +296,8 @@
     <p class="lede">Every current state, transition, lifecycle hook, background integration boundary, memory projection, ambient route, and failure edge—traced to the code that makes it true.</p>
     <div class="meta-row">
       <span class="pill"><b>branch</b> dev</span>
-      <span class="pill"><b>commit</b> 7f4ea63</span>
-      <span class="pill"><b>traced</b> 2026-07-15</span>
+      <span class="pill"><b>commit</b> 40e55cb + Sleep WIP</span>
+      <span class="pill"><b>traced</b> 2026-07-16</span>
       <span class="pill"><b>artifact</b> offline / single file</span>
       <a class="pill" href="homunculus-state-machine.md"><b>prose</b> open Markdown reference</a>
     </div>
@@ -306,7 +306,7 @@
   <main class="shell">
     <div class="notice">
       <span aria-hidden="true">◇</span>
-      <div><strong>How to read this map.</strong> Solid edges are current runtime behavior. Dashed magenta edges are the only future Sleep attachment points supported by the design. Click any node or edge for its cited implementation. Drag to pan; wheel or controls zoom.</div>
+      <div><strong>How to read this map.</strong> Solid edges are current runtime behavior, including self-triggered Sleep. Dashed magenta marks forced Sleep, Deep Sleep, and later scheduling that remain future work. Click any node or edge for its cited implementation. Drag to pan; wheel or controls zoom.</div>
     </div>
 
     <section aria-labelledby="map-heading" style="padding-top:0">
@@ -323,7 +323,7 @@
           <div class="viewport" id="viewport">
             <svg id="machine" viewBox="0 0 1800 2760" role="img" aria-labelledby="svg-title svg-desc">
               <title id="svg-title">Interactive Homunculus state machine</title>
-              <desc id="svg-desc">A layered diagram of session, round, awareness, memory, pressure, inbound, failure, and future Sleep states.</desc>
+              <desc id="svg-desc">A layered diagram of session, round, awareness, memory, pressure, inbound, failure, current Sleep, and future forced-Sleep states.</desc>
             </svg>
             <div class="map-help">drag · wheel zoom · click for provenance</div>
           </div>
@@ -459,14 +459,14 @@
     </section>
 
     <section id="sleep" aria-labelledby="sleep-title">
-      <div class="eyebrow">Future, deliberately bounded</div>
-      <h2 class="section-title" id="sleep-title">Where Sleep may attach</h2>
-      <p class="section-intro">These four dashed edges are design annotations, not implemented behavior. No Sleep edge is drawn from detector completion, summary completion, hearth, or arbitrary quantum completion.</p>
+      <div class="eyebrow">Current, synchronous, self-triggered</div>
+      <h2 class="section-title" id="sleep-title">The Sleep runtime contract</h2>
+      <p class="section-intro">Sleep is now a solid tool-execution path. The tool call is consent; the planner is pure; actual mode records land; the morning result names deltas and debts. Forced Sleep, Deep Sleep, scheduling, and nudges remain future work.</p>
       <div class="card-grid">
-        <article class="section-card future-box"><div class="eyebrow">future 1</div><h3>Quiescent waking → dreaming</h3><p>Manual Sleep is an entity action; waking and dreaming are sequential and mutually exclusive. Current quantum snapshotting independently requires no unfinished turn. <span class="ref">memory-tree.md:83-111 · fork.py:508-535</span></p></article>
-        <article class="section-card future-box"><div class="eyebrow">future 2</div><h3>Dreaming → apply frontier</h3><p>The frontier already derives and plans without mutation. Slice 2 must execute through existing apply-mode records and report only transitions that landed. <a class="ref" href="../spellbook/dreaming/frontier.py#L1">frontier.py:1-10, 294-465</a></p></article>
-        <article class="section-card future-box"><div class="eyebrow">future 3</div><h3>Critical → forced Sleep</h3><p>Forced Sleep attaches at a quiescent boundary and advances existing consented narratives only; it authors nothing at the hard limit. <span class="ref">memory-tree.md:115-120 · frontier.py:650-658</span></p></article>
-        <article class="section-card future-box"><div class="eyebrow">future 4</div><h3>Manifest → wake / idle</h3><p>Every wake announces deltas, debts, and chapter-bearing dream transcript locations. Courtesy is part of the transition. <a class="ref" href="../spellbook/dreaming/frontier.py#L477">frontier.py:477-595</a></p></article>
+        <article class="section-card"><div class="eyebrow">entry</div><h3>Execute → dreaming</h3><p><code>Sleep()</code> is the mind's consent. Session and app state enter dreaming during the tool call; <code>dry_run=true</code> previews the plan while staying awake. <a class="ref" href="../spellbook/tools/sleep.py">sleep.py</a></p></article>
+        <article class="section-card"><div class="eyebrow">execution</div><h3>Plan → apply actual modes</h3><p>Homunculus derives the default frontier without mutation. Stable ids, modes, and artifacts preflight before model-source apply-mode records; narrative parent and child commit as one logical batch. <a class="ref" href="../spellbook/homunculus/block_manager.py">block_manager.py</a></p></article>
+        <article class="section-card"><div class="eyebrow">exit</div><h3>Manifest → same waking turn</h3><p>The morning result is built from transitions that actually landed plus debts. State returns to running before normal tool-result recording and rerendering. <a class="ref" href="../spellbook/dreaming/frontier.py#L477">frontier.py:477-595</a></p></article>
+        <article class="section-card future-box"><div class="eyebrow">still future</div><h3>Critical → forced Sleep</h3><p>Forced Sleep, Deep Sleep authoring, scheduling, and tiredness nudges remain outside this slice. <span class="ref">memory-tree.md:115-120</span></p></article>
       </div>
     </section>
 
@@ -476,7 +476,7 @@
       <p class="section-intro">These are behaviors that were not obvious from the intended architecture. Resolved findings retain their history so the corrected invariant stays visible.</p>
       <div class="surprises">
         <article class="surprise"><div class="surprise-index">01</div><div><h3>Resolved: before-round context now enters transcript and Homunculus together</h3><p>Tracing found that active injections—and, on audit, rendered footer blocks—entered the provider round and transcript without entering BlockManager. Both lifecycles now record and then integrate the same ordered blocks through <code>Homunculus.integrate_context_blocks</code>, preserving live/replay ids and detector coordinates. Historical drift-era detections are not rewritten. <a href="../spellbook/inbound.py">inbound.py</a> · <a href="../spellbook/footer.py">footer.py</a> · <a href="../spellbook/homunculus/homunculus.py">homunculus.py</a></p></div></article>
-        <article class="surprise"><div class="surprise-index">02</div><div><h3><code>dreaming</code> exists only in the state types</h3><p>Current runtime assignments enter suspended, idle, and running only. Slice 2 needs an actual entrance, exit, and failure contract. <a href="../spellbook/session_manager.py#L58">session_manager.py:58, 122-140</a></p></div></article>
+        <article class="surprise"><div class="surprise-index">02</div><div><h3>Resolved: <code>dreaming</code> has a runtime contract</h3><p>Sleep enters dreaming from model tool execution and restores running on success, whole-frontier refusal, or unexpected failure. App lifecycle events expose both edges; dry-run preview stays waking. <a href="../spellbook/tools/sleep.py">sleep.py</a> · <a href="../spellbook/session_manager.py">session_manager.py</a></p></div></article>
         <article class="surprise"><div class="surprise-index">03</div><div><h3>End-turn TTL means literal <code>end_turn</code></h3><p>Refusal, cancellation, max tokens, error, pause-turn, stop-sequence, and unspecified exits all close a manager turn but do not decrement end-turn TTLs. <a href="../spellbook/homunculus/homunculus.py#L927">homunculus.py:927-930</a></p></div></article>
         <article class="surprise"><div class="surprise-index">04</div><div><h3>Fatal exceptions bypass <code>on_loop_exit</code></h3><p>Retry exhaustion or a non-<code>ToolError</code> tool exception can escape before <code>end_turn</code>, leaving replay to identify an unfinished turn. <a href="../spellbook/loop.py#L48">loop.py:48-105</a> · <a href="../spellbook/rehydrator.py#L290">rehydrator.py:290-315</a></p></div></article>
         <article class="surprise"><div class="surprise-index">05</div><div><h3>A detector success may intentionally land only a prefix</h3><p>Out-of-order completions can be deferred and later buffered ranges discarded while a contiguous prefix safely crystallizes. This degraded success is disclosed by footer. <a href="../spellbook/homunculus/block_detector.py#L165">block_detector.py:165-190</a></p></div></article>
@@ -519,8 +519,8 @@
       {id:"running", layer:"session", x:1025, y:80, kicker:"S4", title:"Running / turn", sub:"record, render, loop", desc:"Each pending turn receives a UUID, canonical turn-start records, session hooks, a cancel token, Homunculus rendering, and one run_loop invocation.", refs:["spellbook/session_manager.py:162-187"]},
       {id:"turn-ended", layer:"session", x:1270, y:80, kicker:"SESSION HOOK", title:"Turn ended", sub:"record + activity + queue decision", desc:"The manager records turn_end, clears the cancel token, and invokes on_turn_ended before choosing the next queued turn or idle.", refs:["spellbook/session_manager.py:184-187","spellbook/recorder.py:199-206"]},
       {id:"shutdown", layer:"session", x:1515, y:80, kicker:"S14", title:"Shutdown", sub:"cancel, wake queue, harvest", desc:"Shutdown requests cancellation, wakes idle, stops hearth, cancels/harvests Nursery, closes debug and session hooks, then app shutdown requests process SIGTERM.", refs:["spellbook/session_manager.py:134-143","spellbook/session_manager.py:213-217","spellbook/app/runtime.py:505-533"]},
-      {id:"dreaming", layer:"future", x:1270, y:235, kicker:"FUTURE S5", title:"Dreaming", sub:"reserved; never assigned today", desc:"The type admits dreaming, but current runtime code never enters it. Design makes waking and dreaming sequential, mutually exclusive states.", note:"Future only. The current runtime has no entrance, exit, or failure recovery for this state.", refs:["spellbook/session_manager.py:58","spellbook/app/protocol.py:36-52","Forge memory-tree.md:100-111"]},
-      {id:"frontier", layer:"future", x:1515, y:235, kicker:"FUTURE", title:"Apply frontier + manifest", sub:"existing modes → honest wake", desc:"The existing pure frontier computes requested mode transitions. Slice 2 must apply them through current apply-mode records and build a manifest from actual deltas and debts.", refs:["spellbook/dreaming/frontier.py:1-10","spellbook/dreaming/frontier.py:294-465","spellbook/dreaming/frontier.py:477-595"]},
+      {id:"dreaming", layer:"session", x:1270, y:235, kicker:"S5", title:"Dreaming", sub:"synchronous Sleep window", desc:"A model Sleep call enters this mutually-exclusive state during tool execution and restores running on completed, refused, or failed outcomes. Dry-run preview stays waking.", refs:["spellbook/tools/sleep.py","spellbook/session_manager.py","spellbook/app/lifecycle.py"]},
+      {id:"frontier", layer:"memory", x:1515, y:235, kicker:"SLEEP", title:"Apply frontier + manifest", sub:"actual modes → honest wake", desc:"Homunculus plans without mutation; BlockManager preflights and records actual model-source deltas, narrative pairs atomically, then the frontier manifest reports deltas and debts.", refs:["spellbook/tools/sleep.py","spellbook/homunculus/block_manager.py","spellbook/dreaming/frontier.py"]},
 
       {id:"before", layer:"round", x:45, y:500, kicker:"R0 · HOOK", title:"before_round", sub:"skills → inject → time → footer", desc:"Last request-assembly boundary. Active injections and the rendered footer block are recorded in provider order and integrated into Homunculus coordinates before generation.", refs:["spellbook/session_manager.py","spellbook/inbound.py","spellbook/footer.py"]},
       {id:"generate", layer:"round", x:290, y:500, kicker:"R1", title:"Generate / stream", sub:"surface once; stream or retry", desc:"Build the provider surface, stream events through lifecycle, and race every next event against cooperative cancellation.", refs:["spellbook/generator.py:67-170"]},
@@ -662,12 +662,13 @@
       {id:"e-execute-detach", from:"execute", to:"bash-detach", label:"shell exited", layer:"failure", ref:"spellbook/tools/filesystem.py:489-514"},
       {id:"e-shutdown-force", from:"shutdown", to:"force-cancel", label:"CLI > 5s", layer:"failure", ref:"scripts/interactive.py:466-480"},
 
-      {id:"e-ended-dreaming", from:"turn-ended", to:"dreaming", label:"future: quiescent Sleep", layer:"future", future:true, ref:"Forge memory-tree.md:83-111; spellbook/fork.py:508-535"},
+      {id:"e-execute-dreaming", from:"execute", to:"dreaming", label:"model calls Sleep()", layer:"session", ref:"spellbook/tools/sleep.py; spellbook/session_manager.py"},
       {id:"e-gauge-dreaming", from:"gauge", to:"dreaming", label:"future: forced hard limit", layer:"future", future:true, ref:"Forge memory-tree.md:115-120; spellbook/dreaming/frontier.py:650-658"},
-      {id:"e-dreaming-frontier", from:"dreaming", to:"frontier", label:"future: dream / plan", layer:"future", future:true, ref:"spellbook/dreaming/frontier.py:1-10,294-465"},
-      {id:"e-frontier-idle", from:"frontier", to:"idle", label:"future: manifest + wake", layer:"future", future:true, ref:"Forge memory-tree.md:141-156; spellbook/dreaming/frontier.py:477-595"},
-      {id:"e-frontier-summary", from:"frontier", to:"summary", label:"future: apply modes", layer:"future", future:true, ref:"spellbook/homunculus/block_manager.py:1251-1290; spellbook/dreaming/frontier.py:1-10"},
-      {id:"e-frontier-pair", from:"frontier", to:"pair-parent", label:"future: narrative mode", layer:"future", future:true, ref:"spellbook/dreaming/frontier.py:294-465"}
+      {id:"e-dreaming-frontier", from:"dreaming", to:"frontier", label:"pure plan + actual deltas", layer:"memory", ref:"spellbook/tools/sleep.py; spellbook/dreaming/frontier.py"},
+      {id:"e-frontier-execute", from:"frontier", to:"execute", label:"manifest + wake to running", layer:"session", ref:"spellbook/tools/sleep.py; spellbook/session_manager.py"},
+      {id:"e-frontier-summary", from:"frontier", to:"summary", label:"model-source apply mode", layer:"memory", ref:"spellbook/homunculus/block_manager.py; spellbook/recorder.py"},
+      {id:"e-frontier-pair", from:"frontier", to:"pair-parent", label:"atomic parent + child", layer:"memory", ref:"spellbook/homunculus/block_manager.py; spellbook/recorder.py"},
+      {id:"e-dreaming-crash", from:"dreaming", to:"crash", label:"unexpected failure after state restore", layer:"failure", ref:"spellbook/tools/sleep.py; spellbook/executor.py:61-137"}
     ];
 
     const walkthroughs = {

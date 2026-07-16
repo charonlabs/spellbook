@@ -68,6 +68,7 @@ from spellbook.round_lifecycle import (
 from spellbook.loop import run_loop
 from spellbook.session_lifecycle import (
     CompositeSessionLifecycle,
+    DreamingOutcome,
     SessionContext,
     SessionLifecycle,
 )
@@ -212,6 +213,16 @@ class _RecordingSessionLifecycle(SessionLifecycle):
         self, ctx: SessionContext, result: IRLoopResult, turn_id: str
     ) -> None:
         self.events.append(("on_turn_ended", result.stop_reason))
+
+    async def on_enter_dreaming(self, ctx: SessionContext) -> None:
+        self.events.append(("on_enter_dreaming", None))
+
+    async def on_exit_dreaming(
+        self,
+        ctx: SessionContext,
+        outcome: DreamingOutcome,
+    ) -> None:
+        self.events.append(("on_exit_dreaming", outcome))
 
     async def on_system_response(
         self, ctx: SessionContext, response: SystemResponse
@@ -533,6 +544,7 @@ class TestSessionProfileBuild:
                     "Configure",
                     "Pin",
                     "Recall",
+                    "Sleep",
                 },
                 "round_lifecycles": [
                     "RecordingRoundLifecycle",
@@ -646,6 +658,22 @@ class TestSessionProfileBuild:
         assert "git_state=" in messages[0]
 
     @pytest.mark.asyncio
+    async def test_build_binds_sleep_to_the_session_dreaming_runtime(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=tmp_path / "sleep_runtime.jsonl",
+            config=_config(tmp_path),
+        )
+
+        assert manager.executor.meta.dreaming_runtime is manager
+
+    @pytest.mark.asyncio
     async def test_quantum_profile_suppresses_ambient_services(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -745,6 +773,24 @@ class TestInboundQueueSemantics:
         assert queued[0].delivery == "inject"
         assert isinstance(queued[0].blocks[0], IRUserTextBlock)
         assert queued[0].blocks[0].text == "background notification"
+
+    @pytest.mark.asyncio
+    async def test_sleep_runtime_enters_dreaming_and_returns_to_running(
+        self, tmp_path: Path
+    ) -> None:
+        lifecycle = _RecordingSessionLifecycle()
+        manager = _make_manager(tmp_path, session_lifecycle=lifecycle)
+        manager.state = "running"
+
+        await manager.enter_dreaming()
+
+        assert manager.state == "dreaming"
+        await manager.exit_dreaming("refused")
+        assert manager.state == "running"
+        assert lifecycle.events == [
+            ("on_enter_dreaming", None),
+            ("on_exit_dreaming", "refused"),
+        ]
 
     @pytest.mark.asyncio
     async def test_shutdown_wakes_idle_queue_and_run_exits(
@@ -1670,6 +1716,7 @@ class TestBuildResumeBehavior:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
         assert isinstance(manager.executor.meta, ToolMetadata)
         assert manager.executor.meta.cwd == tmp_path
@@ -1691,6 +1738,7 @@ class TestBuildResumeBehavior:
             "Configure",
             "Pin",
             "Recall",
+            "Sleep",
         }
 
     @pytest.mark.asyncio

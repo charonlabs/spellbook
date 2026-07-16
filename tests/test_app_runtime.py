@@ -212,6 +212,23 @@ async def test_startup_wires_app_lifecycles_and_record_tap(tmp_path: Path) -> No
     await runtime.shutdown()
 
 
+async def test_app_lifecycle_publishes_sleep_entry_and_wake_states() -> None:
+    bus = AppEventBus()
+    subscription = bus.subscribe()
+    lifecycle = AppSessionLifecycle(bus)
+    ctx = SessionContext(session_id="session_sleep", turn_idx=1)
+
+    await lifecycle.on_enter_dreaming(ctx)
+    await lifecycle.on_exit_dreaming(ctx, "completed")
+
+    entered = await asyncio.wait_for(subscription.__anext__(), timeout=1)
+    exited = await asyncio.wait_for(subscription.__anext__(), timeout=1)
+    assert isinstance(entered, RuntimeStateEvent)
+    assert entered.state == "dreaming"
+    assert isinstance(exited, RuntimeStateEvent)
+    assert exited.state == "running"
+
+
 async def test_quantum_startup_does_not_start_hearth_scheduler(
     tmp_path: Path, monkeypatch
 ) -> None:

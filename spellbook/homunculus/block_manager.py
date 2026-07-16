@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from spellbook.config import HomunculusConfig
+from spellbook.dreaming.frontier import FrontierAdvancePlan, FrontierTransition
 from spellbook.footer import FooterController
 from spellbook.fork import (
     BlockDetectorResult,
@@ -40,7 +41,7 @@ from spellbook.ir_types import (
     SemanticBlockMode,
 )
 from spellbook.nursery import Nursery, NurseryJob, NurseryJobResult
-from spellbook.recorder import Recorder
+from spellbook.recorder import Recorder, RecordsPersistedError
 from spellbook.rehydrator import RehydrationResult
 from spellbook.runtime_breadcrumb import spellbook_runtime_breadcrumb
 
@@ -87,6 +88,19 @@ class _ToolClosureEnvelope:
 class _ToolClosureViolation:
     block: IRSemanticBlock
     envelope: _ToolClosureEnvelope
+
+
+class FrontierExecutionError(RuntimeError):
+    """An unexpected apply failure with the canonical deltas already landed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        applied_deltas: Sequence[FrontierTransition],
+    ) -> None:
+        super().__init__(message)
+        self.applied_deltas = tuple(applied_deltas)
 
 
 class BlockManager:
@@ -1292,12 +1306,134 @@ class BlockManager:
             )
         return block_id
 
+    def apply_frontier_plan(
+        self,
+        plan: FrontierAdvancePlan,
+    ) -> tuple[FrontierTransition, ...]:
+        """Apply a fully planned Sleep frontier through apply-mode records.
+
+        The complete plan is preflighted before the first record is written.
+        An active or newly-applied pair narrative is then committed as one
+        record batch and installed in memory as one group. Other transitions
+        retain plan order. If a later group fails, the raised error names the
+        earlier deltas whose append-only records already landed.
+        """
+
+        if plan.refused:
+            if plan.transitions:
+                raise ValueError("A refused frontier plan cannot have transitions.")
+            return ()
+
+        prepared: dict[int, tuple[FrontierTransition, IRSemanticBlock]] = {}
+        for transition in plan.transitions:
+            if transition.block_idx in prepared:
+                raise ValueError(f"Frontier plan repeats block {transition.block_idx}.")
+            block = self._get_block_by_idx(transition.block_idx)
+            if block.id != transition.block_id:
+                raise ValueError(
+                    f"Frontier block {transition.block_idx} changed identity: "
+                    f"planned {transition.block_id}, found {block.id}."
+                )
+            if block.mode != transition.from_mode:
+                raise ValueError(
+                    f"Frontier block {transition.block_idx} changed mode: planned "
+                    f"from {transition.from_mode}, found {block.mode}."
+                )
+            prepared[transition.block_idx] = (
+                transition,
+                self._prepare_mode_update(
+                    block,
+                    transition.to_mode,
+                    queue_summary_refusal=False,
+                ),
+            )
+
+        atomic_group_by_idx: dict[int, tuple[int, int]] = {}
+        transition_indices = set(prepared)
+        for narrative in plan.frontier.narratives:
+            pair = narrative.block_indices
+            pair_transitions = transition_indices.intersection(pair)
+            moves_narrative = narrative.active or any(
+                prepared[idx][0].to_mode == "pair_narrative" for idx in pair_transitions
+            )
+            if not moves_narrative:
+                continue
+            if pair_transitions != set(pair):
+                raise ValueError(
+                    f"Chapter {narrative.chapter_number} must transition parent and "
+                    "child together."
+                )
+            atomic_group_by_idx[pair[0]] = pair
+            atomic_group_by_idx[pair[1]] = pair
+
+        landed: list[FrontierTransition] = []
+        applied_indices: set[int] = set()
+        for transition in plan.transitions:
+            if transition.block_idx in applied_indices:
+                continue
+            group_indices = atomic_group_by_idx.get(
+                transition.block_idx, (transition.block_idx,)
+            )
+            group = tuple(prepared[idx] for idx in group_indices)
+            try:
+                self._recorder.apply_semantic_block_modes(
+                    tuple(
+                        (group_transition.to_mode, group_transition.block_id)
+                        for group_transition, _ in group
+                    ),
+                    source="model",
+                )
+            except RecordsPersistedError as exc:
+                for group_transition, new_block in group:
+                    self.semantic_blocks[group_transition.block_idx] = new_block
+                    landed.append(group_transition)
+                    applied_indices.add(group_transition.block_idx)
+                raise FrontierExecutionError(
+                    f"Frontier block group {group_indices} landed, but record "
+                    f"notification failed: {exc}",
+                    applied_deltas=landed,
+                ) from exc
+            except Exception as exc:
+                raise FrontierExecutionError(
+                    f"Frontier execution failed before block group "
+                    f"{group_indices} landed: {exc}",
+                    applied_deltas=landed,
+                ) from exc
+
+            for group_transition, new_block in group:
+                self.semantic_blocks[group_transition.block_idx] = new_block
+                landed.append(group_transition)
+                applied_indices.add(group_transition.block_idx)
+
+        return tuple(landed)
+
     def _apply_mode(
         self,
         block: IRSemanticBlock,
         mode: SemanticBlockMode,
         source: SemanticBlockApplyModeSource,
     ) -> IRSemanticBlock:
+        if mode == block.mode:
+            return block
+        new_block = self._prepare_mode_update(
+            block,
+            mode,
+            queue_summary_refusal=True,
+        )
+        self._recorder.apply_semantic_block_mode(
+            mode, block.id, source
+        )  # this only gets recorded when successful
+        return new_block
+
+    def _prepare_mode_update(
+        self,
+        block: IRSemanticBlock,
+        mode: SemanticBlockMode,
+        *,
+        queue_summary_refusal: bool,
+    ) -> IRSemanticBlock:
+        """Validate and construct a mode update without recording or mutating."""
+
         if mode == block.mode:
             return block
         if mode not in block.available_modes:
@@ -1307,7 +1443,8 @@ class BlockManager:
         if mode == "summary":
             refusal = self._tool_closure_refusal(block)
             if refusal is not None:
-                self._queue_tool_closure_refusal_footer(block, refusal)
+                if queue_summary_refusal:
+                    self._queue_tool_closure_refusal_footer(block, refusal)
                 raise ValueError(refusal)
         match mode:
             case "full":
@@ -1328,9 +1465,6 @@ class BlockManager:
                 raise NotImplementedError(
                     f'`_apply_mode` for mode="{mode}" is not implemented.'
                 )
-        self._recorder.apply_semantic_block_mode(
-            mode, block.id, source
-        )  # this only gets recorded when successful
         return new_block
 
     async def _count_semantic_block(

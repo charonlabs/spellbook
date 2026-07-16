@@ -1,7 +1,18 @@
 from dataclasses import dataclass
+from typing import Literal, Protocol
 
 from .ir_types import IRInboundMessage, IRLoopResult
 from .system_response import SystemResponse
+
+DreamingOutcome = Literal["completed", "refused", "failed"]
+
+
+class DreamingRuntime(Protocol):
+    """The narrow session-state seam available to the Sleep tool."""
+
+    async def enter_dreaming(self) -> None: ...
+
+    async def exit_dreaming(self, outcome: DreamingOutcome) -> None: ...
 
 
 @dataclass  # # not pydantic because mutable, internal state
@@ -30,6 +41,16 @@ class SessionLifecycle:
     ) -> None:
         """run_loop returned. Post-turn analysis: tiredness accumulation,
         rest decision, any subsystem work triggered by turn boundaries."""
+
+    async def on_enter_dreaming(self, ctx: SessionContext) -> None:
+        """A self-triggered Sleep entered its synchronous dreaming window."""
+
+    async def on_exit_dreaming(
+        self,
+        ctx: SessionContext,
+        outcome: DreamingOutcome,
+    ) -> None:
+        """Sleep returned to the interrupted waking turn, with an honest outcome."""
 
     async def on_system_response(
         self, ctx: SessionContext, response: SystemResponse
@@ -63,6 +84,18 @@ class CompositeSessionLifecycle(SessionLifecycle):
     ) -> None:
         for lifecycle in self._lifecycles:
             await lifecycle.on_turn_ended(ctx, result, turn_id)
+
+    async def on_enter_dreaming(self, ctx: SessionContext) -> None:
+        for lifecycle in self._lifecycles:
+            await lifecycle.on_enter_dreaming(ctx)
+
+    async def on_exit_dreaming(
+        self,
+        ctx: SessionContext,
+        outcome: DreamingOutcome,
+    ) -> None:
+        for lifecycle in self._lifecycles:
+            await lifecycle.on_exit_dreaming(ctx, outcome)
 
     async def on_system_response(
         self, ctx: SessionContext, response: SystemResponse

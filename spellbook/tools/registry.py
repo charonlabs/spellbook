@@ -44,6 +44,7 @@ from .self_work import (
     REFLECT_TOOL,
     REFLECT_TOOL_RESULTS_TOOL,
 )
+from .sleep import SLEEP_TOOL
 
 CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
     "coding": frozenset({"filesystem", "thinking"}),
@@ -149,6 +150,7 @@ MAIN_TOOLS: list[Tool[Any]] = [
     CONFIGURE_TOOL,
     PIN_TOOL,
     RECALL_TOOL,
+    SLEEP_TOOL,
     REACH_TOOL,
 ]
 

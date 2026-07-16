@@ -25,7 +25,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, Generic, Literal, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Generic,
+    Literal,
+    TypeVar,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -50,6 +57,8 @@ from ..ir_types import (
 
 if TYPE_CHECKING:
     from ..homunculus.homunculus import Homunculus
+    from ..session_lifecycle import DreamingRuntime
+
 
 ToolCategory = Literal[
     "filesystem",
@@ -86,6 +95,7 @@ class ToolMetadata:
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
     body_url: str | None = None
+    dreaming_runtime: DreamingRuntime | None = None
 
 
 # I'm using inheritance here b/c idk how to do the union thingy with dataclasses

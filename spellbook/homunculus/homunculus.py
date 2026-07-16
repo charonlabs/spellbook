@@ -4,10 +4,19 @@ from uuid import uuid4
 
 from spellbook.backends.model_backend import TokenCounter
 from spellbook.config import HomunculusConfig
+from spellbook.dreaming.frontier import (
+    FrontierAdvancePlan,
+    FrontierTransition,
+    plan_frontier_advance,
+)
 from spellbook.footer import FooterController
 from spellbook.fork import ForkConfig, ForkRunner
 from spellbook.hearth import HEARTH_RUNTIME_CONFIG_NAMESPACE, HearthSettings
-from spellbook.homunculus.block_manager import BlockManager, ForgetBlockResult
+from spellbook.homunculus.block_manager import (
+    BlockManager,
+    ForgetBlockResult,
+    FrontierExecutionError,
+)
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
     AwarenessHomunculusSnapshot,
@@ -334,6 +343,27 @@ class Homunculus:
         if result.compacted:
             self._invalidate(reason=f"forget:{source}")
         return result
+
+    def plan_sleep_frontier(self) -> FrontierAdvancePlan:
+        """Derive the default, mutation-free frontier plan for self-triggered Sleep."""
+
+        return plan_frontier_advance(self._block_manager.semantic_blocks)
+
+    def apply_sleep_frontier(
+        self,
+        plan: FrontierAdvancePlan,
+    ) -> tuple[FrontierTransition, ...]:
+        """Land a Sleep plan and invalidate every affected awareness projection."""
+
+        try:
+            applied = self._block_manager.apply_frontier_plan(plan)
+        except FrontierExecutionError as exc:
+            if exc.applied_deltas:
+                self._invalidate(reason="sleep:partial_failure")
+            raise
+        if applied:
+            self._invalidate(reason="sleep")
+        return applied
 
     async def pin(
         self, block_idx: int, reason: str, facet_id: str | None = None

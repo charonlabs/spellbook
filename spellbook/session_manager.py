@@ -30,6 +30,7 @@ from spellbook.refusal import (
 from spellbook.runtime_breadcrumb import spellbook_runtime_breadcrumb
 from spellbook.session_lifecycle import (
     CompositeSessionLifecycle,
+    DreamingOutcome,
     SessionContext,
     SessionLifecycle,
 )
@@ -122,6 +123,9 @@ class SessionManager:
         )
         self.debug_emitter.bind_context(self._ctx)
         self.slash_commands = SlashCommandHandler(self)
+        meta = getattr(executor, "meta", None)
+        if isinstance(meta, ToolMetadata):
+            meta.dreaming_runtime = self
 
     async def run(self) -> None:
         """Main entrypoint. Run until shutdown is requested."""
@@ -207,6 +211,28 @@ class SessionManager:
         if self.cancel_token is not None:
             self.cancel_token.cancel()
         await self.inbound_queue.shutdown_queue()
+
+    async def enter_dreaming(self) -> None:
+        """Enter Sleep's mutually exclusive runtime window from tool execution."""
+
+        if self.state != "running":
+            raise RuntimeError(
+                f"Sleep can only enter from a running turn, not {self.state}."
+            )
+        self.state = "dreaming"
+        try:
+            await self.session_lifecycle.on_enter_dreaming(self._ctx)
+        except BaseException:
+            self.state = "running"
+            raise
+
+    async def exit_dreaming(self, outcome: DreamingOutcome) -> None:
+        """Return Sleep to its interrupted waking turn on every outcome."""
+
+        if self.state != "dreaming":
+            raise RuntimeError(f"Sleep can only exit from dreaming, not {self.state}.")
+        self.state = "running"
+        await self.session_lifecycle.on_exit_dreaming(self._ctx, outcome)
 
     async def get_tool_meta(self) -> ToolMetadata:
         return self.executor.meta

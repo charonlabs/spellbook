@@ -12,7 +12,7 @@ Spellbook gives an AI entity a persistent session with real memory management:
 
 - **A Homunculus.** The memory management layer that mediates between the raw transcript and what the mind is aware of. It detects semantic block boundaries, compresses older blocks into summaries, manages a token budget, and gives the entity tools to inspect and shape its own memory.
 
-- **Self-work tools.** The entity can `Reflect` (see its own memory state), `Forget` (compact a block to its summary), `Pin` (protect a block from compaction), and `Recall` (temporarily restore a compacted block to full fidelity). Memory is something the mind participates in, not something that happens to it.
+- **Self-work tools.** The entity can `Reflect` (see its own memory state), `Forget` (compact a block to its summary), `Pin` (protect a block from compaction), `Recall` (temporarily restore compacted memory), and `Sleep` (advance the existing dream frontier by its own hand). Memory is something the mind participates in, not something that happens to it.
 
 - **A Planner** that proposes compaction before acting. The entity sees what the planner wants to compress and can intervene — Pin to protect, Forget to control the narrative, or let it proceed. No surprise deletions. No invisible context cliffs.
 
@@ -115,7 +115,7 @@ Spellbook ships with a complete tool surface:
 | Category | Tools |
 |----------|-------|
 | **Filesystem** | Bash, Read, Write, Edit |
-| **Memory** | Reflect, Forget, Pin, Recall |
+| **Memory** | Reflect, Forget, Pin, Recall, Sleep |
 | **Web** | WebSearch, WebRead, WebAnswer |
 | **Skills** | Skill (progressive discovery) |
 
