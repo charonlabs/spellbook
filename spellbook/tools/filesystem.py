@@ -449,6 +449,17 @@ async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult
             cwd=meta.cwd,
             start_new_session=True,
         )
+    except OSError as e:
+        # Pre-spawn failure (e.g. the working directory no longer exists, or
+        # fd limits): the process never started. A broken cwd or environment
+        # is the command failing, not the session dying — return it as a
+        # tool result, same defensive pattern as the kill-race fix.
+        output_transport.close()
+        raise ToolError(
+            f"Command could not start: {e.strerror or e}. "
+            f"(cwd was {str(meta.cwd)!r} — if it no longer exists, "
+            "cd to a valid directory or use an absolute path.)"
+        ) from e
     except BaseException:
         output_transport.close()
         raise

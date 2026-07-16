@@ -475,3 +475,15 @@ async def test_bash_signal_treats_missing_process_group_as_already_stopped(
     monkeypatch.setattr(os, "killpg", raise_process_lookup)
 
     _signal_process_group(999_999, signal.SIGKILL)
+
+
+@pytest.mark.anyio
+async def test_bash_nonexistent_cwd_returns_tool_error(tmp_path: Path) -> None:
+    """Pre-spawn OSError (e.g. vanished cwd) is a tool result, not a crash."""
+    gone = tmp_path / "vanished"
+    meta = ToolMetadata(cwd=gone, transcript_path=tmp_path / "t.jsonl")
+    with pytest.raises(ToolError) as excinfo:
+        await exec_bash(meta, BashInput(command="echo hello"))
+    message = str(excinfo.value)
+    assert "Command could not start" in message
+    assert "vanished" in message
