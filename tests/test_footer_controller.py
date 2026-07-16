@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, cast
 
 import pytest
@@ -17,6 +18,7 @@ from spellbook.footer import (
 from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
     IRBlockRecord,
+    IRBlock,
     IRFooter,
     IRFooterDrainRecord,
     IRFooterQueueRecord,
@@ -79,6 +81,14 @@ class _FakeDebugEmitter:
 
     def debug(self, **kwargs: object) -> None:
         self.debug_events.append(kwargs)
+
+
+class _FakeHomunculus:
+    def __init__(self) -> None:
+        self.integrated: list[list[IRBlock]] = []
+
+    async def integrate_context_blocks(self, blocks: Sequence[IRBlock]) -> None:
+        self.integrated.append(list(blocks))
 
 
 class TestFooterControllerQueueing:
@@ -416,8 +426,9 @@ class TestFooterControllerRoundLifecycle:
         recorder, transcript = _make_recorder(tmp_path)
         inbound = InboundMessageQueue()
         controller = FooterController(inbound_queue=inbound, recorder=recorder)
+        homunculus = _FakeHomunculus()
         lifecycle = FooterControllerRoundLifecycle(
-            controller=controller, recorder=recorder
+            controller=controller, recorder=recorder, homunculus=homunculus
         )
         original = IRUserTextBlock(text="hello", origin="human")
         ctx = RoundContext(
@@ -430,6 +441,7 @@ class TestFooterControllerRoundLifecycle:
         await lifecycle.before_round(ctx)
 
         assert ctx.blocks == [original]
+        assert homunculus.integrated == []
         records = _read_records(transcript)
         assert not any(isinstance(r, IRFooterDrainRecord) for r in records)
         block_records = [r for r in records if isinstance(r, IRBlockRecord)]
@@ -445,8 +457,12 @@ class TestFooterControllerRoundLifecycle:
         controller = FooterController(
             inbound_queue=inbound, recorder=recorder, debug_emitter=cast(Any, debug)
         )
+        homunculus = _FakeHomunculus()
         lifecycle = FooterControllerRoundLifecycle(
-            controller=controller, recorder=recorder, debug_emitter=cast(Any, debug)
+            controller=controller,
+            recorder=recorder,
+            homunculus=homunculus,
+            debug_emitter=cast(Any, debug),
         )
 
         controller.queue_footer(
@@ -478,6 +494,8 @@ class TestFooterControllerRoundLifecycle:
         assert isinstance(footer_block, IRUserTextBlock)
         assert footer_block.origin == "system"
         assert footer_block.text == "<spellbook>\nbeta\n---\nalpha\n</spellbook>"
+        assert ctx.blocks_this_round == [footer_block]
+        assert homunculus.integrated == [[footer_block]]
 
         records = _read_records(transcript)
         drain_records = [r for r in records if isinstance(r, IRFooterDrainRecord)]

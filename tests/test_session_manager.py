@@ -14,9 +14,15 @@ from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.executor import Executor
 from spellbook.footer import FooterController
-from spellbook.fork import BlockDetectorConfig, BlockSummarizerConfig, ForkRunner
+from spellbook.fork import (
+    BlockDetectorConfig,
+    BlockDetectorResult,
+    BlockSummarizerConfig,
+    ForkRunner,
+)
 from spellbook.generator import Generator
 from spellbook.homunculus import Homunculus
+from spellbook.homunculus.homunculus import HomunculusRoundLifecycle
 from spellbook.inbound import InboundInjectionRoundLifecycle, InboundMessageQueue
 from spellbook.ir_types import (
     InboundDelivery,
@@ -59,6 +65,7 @@ from spellbook.round_lifecycle import (
     RoundContext,
     RoundLifecycle,
 )
+from spellbook.loop import run_loop
 from spellbook.session_lifecycle import (
     CompositeSessionLifecycle,
     SessionContext,
@@ -230,8 +237,14 @@ class _FakeTokenCounter(TokenCounter):
 
 
 class _FakeForkRunner:
+    def __init__(self) -> None:
+        self.integrated_forks: list[str] = []
+
     async def run_fork(self, fork_config) -> Never:
         raise AssertionError("Fork runner should not be used in this test")
+
+    def integrate_result(self, fork_id: str) -> None:
+        self.integrated_forks.append(fork_id)
 
 
 class _CustomToolInput(BaseModel):
@@ -790,6 +803,99 @@ class TestInboundQueueSemantics:
 
 class TestInboundInjectionRoundLifecycle:
     @pytest.mark.asyncio
+    async def test_injection_keeps_live_rehydrated_and_detector_coordinates_aligned(
+        self, tmp_path: Path
+    ) -> None:
+        transcript = tmp_path / "injected_coordinate_truth.jsonl"
+        config = _config(tmp_path)
+        recorder = Recorder(config, transcript, "session_test", DEFAULT_TOOL_REGISTRY)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        initial = IRUserTextBlock(text="initial", origin="human")
+        recorder.start_turn("turn_1", [initial])
+        inbound_queue = InboundMessageQueue()
+        homunculus = _make_homunculus(
+            config=config,
+            recorder=recorder,
+            inbound_queue=inbound_queue,
+        )
+        initial_blocks = await homunculus.render_context([initial])
+        await inbound_queue.put(_user_msg("injected", delivery="inject"))
+        generated = IRAssistantTextBlock(
+            text="generated after injection", origin="model"
+        )
+        lifecycle = CompositeRoundLifecycle(
+            [
+                RecordingRoundLifecycle(recorder),
+                HomunculusRoundLifecycle(homunculus),
+                InboundInjectionRoundLifecycle(
+                    inbound_queue=inbound_queue,
+                    recorder=recorder,
+                    homunculus=homunculus,
+                ),
+            ]
+        )
+
+        await run_loop(
+            generator=cast(Generator, _FakeGenerator([_gen(blocks=[generated])])),
+            executor=cast(Executor, _FakeExecutor([])),
+            lifecycle=lifecycle,
+            initial_blocks=initial_blocks,
+            cancel_token=CancelToken(),
+        )
+
+        rehydrated = Rehydrator(transcript).run()
+        replay_homunculus = _make_homunculus(config=config, recorder=recorder)
+        await replay_homunculus.rehydrate(rehydrated)
+        live_manager = homunculus._block_manager  # noqa: SLF001 - compare coordinates
+        replay_manager = replay_homunculus._block_manager  # noqa: SLF001
+
+        def text_coordinates(blocks: Sequence[IRBlock]) -> list[tuple[int, str]]:
+            coordinates: list[tuple[int, str]] = []
+            for block_id, block in enumerate(blocks):
+                assert isinstance(block, (IRUserTextBlock, IRAssistantTextBlock))
+                coordinates.append((block_id, block.text))
+            return coordinates
+
+        assert text_coordinates(live_manager.context_blocks) == text_coordinates(
+            replay_manager.context_blocks
+        )
+        assert live_manager.next_block_id == replay_manager.next_block_id
+
+        proposal = BlockDetectorResult(
+            completed=[
+                IRSemanticBlockRange(
+                    title="Injected round",
+                    start_block=0,
+                    end_block=2,
+                    completed=True,
+                )
+            ],
+            still_buffered=[],
+        )
+        live_manager._accept_background_work = False  # noqa: SLF001 - isolate boundary
+        await live_manager._integrate_detection(  # noqa: SLF001 - detector boundary
+            proposal,
+            "detector_coordinate_truth",
+        )
+        recorder.end_turn("end_turn")
+
+        canonical = Rehydrator(transcript).run()
+        canonical_homunculus = _make_homunculus(config=config, recorder=recorder)
+        await canonical_homunculus.rehydrate(canonical)
+        canonical_manager = canonical_homunculus._block_manager  # noqa: SLF001
+        assert (
+            [
+                (block.range.start_block, block.range.end_block)
+                for block in live_manager.semantic_blocks
+            ]
+            == [
+                (block.range.start_block, block.range.end_block)
+                for block in canonical_manager.semantic_blocks
+            ]
+            == [(0, 2)]
+        )
+
+    @pytest.mark.asyncio
     async def test_injected_messages_join_current_round_and_are_recorded(
         self, tmp_path: Path
     ) -> None:
@@ -809,6 +915,11 @@ class TestInboundInjectionRoundLifecycle:
         lifecycle = InboundInjectionRoundLifecycle(
             inbound_queue=inbound_queue,
             recorder=recorder,
+            homunculus=_make_homunculus(
+                config=config,
+                recorder=recorder,
+                inbound_queue=inbound_queue,
+            ),
         )
         ctx = RoundContext(
             blocks=[],

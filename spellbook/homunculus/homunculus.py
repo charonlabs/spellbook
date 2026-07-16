@@ -36,6 +36,7 @@ from ..ir_types import (
     IRGeneration,
     IRSemanticBlockSummary,
     IRToolResultBlock,
+    IRUsage,
     RuntimeConfigNamespace,
     SemanticBlockApplyModeSource,
     StopReason,
@@ -152,7 +153,7 @@ class Homunculus:
 
     async def render_context(self, new_blocks: Sequence[IRBlock]) -> list[IRBlock]:
         if len(new_blocks) > 0:
-            await self._block_manager.append_context_blocks(new_blocks)
+            await self.integrate_context_blocks(new_blocks)
         context: list[IRBlock] = []
         for b in self._block_manager.semantic_blocks:
             context.extend(self._block_manager.render_block(semantic_block=b))
@@ -496,17 +497,24 @@ class Homunculus:
             "effective": new.as_record_dict(),
         }
 
+    async def integrate_context_blocks(
+        self,
+        blocks: Sequence[IRBlock],
+        *,
+        usage: IRUsage | None = None,
+    ) -> None:
+        """Append canonical context through BlockManager's global coordinates."""
+        await self._block_manager.append_context_blocks(blocks, usage=usage)
+
     async def integrate_generation(self, generation: IRGeneration) -> None:
         """Absorb a generation's output"""
-        await self._block_manager.append_context_blocks(
-            generation.blocks, usage=generation.usage
-        )
+        await self.integrate_context_blocks(generation.blocks, usage=generation.usage)
         if generation.usage is not None:
             self._gas_gauge.observe(generation.usage.total_input_tokens)
 
     async def integrate_execution(self, execution: IRExecution) -> None:
         """Absorb an execution's output"""
-        await self._block_manager.append_context_blocks(execution.blocks)
+        await self.integrate_context_blocks(execution.blocks)
         self._ttl_registry.observe_execution(execution)
 
     async def maybe_rerender(self) -> list[IRBlock] | None:

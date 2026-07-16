@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
     IRFooterDrainRecord,
     IRFooterQueueRecord,
+    IRBlock,
     IRRecord,
     IRSkillCatalog,
     IRUserTextBlock,
@@ -68,6 +70,11 @@ class _Clock:
         return self.value
 
 
+class _FakeHomunculus:
+    async def integrate_context_blocks(self, blocks: Sequence[IRBlock]) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_turn_start_queues_idle_footer(tmp_path: Path) -> None:
     controller, _, transcript = _make_controller(tmp_path)
@@ -116,7 +123,7 @@ async def test_turn_start_idle_footer_does_not_duplicate_rollover_time(
     )
     session_lifecycle = TimekeeperSessionLifecycle(timekeeper)
     footer_lifecycle = FooterControllerRoundLifecycle(
-        controller=controller, recorder=recorder
+        controller=controller, recorder=recorder, homunculus=_FakeHomunculus()
     )
     ctx = SessionContext(session_id="session_time", turn_idx=1)
 
@@ -149,7 +156,7 @@ async def test_round_rollover_is_drained_in_same_before_round(tmp_path: Path) ->
     )
     time_lifecycle = TimekeeperRoundLifecycle(timekeeper)
     footer_lifecycle = FooterControllerRoundLifecycle(
-        controller=controller, recorder=recorder
+        controller=controller, recorder=recorder, homunculus=_FakeHomunculus()
     )
     ctx = RoundContext(
         blocks=[IRUserTextBlock(text="hello", origin="human")],

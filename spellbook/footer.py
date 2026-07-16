@@ -27,7 +27,11 @@ from uuid import uuid4
 from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import FooterSource, FooterType, IRFooter, IRUserTextBlock
 from spellbook.recorder import Recorder
-from spellbook.round_lifecycle import RoundContext, RoundLifecycle
+from spellbook.round_lifecycle import (
+    ContextBlockIntegrator,
+    RoundContext,
+    RoundLifecycle,
+)
 
 if TYPE_CHECKING:
     from spellbook.debug_visibility import DebugEmitter
@@ -168,10 +172,12 @@ class FooterControllerRoundLifecycle(RoundLifecycle):
         self,
         controller: FooterController,
         recorder: Recorder,
+        homunculus: ContextBlockIntegrator,
         debug_emitter: "DebugEmitter | None" = None,
     ):
         self._controller = controller
         self._recorder = recorder
+        self._homunculus = homunculus
         self._debug = debug_emitter
 
     async def before_round(self, ctx: RoundContext) -> None:
@@ -182,7 +188,9 @@ class FooterControllerRoundLifecycle(RoundLifecycle):
         self._debug_injected_footers(ctx=ctx, footers=pending, rendered=rendered)
         footer_block = IRUserTextBlock(text=rendered, origin="system")
         ctx.blocks.append(footer_block)
+        ctx.blocks_this_round.append(footer_block)
         self._recorder.write_block(footer_block)
+        await self._homunculus.integrate_context_blocks([footer_block])
 
     def _debug_injected_footers(
         self, *, ctx: RoundContext, footers: list[IRFooter], rendered: str

@@ -15,10 +15,18 @@ has no-op defaults so testable loop tests don't need to implement
 everything.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from .cancel_token import CancelToken
 from .ir_types import IRBlock, IRExecution, IRGeneration, IRStreamEvent, StopReason
+
+
+class ContextBlockIntegrator(Protocol):
+    """Awareness seam for context added outside generate/execute hooks."""
+
+    async def integrate_context_blocks(self, blocks: Sequence[IRBlock]) -> None: ...
 
 
 @dataclass  # not pydantic because mutable, internal state that needs to carry CancelToken

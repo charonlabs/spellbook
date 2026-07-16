@@ -428,6 +428,7 @@ class SessionManager:
                     InboundInjectionRoundLifecycle(
                         inbound_queue=inbound_queue,
                         recorder=recorder,
+                        homunculus=homunculus,
                     )
                 )
             if profile.ambient_time:
@@ -437,6 +438,7 @@ class SessionManager:
                 FooterControllerRoundLifecycle(
                     controller=footer_controller,
                     recorder=recorder,
+                    homunculus=homunculus,
                     debug_emitter=debug_emitter,
                 )
             )

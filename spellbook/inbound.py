@@ -1,9 +1,9 @@
 import asyncio
 from collections import deque
 
-from .ir_types import IRInboundMessage
+from .ir_types import IRBlock, IRInboundMessage
 from .recorder import Recorder
-from .round_lifecycle import RoundContext, RoundLifecycle
+from .round_lifecycle import ContextBlockIntegrator, RoundContext, RoundLifecycle
 
 
 class InboundMessageQueue:
@@ -82,13 +82,24 @@ class InboundMessageQueue:
 
 
 class InboundInjectionRoundLifecycle(RoundLifecycle):
-    def __init__(self, *, inbound_queue: InboundMessageQueue, recorder: Recorder):
+    def __init__(
+        self,
+        *,
+        inbound_queue: InboundMessageQueue,
+        recorder: Recorder,
+        homunculus: ContextBlockIntegrator,
+    ):
         self._inbound_queue = inbound_queue
         self._recorder = recorder
+        self._homunculus = homunculus
 
     async def before_round(self, ctx: RoundContext) -> None:
+        injected_blocks: list[IRBlock] = []
         for message in self._inbound_queue.drain_injected_messages():
             for block in message.blocks:
                 ctx.blocks.append(block)
                 ctx.blocks_this_round.append(block)
                 self._recorder.write_block(block)
+                injected_blocks.append(block)
+        if injected_blocks:
+            await self._homunculus.integrate_context_blocks(injected_blocks)

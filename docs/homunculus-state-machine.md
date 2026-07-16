@@ -197,16 +197,17 @@ Order and effects:
 3. Skill manager refreshes the catalog, records a delta, and queues a footer if
    files changed. [`manager.py:176-203`](../spellbook/skills/manager.py#L176)
 4. Main-profile inbound injection drains all `delivery="inject"` messages into
-   `ctx.blocks` and `ctx.blocks_this_round`, recording each block.
-   [`inbound.py:84-94`](../spellbook/inbound.py#L84)
+   `ctx.blocks` and `ctx.blocks_this_round`, records each block, then integrates
+   the same ordered batch through Homunculus into BlockManager coordinates and
+   detector accumulation. [`inbound.py`](../spellbook/inbound.py)
 5. Timekeeper observes hour/date rollover and queues any time footer.
    [`timekeeper.py:216-221`](../spellbook/timekeeper.py#L216),
    [`timekeeper.py:60-65`](../spellbook/timekeeper.py#L60)
 6. Footer lifecycle drains inbound footer messages, applies keyed
    last-write-wins dedup and priority order, records the drain, renders one
-   system-origin `<spellbook>` block, appends it to `ctx.blocks`, and records the
-   block. [`footer.py:53-124`](../spellbook/footer.py#L53),
-   [`footer.py:164-185`](../spellbook/footer.py#L164)
+   system-origin `<spellbook>` block, appends it to the round, records it, and
+   integrates it through the same Homunculus context seam.
+   [`footer.py`](../spellbook/footer.py)
 
 Transition `R0 -> R1 Generate`: the generator builds the provider surface once,
 then enters the streaming state.
@@ -301,6 +302,13 @@ input prefix at the pre-generation boundary and an approximate total at the
 generation end. Every append then enters detector accumulation.
 [`block_manager.py:135-151`](../spellbook/homunculus/block_manager.py#L135),
 [`token_meter.py:53-76`](../spellbook/homunculus/token_meter.py#L53)
+
+Initial turn blocks, generated blocks, executed tool results, active injections,
+and rendered footer blocks all reach that append through Homunculus. The
+transcript write precedes live integration for before-round producers, matching
+the recorder-then-Homunculus order used after generation and execution.
+[`homunculus.py`](../spellbook/homunculus/homunculus.py),
+[`inbound.py`](../spellbook/inbound.py), [`footer.py`](../spellbook/footer.py)
 
 On rehydrate, the Homunculus seeds `context_blocks` from transcript blocks and
 sets `next_block_id = len(context_blocks)` before rehydrating the detector and
@@ -700,7 +708,9 @@ the normal inbound turn path. Crackle time is noted only after submission.
 
 Runtime marks submissions queued when already running or when another turn is
 pending. Active injections are the only messages intended to enter the current
-turn.
+turn. At `before_round`, active injection blocks are recorded and immediately
+integrated into Homunculus coordinates in the same order. Rendered footer blocks
+take the same record-then-integrate path.
 [`runtime.py:358-378`](../spellbook/app/runtime.py#L358)
 
 ### I1 — Conduit routing
@@ -971,24 +981,23 @@ as the waking/dreaming state boundary.
 
 ## 13. ⚠ Surprises and findings
 
-### ⚠ 1. Mid-turn injection crosses transcript truth without crossing Homunculus awareness
+### ✓ 1. Before-round context once crossed transcript truth without crossing Homunculus awareness
 
-The main-profile `InboundInjectionRoundLifecycle` appends each active injection
-to `RoundContext` and records it, but never calls
-`Homunculus.integrate_*`/`BlockManager.append_context_blocks`.
-[`inbound.py:84-94`](../spellbook/inbound.py#L84)
+Tracing originally found that `InboundInjectionRoundLifecycle` appended active
+injections to `RoundContext` and the transcript but not BlockManager. The next
+generated block reused the omitted live id, while rehydration included the
+recorded injection. The footer audit found the same omission for the rendered
+system footer block.
 
-The next generated block *is* appended by Homunculus, using its unchanged
-`next_block_id`. Live semantic coordinates therefore omit the injected block,
-while restart rehydration includes every recorded block and seeds
-`next_block_id = len(rehydrated.blocks)`. The live and replay coordinate systems
-can diverge by one per active injection.
-[`homunculus.py:105-108`](../spellbook/homunculus/homunculus.py#L105),
-[`homunculus.py:499-510`](../spellbook/homunculus/homunculus.py#L499),
-[`rehydrator.py:185-190`](../spellbook/rehydrator.py#L185)
-
-This is documentation only on this card. It now has a separate high-priority
-fix card.
+Both lifecycles now use one record-then-integrate rule: the exact blocks appended
+to the provider round are persisted, then passed through
+`Homunculus.integrate_context_blocks`, which delegates to
+`BlockManager.append_context_blocks` for id assignment and detector
+accumulation. A regression runs an injected round through generation and detector
+integration, then proves the live range is identical after fresh rehydration.
+[`inbound.py`](../spellbook/inbound.py), [`footer.py`](../spellbook/footer.py),
+[`homunculus.py`](../spellbook/homunculus/homunculus.py),
+[`test_session_manager.py`](../tests/test_session_manager.py)
 
 ### ⚠ 2. `dreaming` is a type-level state with no runtime entrance or exit
 
@@ -1046,7 +1055,7 @@ surface signal of that detached state.
 
 ## 14. Compact transition ledger
 
-This ledger is intended for grep and code review. Its 80 rows are generated from
+This ledger is intended for grep and code review. Its 82 rows are generated from
 the same edge inventory rendered by the HTML diagram.
 
 | Edge | Trigger / guard | Layer | Provenance |
@@ -1109,9 +1118,11 @@ the same edge inventory rendered by the HTML diagram.
 | Summary block -> Token observations | next generation | pressure | `spellbook/homunculus/gas_gauge.py:41-63` |
 | Inbound queue -> Running / turn | turn / idle inject | inbound | `spellbook/session_manager.py:148-187` |
 | Inbound queue -> Active injection | active inject | inbound | `spellbook/inbound.py:46-58,84-94` |
-| Active injection -> before_round | round + record only ⚠ | failure | `spellbook/inbound.py:84-94` |
+| Active injection -> before_round | round + record | inbound | `spellbook/inbound.py` |
+| Active injection -> Append context | ids + detector accumulation | awareness | `spellbook/inbound.py; spellbook/homunculus/homunculus.py` |
 | Inbound queue -> Footer pending | footer delivery | inbound | `spellbook/inbound.py:32-44` |
-| Footer pending -> before_round | drain + inject | inbound | `spellbook/footer.py:164-185` |
+| Footer pending -> before_round | drain + record | inbound | `spellbook/footer.py` |
+| Footer pending -> Append context | ids + detector accumulation | awareness | `spellbook/footer.py; spellbook/homunculus/homunculus.py` |
 | Conduit routing -> Active injection | message / idle notif | inbound | `spellbook/app/runtime.py:197-283` |
 | Conduit routing -> Footer pending | context / busy notif | inbound | `spellbook/app/runtime.py:170-195,285-309` |
 | Conduit routing -> Conduit refused | profile gate | failure | `spellbook/app/runtime.py:163-169` |
@@ -1134,8 +1145,10 @@ the same edge inventory rendered by the HTML diagram.
 
 ## Open concerns
 
-- The active-injection coordinate drift is a separate high-priority correctness
-  issue; this artifact deliberately does not fix it.
+- Historical transcripts recorded during the drift era may contain semantic
+  detections computed in live coordinates that omitted active injections or
+  rendered footers. This fix restores one coordinate truth going forward; it
+  does not rewrite historical detection records.
 - The implementation has no actual Sleep entry/exit yet. The future edges above
   should be revalidated when slice 2 chooses its terminal tool result, session
   lifecycle hooks, and failure recovery semantics.
