@@ -6,9 +6,11 @@ The production default preserves partial model text and follows it with an
 honest user-role system note; provider metadata and the synthetic refusal
 envelope never return to the model.
 
-Legacy transcripts flattened refusal output into assistant strings. Those
-strings are normalized strictly at projection time, allowing old append-only
-history to receive the safer rendering without rewriting block coordinates.
+Legacy transcripts flattened refusal output into assistant strings. The
+rehydrator normalizes those strings only on turns whose recorded stop reason is
+``refusal``. Provider and analysis projections therefore consume canonical
+truth instead of guessing from arbitrary assistant text, while the one-for-one
+conversion preserves append-only history and block coordinates.
 """
 
 from __future__ import annotations
@@ -177,9 +179,18 @@ class RefusalRenderer:
 
 
 def canonical_refusal(block: IRBlock) -> IRRefusalBlock | None:
-    """Return canonical refusal truth for canonical or legacy block shapes."""
-    if isinstance(block, IRRefusalBlock):
-        return block
+    """Return canonical refusal truth without inferring it from assistant text."""
+    return block if isinstance(block, IRRefusalBlock) else None
+
+
+def canonicalize_legacy_refusal(block: IRBlock) -> IRRefusalBlock | None:
+    """Strictly convert a legacy refusal payload selected by lifecycle truth.
+
+    The caller must first establish that the block belongs to a turn whose
+    recorded stop reason is ``refusal``. Keeping that decision outside this
+    text parser prevents ordinary assistant discussion of ``<refusal>`` markup
+    from being mistaken for a runtime event.
+    """
     if not isinstance(block, IRAssistantTextBlock) or REFUSAL_OPEN not in block.text:
         return None
     parsed = parse_legacy_refusal_text(block.text)

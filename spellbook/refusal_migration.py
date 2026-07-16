@@ -39,6 +39,7 @@ from spellbook.refusal import (
     RefusalRenderer,
     RefusalRenderPolicy,
     canonical_refusal,
+    canonicalize_legacy_refusal,
     refusal_policy_from_runtime_config_records,
     refusal_policy_runtime_values,
 )
@@ -103,7 +104,9 @@ def analyze_refusal_transcript(
         block_count += 1
         if record.turn not in refusal_turn_set:
             continue
-        refusal = canonical_refusal(record.event)
+        refusal = canonical_refusal(record.event) or canonicalize_legacy_refusal(
+            record.event
+        )
         if refusal is None:
             continue
         shape = "canonical" if isinstance(record.event, IRRefusalBlock) else "legacy"

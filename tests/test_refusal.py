@@ -57,24 +57,38 @@ def test_legacy_refusal_round_trips_through_canonical_ir() -> None:
     assert render_legacy_refusal(refusal) == LEGACY
 
 
-def test_partial_note_is_the_default_for_canonical_and_legacy_refusals() -> None:
+def test_partial_note_is_the_default_for_canonical_refusals() -> None:
     canonical = parse_legacy_refusal_text(LEGACY)
-    legacy = IRAssistantTextBlock(text=LEGACY)
     renderer = RefusalRenderer()
 
-    for source in ([canonical], [legacy]):
-        rendered = renderer.project_surface(source)
-        assert len(rendered) == 2
-        assert isinstance(rendered[0], IRAssistantTextBlock)
-        assert rendered[0].text == "The partial answer"
-        assert isinstance(rendered[1], IRUserTextBlock)
-        assert rendered[1].origin == "system"
-        assert rendered[1].text == SYSTEM_INTERRUPTION_TEXT
-        assert all(
-            "<refusal>" not in block.text
-            for block in rendered
-            if isinstance(block, IRAssistantTextBlock | IRUserTextBlock)
-        )
+    rendered = renderer.project_surface([canonical])
+
+    assert len(rendered) == 2
+    assert isinstance(rendered[0], IRAssistantTextBlock)
+    assert rendered[0].text == "The partial answer"
+    assert isinstance(rendered[1], IRUserTextBlock)
+    assert rendered[1].origin == "system"
+    assert rendered[1].text == SYSTEM_INTERRUPTION_TEXT
+    assert all(
+        "<refusal>" not in block.text
+        for block in rendered
+        if isinstance(block, IRAssistantTextBlock | IRUserTextBlock)
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        LEGACY,
+        "The transcript used `<refusal>stop_reason: refusal...</refusal>`.",
+    ],
+)
+def test_projection_does_not_infer_refusals_from_assistant_text(text: str) -> None:
+    assistant = IRAssistantTextBlock(text=text)
+    renderer = RefusalRenderer()
+
+    assert renderer.project_surface([assistant]) == [assistant]
+    assert renderer.project_analysis([assistant]) == [assistant]
 
 
 def test_zero_partial_default_projects_to_note_only() -> None:
@@ -91,8 +105,9 @@ def test_zero_partial_default_projects_to_note_only() -> None:
 
 def test_legacy_policy_remains_an_explicit_rollback() -> None:
     renderer = RefusalRenderer(LEGACY_REFUSAL_RENDER_POLICY)
+    refusal = parse_legacy_refusal_text(LEGACY)
 
-    rendered = renderer.project_surface([IRAssistantTextBlock(text=LEGACY)])
+    rendered = renderer.project_surface([refusal])
 
     assert len(rendered) == 1
     assert isinstance(rendered[0], IRAssistantTextBlock)
@@ -112,7 +127,7 @@ def test_analysis_projection_preserves_block_count() -> None:
 
 
 def test_context_markdown_never_reintroduces_refusal_envelope() -> None:
-    rendered = render_context_block(IRAssistantTextBlock(text=LEGACY))
+    rendered = render_context_block(parse_legacy_refusal_text(LEGACY))
 
     assert "The partial answer" in rendered
     assert "A system interruption occurred" in rendered

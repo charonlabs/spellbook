@@ -33,6 +33,7 @@ from spellbook.ir_types import (
     IRImageURLSource,
     IRRecord,
     IRRuntimeConfigRecord,
+    IRSemanticBlockApplyModeRecord,
     IRSemanticBlockArtifactRecord,
     IRSemanticBlockPairNarrative,
     IRSemanticBlockPairNarrativeChild,
@@ -391,6 +392,21 @@ class TestFooterTypes:
 
 
 class TestIRRecordDiscrimination:
+    def test_operator_semantic_mode_record_round_trips(self) -> None:
+        record = IRSemanticBlockApplyModeRecord(
+            session_id="s1",
+            block_id="block_1",
+            mode="summary",
+            source="operator",
+            turn=7,
+            turn_id="",
+        )
+
+        parsed = TypeAdapter(IRRecord).validate_json(record.model_dump_json())
+
+        assert isinstance(parsed, IRSemanticBlockApplyModeRecord)
+        assert parsed.source == "operator"
+
     def test_refusal_block_round_trips_inside_event_record(self) -> None:
         from spellbook.ir_types import (
             IRBlockRecord,

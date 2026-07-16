@@ -34,6 +34,7 @@ from .ir_types import (
     IRTurnEndRecord,
     IRTurnStartRecord,
 )
+from .refusal import canonicalize_legacy_refusal
 from .tools.common import Tool, tool_to_record
 from .tools.registry import ALL_TOOLS, KNOWN_TOOL_REGISTRY, ToolRegistry
 
@@ -111,6 +112,11 @@ class Rehydrator:
     def run(self) -> RehydrationResult:
         self._validate_session_record_shape()
         records = self._read_records()
+        refusal_turns = {
+            record.turn
+            for record in records
+            if isinstance(record, IRTurnEndRecord) and record.stop_reason == "refusal"
+        }
         blocks: list[IRBlock] = []
         config: SpellbookConfig | None = None
         tools: list[IRToolRecord] = []
@@ -178,9 +184,10 @@ class Rehydrator:
                     last_completed_turn = current_turn
                 case IRBlockRecord():
                     current_seq = record.seq
-                    blocks.append(
-                        hydrate_image_blobs_in_block(record.event, self._path)
-                    )
+                    block = hydrate_image_blobs_in_block(record.event, self._path)
+                    if record.turn in refusal_turns:
+                        block = canonicalize_legacy_refusal(block) or block
+                    blocks.append(block)
                 case IRToolResultTTLRecord():
                     tool_result_ttls.append(record)
                 case IRRuntimeConfigRecord():

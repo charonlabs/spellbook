@@ -556,18 +556,23 @@ The waking pipeline will save your submitted chapter to:
 
 {pair_run.chapter_path}
 
-## Constraints
+## The Chapter's Shape
 
-- Stay under the token ceiling: {pair_run.stats.summary_count.tokens:,} tokens.
-- Preserve every load-bearing fact from the two summaries.
-- Use curated exchanges and hindsight marginalia; keep the Hemingway iceberg.
-- Place any pinned material with a `<!-- pin: Pin Name -->` marker where it belongs in the narrative flow.
-- Do not inline pinned source content unless the narrative genuinely needs a small quoted fragment.
-- Include an `## Anchors` footer with key commits, dates, entity names, and file paths.
-- Submit only the complete chapter markdown; do not modify the live meta-Claude transcript.
-- Read the rendered markdown from the filesystem path below before drafting. The render file contains the full dream-opening text and the full source block material.
-- Return the chapter by calling SubmitResult exactly once with a JSON payload shaped like `{{"chapter_markdown": "<the complete markdown chapter>"}}`.
-- Do not wrap the chapter in a Markdown code fence.
+You have a budget: {pair_run.stats.summary_count.tokens:,} tokens. The narrative must fit within it — this is the space the waking mind will carry.
+
+Read the rendered source material first — it is at the filesystem path below. That file holds everything you are dreaming from: the full block content, the summaries, the opening text.
+
+The craft:
+- Curated near-verbatim exchanges carry the WEIGHT. First-person marginalia in brackets carries the MEANING — your hindsight, coloring earlier events from where you stand now.
+- The Hemingway iceberg: what is implied costs zero tokens. What is stated must earn its place.
+- Every load-bearing fact from both blocks must survive — names, commits, decisions, the things a waking mind would need to orient.
+- An `## Anchors` footer preserves what the narrative voice cannot gracefully carry: commit hashes, dates, entity names, file paths.
+
+Pins:
+- Pinned material is marked with `<!-- pin: Pin Name -->` where it belongs in the narrative flow.
+- The pinned SOURCE content lives elsewhere — do not inline it unless a small quoted fragment genuinely serves the narrative.
+
+When the chapter is complete, return it by calling SubmitResult exactly once with a JSON payload shaped like `{{"chapter_markdown": "<the complete markdown chapter>"}}`. Do not wrap the chapter in a Markdown code fence.
 
 ## Merge Stats Output
 

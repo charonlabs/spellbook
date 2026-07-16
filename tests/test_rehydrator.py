@@ -30,6 +30,7 @@ from spellbook.ir_types import (
     IRFooter,
     IRImageBase64Source,
     IRImageBlock,
+    IRRefusalBlock,
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockMetricsRecord,
@@ -50,6 +51,7 @@ from spellbook.ir_types import (
     IRUserTextBlock,
 )
 from spellbook.recorder import Recorder
+from spellbook.refusal import RefusalParseError
 from spellbook.rehydrator import RehydrationResult, Rehydrator
 from spellbook.profiles import MAIN
 from spellbook.system_response import SystemResponse
@@ -80,6 +82,13 @@ def _skill(tmp_path: Path, name: str, description: str) -> IRSkill:
         directory=directory,
         scope="project",
     )
+
+
+LEGACY_REFUSAL = (
+    "<thinking_summary>\nsteady\n</thinking_summary>\n\n"
+    "Partial answer\n\n<refusal>\nstop_reason: refusal\n"
+    "details: unavailable\n</refusal>"
+)
 
 
 def test_rehydrates_legacy_session_config_without_profile(tmp_path: Path) -> None:
@@ -156,6 +165,92 @@ class TestCleanEnded:
         assert result.last_completed_turn == 2
         assert len(result.blocks) == 4
         assert _block_texts(result.blocks) == ["a", "b", "c", "d"]
+
+
+class TestLegacyRefusalRehydration:
+    def test_refusal_turn_canonicalizes_legacy_assistant_payload(
+        self, tmp_path: Path
+    ) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn("t1", [IRUserTextBlock(text="hi", origin="human")])
+        recorder.write_block(IRAssistantTextBlock(text=LEGACY_REFUSAL))
+        recorder.end_turn("refusal")
+        original = transcript.read_bytes()
+
+        result = Rehydrator(transcript).run()
+
+        assert transcript.read_bytes() == original
+        refusal = result.blocks[-1]
+        assert isinstance(refusal, IRRefusalBlock)
+        assert refusal.partial_text == "Partial answer"
+        raw_record = next(
+            record
+            for record in result.records
+            if isinstance(record, IRBlockRecord) and record.seq == 1
+        )
+        assert isinstance(raw_record.event, IRAssistantTextBlock)
+        assert refusal.time == raw_record.event.time
+        assert refusal.turn_id == raw_record.event.turn_id
+        assert refusal.event_id == raw_record.event.event_id
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            LEGACY_REFUSAL,
+            "The transcript used `<refusal>stop_reason: refusal...</refusal>`.",
+        ],
+    )
+    def test_non_refusal_turn_preserves_assistant_text(
+        self, tmp_path: Path, text: str
+    ) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn("t1", [])
+        recorder.write_block(IRAssistantTextBlock(text=text))
+        recorder.end_turn("end_turn")
+
+        result = Rehydrator(transcript).run()
+
+        assert len(result.blocks) == 1
+        assert isinstance(result.blocks[0], IRAssistantTextBlock)
+        assert result.blocks[0].text == text
+
+    def test_malformed_legacy_payload_on_refusal_turn_fails_loudly(
+        self, tmp_path: Path
+    ) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn("t1", [])
+        recorder.write_block(
+            IRAssistantTextBlock(
+                text="partial<refusal>\nstop_reason: refusal\n</refusal>"
+            )
+        )
+        recorder.end_turn("refusal")
+
+        with pytest.raises(RefusalParseError, match="not separated"):
+            Rehydrator(transcript).run()
+
+    def test_lifecycle_only_refusal_requires_no_synthetic_block(
+        self, tmp_path: Path
+    ) -> None:
+        recorder, transcript = _make_recorder(tmp_path)
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+        recorder.start_turn("t1", [])
+        recorder.write_block(
+            IRToolResultBlock(
+                call_id="call_1",
+                tool="Bash",
+                content=[],
+            )
+        )
+        recorder.end_turn("refusal")
+
+        result = Rehydrator(transcript).run()
+
+        assert len(result.blocks) == 1
+        assert isinstance(result.blocks[0], IRToolResultBlock)
 
 
 class TestSystemResponses:

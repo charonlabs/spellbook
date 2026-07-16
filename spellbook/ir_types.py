@@ -791,7 +791,7 @@ class IRSemanticBlockPinRecord(BaseModel, frozen=True):
     turn_id: str
 
 
-SemanticBlockApplyModeSource = Literal["model", "planner"]
+SemanticBlockApplyModeSource = Literal["model", "planner", "operator"]
 
 
 class IRSemanticBlockApplyModeRecord(BaseModel, frozen=True):
