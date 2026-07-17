@@ -12,8 +12,11 @@ class InboundMessageQueue:
         self._cv = asyncio.Condition()
         self._shutdown = False
 
-    def _is_turn_eligible(self, msg: IRInboundMessage) -> bool:
+    def _starts_turn_directly(self, msg: IRInboundMessage) -> bool:
         return msg.delivery in {"turn", "inject"}
+
+    def _can_trigger_turn(self, msg: IRInboundMessage) -> bool:
+        return self._starts_turn_directly(msg) or msg.wake_on_idle
 
     async def put(self, msg: IRInboundMessage) -> None:
         async with self._cv:
@@ -24,7 +27,7 @@ class InboundMessageQueue:
         self._messages.appendleft(msg)
 
     def has_pending_turn(self) -> bool:
-        return any(self._is_turn_eligible(msg) for msg in self._messages)
+        return any(self._can_trigger_turn(msg) for msg in self._messages)
 
     def has_pending(self) -> bool:
         return bool(self._messages)
@@ -63,16 +66,28 @@ class InboundMessageQueue:
                 if self._shutdown:
                     return None
                 retained: deque[IRInboundMessage] = deque()
+                wake_message: IRInboundMessage | None = None
 
                 while self._messages:
                     msg = self._messages.popleft()
-                    if self._is_turn_eligible(msg):
+                    if self._starts_turn_directly(msg):
                         while retained:
                             self._messages.appendleft(retained.pop())
                         return msg
+                    if msg.wake_on_idle and wake_message is None:
+                        wake_message = msg
                     retained.append(msg)
 
                 self._messages = retained
+                if wake_message is not None:
+                    return IRInboundMessage(
+                        blocks=[],
+                        source_metadata={
+                            **wake_message.source_metadata,
+                            "wake_reason": "pending_footer",
+                        },
+                        delivery="turn",
+                    )
                 await self._cv.wait()
 
     async def shutdown_queue(self) -> None:

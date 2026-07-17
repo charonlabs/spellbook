@@ -358,6 +358,7 @@ async def test_conduit_context_queues_footer_message(tmp_path: Path) -> None:
     assert len(builder.session.submitted) == 1
     footer = builder.session.submitted[0]
     assert footer.delivery == "footer"
+    assert footer.wake_on_idle is False
     assert footer.source_metadata["footer_type"] == "conduit"
     assert footer.source_metadata["footer_source"] == "conduit"
     assert footer.source_metadata["footer_priority"] == 10
@@ -393,6 +394,7 @@ async def test_conduit_message_uses_clean_text_and_surface_footer_on_delivery(
     assert len(builder.session.submitted) == 1
     message = builder.session.submitted[0]
     assert message.delivery == "inject"
+    assert message.wake_on_idle is False
     assert message.source_metadata["source"] == "telegram"
     assert message.source_metadata["origin"] == "conduit"
     assert message.source_metadata["conduit_type"] == "message"
@@ -574,6 +576,14 @@ async def test_conduit_notification_while_running_queues_footer_context(
     assert len(builder.session.submitted) == 1
     footer = builder.session.submitted[0]
     assert footer.delivery == "footer"
+    assert footer.wake_on_idle is True
+    assert footer.source_metadata["source"] == "schedule"
+    assert footer.source_metadata["origin"] == "conduit"
+    assert footer.source_metadata["conduit_type"] == "notification"
+    assert footer.source_metadata["metadata"] == {
+        "priority": 30,
+        "job": "nightly",
+    }
     assert footer.source_metadata["footer_priority"] == 30
     block = footer.blocks[0]
     assert isinstance(block, IRUserTextBlock)

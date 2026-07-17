@@ -10,6 +10,8 @@ They catch regressions in three specific properties:
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -27,6 +29,7 @@ from spellbook.ir_types import (
     IRFooterDrainRecord,
     IRFooterQueueRecord,
     IRGeneration,
+    IRInboundMessage,
     IRImageBase64Source,
     IRImageBlobSource,
     IRImageBlock,
@@ -389,6 +392,30 @@ class TestFooterTypes:
         )
         with pytest.raises(ValidationError):
             setattr(footer, "text", "changed")
+
+
+class TestInboundMessage:
+    def test_footer_may_wake_on_idle(self) -> None:
+        message = IRInboundMessage(
+            blocks=[IRUserTextBlock(text="wake me", origin="system")],
+            delivery="footer",
+            wake_on_idle=True,
+        )
+
+        assert message.wake_on_idle is True
+
+    @pytest.mark.parametrize("delivery", ["turn", "inject"])
+    def test_non_footer_cannot_set_wake_on_idle(
+        self, delivery: Literal["turn", "inject"]
+    ) -> None:
+        with pytest.raises(
+            ValidationError, match="wake_on_idle.*only valid for footer"
+        ):
+            IRInboundMessage(
+                blocks=[IRUserTextBlock(text="invalid", origin="system")],
+                delivery=delivery,
+                wake_on_idle=True,
+            )
 
 
 class TestIRRecordDiscrimination:

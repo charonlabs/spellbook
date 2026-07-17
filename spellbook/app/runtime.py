@@ -478,6 +478,13 @@ class CoreAppRuntime:
             footer_source="conduit",
             key=key,
             priority=priority,
+            wake_on_idle=conduit_type == "notification",
+            source_metadata={
+                "source": source,
+                "origin": "conduit",
+                "conduit_type": conduit_type,
+                "metadata": dict(metadata or {}),
+            },
         )
 
     async def _queue_footer(
@@ -488,17 +495,21 @@ class CoreAppRuntime:
         footer_source: str,
         key: str,
         priority: int = 50,
+        wake_on_idle: bool = False,
+        source_metadata: dict[str, Any] | None = None,
     ) -> None:
         await self._require_session().submit_message(
             IRInboundMessage(
                 blocks=[IRUserTextBlock(text=text, origin="system")],
                 source_metadata={
+                    **dict(source_metadata or {}),
                     "footer_type": footer_type,
                     "footer_source": footer_source,
                     "footer_key": key,
                     "footer_priority": priority,
                 },
                 delivery="footer",
+                wake_on_idle=wake_on_idle,
             )
         )
 
