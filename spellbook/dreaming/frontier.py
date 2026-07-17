@@ -483,6 +483,8 @@ class MorningManifest:
     narratives_applied: tuple[FrontierNarrative, ...]
     chapters_authored: int
     dream_transcript_paths: tuple[str, ...]
+    prewarning_tokens: int | None = None
+    floor_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.chapters_authored < 0:
@@ -495,6 +497,18 @@ class MorningManifest:
             raise ValueError(
                 "Chapter-bearing manifests need a dream transcript pointer."
             )
+        if self.prewarning_tokens is not None and self.prewarning_tokens < 0:
+            raise ValueError("Pre-warning tokens must be non-negative.")
+        if self.floor_tokens is not None and self.floor_tokens < 0:
+            raise ValueError("Floor tokens must be non-negative.")
+        if not self.forced and (
+            self.prewarning_tokens is not None or self.floor_tokens is not None
+        ):
+            raise ValueError("Only forced Sleep carries pre-warning history.")
+
+    @property
+    def forced(self) -> bool:
+        return self.sleep_kind == "forced_sleep"
 
     @property
     def known_tokens_freed(self) -> int:
@@ -520,7 +534,18 @@ class MorningManifest:
     def render(self) -> str:
         """Render the structured manifest without hiding empty sections."""
 
-        lines = [self._opening(), "", "Deltas"]
+        lines = [self._opening()]
+        if self.forced:
+            lines.append("forced=true")
+            if self.prewarning_tokens is None or self.floor_tokens is None:
+                lines.append("Pre-warning history: unavailable.")
+            else:
+                lines.append(
+                    "Pre-warning history: issued at "
+                    f"{self.prewarning_tokens:,} tokens before this "
+                    f"{self.floor_tokens:,}-token floor."
+                )
+        lines.extend(["", "Deltas"])
         if self.deltas:
             for delta in self.deltas:
                 destination = delta.to_mode.replace("pair_narrative", "narrative")
@@ -586,6 +611,8 @@ def build_morning_manifest(
     chapters_authored: int = 0,
     dream_transcript_paths: Sequence[str] = (),
     additional_debts: Sequence[ManifestDebt] = (),
+    prewarning_tokens: int | None = None,
+    floor_tokens: int | None = None,
 ) -> MorningManifest:
     """Build a manifest from an advance decision and the deltas that landed.
 
@@ -684,6 +711,8 @@ def build_morning_manifest(
         narratives_applied=narratives_applied,
         chapters_authored=chapters_authored,
         dream_transcript_paths=pointers,
+        prewarning_tokens=prewarning_tokens,
+        floor_tokens=floor_tokens,
     )
 
 

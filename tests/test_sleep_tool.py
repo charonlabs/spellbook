@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 from spellbook.backends.model_backend import RequestSurface, TokenCounter
-from spellbook.config import SpellbookConfig
+from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.footer import FooterController
 from spellbook.fork import BlockDetectorResult, ForkRunner
 from spellbook.homunculus import Homunculus
@@ -16,6 +16,7 @@ from spellbook.homunculus.common import render_context_block
 from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
     IRBlock,
+    IRGeneration,
     IRSemanticBlock,
     IRSemanticBlockApplyModeRecord,
     IRSemanticBlockPairNarrative,
@@ -26,6 +27,7 @@ from spellbook.ir_types import (
     IRSkillCatalog,
     IRTokenRangeCount,
     IRToolTextBlock,
+    IRUsage,
     IRUserTextBlock,
     SemanticBlockApplyModeSource,
     SemanticBlockMode,
@@ -166,9 +168,16 @@ def _add_pair(blocks: list[IRSemanticBlock], first: int = 0) -> None:
 async def _build_world(
     tmp_path: Path,
     semantic_blocks: list[IRSemanticBlock],
+    *,
+    sleep_enabled: bool = False,
+    homunculus_config: HomunculusConfig | None = None,
 ) -> _World:
     transcript = tmp_path / "transcript.jsonl"
-    config = SpellbookConfig(cwd=tmp_path)
+    config = SpellbookConfig(
+        cwd=tmp_path,
+        sleep_enabled=sleep_enabled,
+        hom_config=homunculus_config or HomunculusConfig(),
+    )
     recorder = Recorder(config, transcript, "session_sleep", DEFAULT_TOOL_REGISTRY)
     recorder.write_session_record(skill_catalog=IRSkillCatalog())
     context_blocks = [
@@ -206,6 +215,7 @@ async def _build_world(
         token_counter=cast(TokenCounter, _TokenCounter()),
         nursery=Nursery(config=config),
         fork_runner=cast(ForkRunner, object()),
+        sleep_enabled=sleep_enabled,
     )
     await homunculus.rehydrate(rehydrated)
     return _World(
@@ -267,7 +277,8 @@ async def test_sleep_lands_actual_modes_manifest_debts_and_smaller_render(
     assert result.display["debts"] == ["pinned"]
     assert world.runtime.events == [("enter", None), ("exit", "completed")]
 
-    records = Rehydrator(world.transcript).run().records
+    rehydrated = Rehydrator(world.transcript).run()
+    records = rehydrated.records
     mode_records = [
         record
         for record in records
@@ -414,7 +425,8 @@ async def test_sleep_partial_failure_reports_only_already_landed_deltas(
     assert [
         block.mode for block in world.homunculus.build_awareness().semantic_blocks[:2]
     ] == ["summary", "full"]
-    records = Rehydrator(world.transcript).run().records
+    rehydrated = Rehydrator(world.transcript).run()
+    records = rehydrated.records
     mode_records = [
         record
         for record in records
@@ -424,3 +436,137 @@ async def test_sleep_partial_failure_reports_only_already_landed_deltas(
         ("block_0", "summary")
     ]
     assert world.runtime.events == [("enter", None), ("exit", "failed")]
+
+
+async def test_forced_sleep_uses_planner_source_manifest_history_and_preserves_pin(
+    tmp_path: Path,
+) -> None:
+    semantic_blocks = [_block(idx) for idx in range(8)]
+    semantic_blocks[0] = _block(0, pinned=True)
+    world = await _build_world(
+        tmp_path,
+        semantic_blocks,
+        sleep_enabled=True,
+    )
+
+    await world.homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[],
+            stop_reason="end_turn",
+            usage=IRUsage(input_tokens=900_000),
+        )
+    )
+    world.homunculus.check_sleep_pressure()
+    assert world.homunculus.take_forced_sleep_plan() is None
+    planner_footers = [
+        footer
+        for footer in world.homunculus._footer_c.peek_pending()  # noqa: SLF001
+        if footer.source == "planner"
+    ]
+    assert len(planner_footers) == 1
+    assert "Sleep now:" in planner_footers[0].text
+    assert "Sleep pre-warning: at 95%" in planner_footers[0].text
+
+    await world.homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[],
+            stop_reason="end_turn",
+            usage=IRUsage(input_tokens=950_000),
+        )
+    )
+    world.homunculus.check_sleep_pressure()
+    forced = world.homunculus.take_forced_sleep_plan()
+
+    assert forced is not None
+    world.recorder.end_turn()
+    manifest = world.homunculus.execute_forced_sleep(forced)
+
+    assert manifest.forced is True
+    assert manifest.prewarning_tokens == 900_000
+    assert manifest.floor_tokens == 950_000
+    assert "forced=true" in manifest.render()
+    assert "Pre-warning history: issued at 900,000 tokens" in manifest.render()
+    assert world.homunculus.build_awareness().semantic_blocks[0].mode == "full"
+
+    rehydrated = Rehydrator(world.transcript).run()
+    records = rehydrated.records
+    mode_records = [
+        record
+        for record in records
+        if isinstance(record, IRSemanticBlockApplyModeRecord)
+    ]
+    assert mode_records
+    assert all(record.source == "planner" for record in mode_records)
+    assert rehydrated.semantic_blocks[0].mode == "full"
+    assert any(
+        "forced=true" in footer.text for footer in rehydrated.pending_footers.values()
+    )
+
+
+async def test_forced_sleep_empty_frontier_stands_down_once_to_existing_warning(
+    tmp_path: Path,
+) -> None:
+    world = await _build_world(
+        tmp_path,
+        [_block(idx) for idx in range(4)],
+        sleep_enabled=True,
+    )
+
+    await world.homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[],
+            stop_reason="end_turn",
+            usage=IRUsage(input_tokens=900_000),
+        )
+    )
+    world.homunculus.check_sleep_pressure()
+    await world.homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[],
+            stop_reason="end_turn",
+            usage=IRUsage(input_tokens=950_000),
+        )
+    )
+    world.homunculus.check_sleep_pressure()
+
+    assert world.homunculus.take_forced_sleep_plan() is None
+    assert world.homunculus.take_forced_sleep_plan() is None
+    assert all(
+        block.mode == "full"
+        for block in world.homunculus.build_awareness().semantic_blocks
+    )
+    pending = world.homunculus._footer_c.peek_pending()  # noqa: SLF001
+    assert any(footer.type == "gas_gauge" for footer in pending)
+    records = Rehydrator(world.transcript).run().records
+    assert not any(
+        isinstance(record, IRSemanticBlockApplyModeRecord) for record in records
+    )
+
+
+async def test_sleep_disabled_preserves_existing_pressure_behavior(
+    tmp_path: Path,
+) -> None:
+    world = await _build_world(tmp_path, [_block(idx) for idx in range(6)])
+
+    for input_tokens in (900_000, 950_000):
+        await world.homunculus.integrate_generation(
+            IRGeneration(
+                model="test-model",
+                blocks=[],
+                stop_reason="end_turn",
+                usage=IRUsage(input_tokens=input_tokens),
+            )
+        )
+        world.homunculus.check_sleep_pressure()
+
+    assert world.homunculus.take_forced_sleep_plan() is None
+    pending = world.homunculus._footer_c.peek_pending()  # noqa: SLF001
+    assert all(footer.source != "planner" for footer in pending)
+    records = Rehydrator(world.transcript).run().records
+    assert not any(
+        isinstance(record, IRSemanticBlockApplyModeRecord) for record in records
+    )

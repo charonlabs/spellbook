@@ -1,9 +1,9 @@
 # Homunculus state machine: the complete map
 
-Code reference: `dev` at `40e55cb` plus the current Sleep and pre-existing
-working-tree edits, traced 2026-07-16. The transcript and current implementation
-are authoritative; only forced Sleep and later authored-dream edges remain
-future behavior.
+Code reference: `dev` after P1b's frontier, self-triggered Sleep, and planner
+pressure-ring slices, traced 2026-07-17. The transcript and current
+implementation are authoritative; later authored-dream edges remain future
+behavior.
 
 The companion interactive map is
 [`homunculus-state-machine.html`](homunculus-state-machine.html). It contains the
@@ -617,6 +617,25 @@ Two consumers exist:
   [`planner.py:59-63`](../spellbook/homunculus/planner.py#L59),
   [`homunculus.py:574-610`](../spellbook/homunculus/homunculus.py#L574)
 
+When `sleep_enabled=true`, the planner adds a second, frontier-aware pressure
+ring without changing the gas-gauge regimes. On each entry into warning it uses
+Sleep's real dry-run path to render measured token savings, the duration
+forecast, and remaining debts; refused previews name their reason rather than
+guessing. At 90% it emits the explicit 95% floor warning once per entry. A
+direct jump to 95% warns first and cannot force on that same observation.
+[`planner.py`](../spellbook/homunculus/planner.py),
+[`sleep.py`](../spellbook/tools/sleep.py)
+
+After a warned pressure episode reaches 95%, `SessionManager` consumes at most
+one advanceable frontier plan after `turn_end`. It enters the mutually exclusive
+dreaming state, applies existing artifacts with `source="planner"`, and queues a
+forced morning manifest with `forced=true` and the warning/floor measurements.
+Pins remain absolute. A refused or empty frontier stands down, leaving the
+existing hard-regime gauge warning as the fallback. With `sleep_enabled=false`,
+none of these three edges run.
+[`session_manager.py`](../spellbook/session_manager.py),
+[`homunculus.py`](../spellbook/homunculus/homunculus.py)
+
 Transition `P1 -> P0 Invalidated`: any Forget, Pin, or TTL-driven render/count
 change clears the in-memory proposal; rehydration likewise clears a recorded
 proposal when it later sees a pin or apply-mode record.
@@ -1003,9 +1022,12 @@ shutdown while preserving their snapshot directory.
    the landed batch.
    [`sleep.py`](../spellbook/tools/sleep.py),
    [`block_manager.py`](../spellbook/homunculus/block_manager.py)
-6. **Still future — forced Sleep and authored Deep Sleep.** Critical-pressure
-   scheduling, forced Sleep, dream authoring, and tiredness nudges remain outside
-   this slice.
+6. **Forced floor — warned, between turns, frontier-only.** With Sleep enabled,
+   the planner prices a dry-run invitation on warning entry, explicitly warns at
+   90%, and may force one existing-artifact frontier advance at 95% only after a
+   prior warning observation. The apply-mode source is `planner`; the manifest
+   says `forced=true` and records the warning history. Empty or refused plans
+   stand down. Authored Deep Sleep and scheduling remain future behavior.
 
 No Sleep edge is attached directly to detector completion, summary completion,
 hearth tick, or arbitrary quantum fork completion. The QUANTUM surface excludes
@@ -1169,10 +1191,11 @@ the same edge inventory rendered by the HTML diagram.
 | Execute tools -> Detached drain | shell exited | failure | `spellbook/tools/filesystem.py:489-514` |
 | Shutdown -> Forced task cancellation | CLI > 5s | failure | `scripts/interactive.py:466-480` |
 | Execute tools -> Dreaming | model calls `Sleep()` | session | `spellbook/tools/sleep.py; spellbook/session_manager.py` |
-| Future: Gas gauge -> Dreaming | future: forced hard limit | future | `Forge memory-tree.md:115-120; spellbook/dreaming/frontier.py:650-658` |
+| Gas gauge -> Planner pre-warning | 90%, Sleep enabled | pressure | `spellbook/homunculus/planner.py` |
+| Turn ended -> Dreaming | warned 95% floor with advanceable frontier | session | `spellbook/session_manager.py; spellbook/homunculus/homunculus.py` |
 | Dreaming -> Apply frontier + manifest | pure plan, then actual deltas | memory | `spellbook/tools/sleep.py; spellbook/dreaming/frontier.py` |
 | Apply frontier + manifest -> Execute tools | manifest + wake to running | session | `spellbook/tools/sleep.py; spellbook/session_manager.py` |
-| Apply frontier + manifest -> Summary block | model-source apply mode | memory | `spellbook/homunculus/block_manager.py; spellbook/recorder.py` |
+| Apply frontier + manifest -> Summary block | model- or planner-source apply mode | memory | `spellbook/homunculus/block_manager.py; spellbook/recorder.py` |
 | Apply frontier + manifest -> Pair parent | atomic parent + child apply modes | memory | `spellbook/homunculus/block_manager.py; spellbook/recorder.py` |
 | Dreaming -> Unfinished / crashed turn | unexpected failure after state restore | failure | `spellbook/tools/sleep.py; spellbook/executor.py:61-137` |
 
@@ -1185,8 +1208,7 @@ the same edge inventory rendered by the HTML diagram.
 - Unexpected Sleep exceptions deliberately use the existing fatal-tool path
   after restoring the runtime to `running`. The turn can remain unfinished, but
   any landed apply-mode records are explicit truth and rehydrate normally.
-- Forced Sleep, authored Deep Sleep, scheduling, and tiredness nudges still have
-  no runtime edges; this slice does not imply them.
+- Authored Deep Sleep and scheduling still have no runtime edges.
 - This reference cites the current working tree, which already contained
   unrelated refusal/IR/rehydrator edits. Re-run the provenance audit if those
   files change before the card lands.

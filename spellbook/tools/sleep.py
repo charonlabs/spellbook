@@ -10,6 +10,8 @@ of the append-only transitions that actually landed.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Protocol
 
 from pydantic import BaseModel, Field
 
@@ -48,16 +50,40 @@ class SleepExecutionError(RuntimeError):
     """An unexpected Sleep failure whose message is an honest recovery account."""
 
 
+class SleepFrontierPlanner(Protocol):
+    """Narrow seam shared by the tool and planner dry-run paths."""
+
+    def plan_sleep_frontier(self) -> FrontierAdvancePlan: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SleepDryRun:
+    """The exact plan and forecast behind every rendered Sleep preview."""
+
+    plan: FrontierAdvancePlan
+    forecast: DurationForecast
+
+
+def dry_run_sleep(planner: SleepFrontierPlanner) -> SleepDryRun:
+    """Run Sleep's real non-mutating preview path for tools or planner nudges."""
+
+    return SleepDryRun(
+        plan=planner.plan_sleep_frontier(),
+        forecast=forecast_sleep(),
+    )
+
+
 async def exec_sleep(meta: ToolMetadata, input: SleepInput) -> ToolExecutionResult:
     if meta.homunculus is None:
         raise ToolError("Sleep is unavailable because this session has no Homunculus.")
 
     if input.dry_run:
-        plan = meta.homunculus.plan_sleep_frontier()
-        forecast = forecast_sleep()
+        preview = dry_run_sleep(meta.homunculus)
         return ToolExecutionResult(
-            content=[IRToolTextBlock(text=_render_preview(plan, forecast))],
-            display=_preview_display(plan, forecast),
+            content=[
+                IRToolTextBlock(text=_render_preview(preview.plan, preview.forecast))
+            ],
+            display=_preview_display(preview.plan, preview.forecast),
         )
 
     runtime = meta.dreaming_runtime
@@ -182,6 +208,9 @@ def _manifest_display(
         "kind": "sleep",
         "status": status,
         "dry_run": False,
+        "forced": manifest.forced,
+        "prewarning_tokens": manifest.prewarning_tokens,
+        "floor_tokens": manifest.floor_tokens,
         "deltas": [_transition_display(delta) for delta in manifest.deltas],
         "debts": [debt.code for debt in manifest.debts],
         "known_tokens_freed": manifest.known_tokens_freed,

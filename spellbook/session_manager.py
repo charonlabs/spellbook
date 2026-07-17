@@ -181,6 +181,21 @@ class SessionManager:
             self.recorder.end_turn(loop_result.stop_reason)
             self.cancel_token = None
             await self.session_lifecycle.on_turn_ended(self._ctx, loop_result, turn_id)
+            await self._run_forced_sleep_if_needed()
+
+    async def _run_forced_sleep_if_needed(self) -> None:
+        """Execute the 95% frontier floor only after the active turn has ended."""
+
+        forced = self.homunculus.take_forced_sleep_plan()
+        if forced is None:
+            return
+        outcome: DreamingOutcome = "failed"
+        await self.enter_dreaming()
+        try:
+            self.homunculus.execute_forced_sleep(forced)
+            outcome = "completed"
+        finally:
+            await self.exit_dreaming(outcome)
 
     async def submit_message(self, msg: IRInboundMessage) -> SystemResponse | None:
         response = await self.handle_slash_command_message(msg)
@@ -213,7 +228,7 @@ class SessionManager:
         await self.inbound_queue.shutdown_queue()
 
     async def enter_dreaming(self) -> None:
-        """Enter Sleep's mutually exclusive runtime window from tool execution."""
+        """Enter Sleep's mutually exclusive window from a running session."""
 
         if self.state != "running":
             raise RuntimeError(
@@ -430,6 +445,7 @@ class SessionManager:
             debug_emitter=debug_emitter,
             hearth_settings=HearthSettings.from_config(config),
             enable_block_detection=profile.block_detection,
+            sleep_enabled=config.sleep_enabled,
             analysis_projector=refusal_renderer.project_analysis,
         )
         await homunculus.rehydrate(rehydrated)

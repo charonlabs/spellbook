@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 from uuid import uuid4
 
@@ -7,6 +8,9 @@ from spellbook.config import HomunculusConfig
 from spellbook.dreaming.frontier import (
     FrontierAdvancePlan,
     FrontierTransition,
+    ManifestDebt,
+    MorningManifest,
+    build_morning_manifest,
     plan_frontier_advance,
 )
 from spellbook.footer import FooterController
@@ -25,7 +29,7 @@ from spellbook.homunculus.common import (
     render_plan,
 )
 from spellbook.homunculus.gas_gauge import GasGauge
-from spellbook.homunculus.planner import Planner
+from spellbook.homunculus.planner import ForcedSleepHistory, Planner
 from spellbook.homunculus.token_meter import TokenMeter
 from spellbook.homunculus.tool_result_ttl import (
     TTL_TRIGGER_END_TURN,
@@ -56,6 +60,14 @@ if TYPE_CHECKING:
     from spellbook.debug_visibility import DebugEmitter
 
 
+@dataclass(frozen=True, slots=True)
+class ForcedSleepPlan:
+    """An advanceable floor plan plus the warning history that authorized it."""
+
+    frontier: FrontierAdvancePlan
+    history: ForcedSleepHistory
+
+
 class Homunculus:
     def __init__(
         self,
@@ -70,6 +82,7 @@ class Homunculus:
         debug_emitter: "DebugEmitter | None" = None,
         hearth_settings: HearthSettings | None = None,
         enable_block_detection: bool = True,
+        sleep_enabled: bool = False,
         analysis_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
     ):
         self._config = config
@@ -84,6 +97,7 @@ class Homunculus:
         self._hearth_settings = hearth_settings or HearthSettings()
         self._nursery = nursery
         self._planner = Planner(config=config)
+        self._sleep_enabled = sleep_enabled
         self._fork_runner = fork_runner
 
         def project_context(blocks: Sequence[IRBlock]) -> list[IRBlock]:
@@ -352,11 +366,13 @@ class Homunculus:
     def apply_sleep_frontier(
         self,
         plan: FrontierAdvancePlan,
+        *,
+        source: SemanticBlockApplyModeSource = "model",
     ) -> tuple[FrontierTransition, ...]:
         """Land a Sleep plan and invalidate every affected awareness projection."""
 
         try:
-            applied = self._block_manager.apply_frontier_plan(plan)
+            applied = self._block_manager.apply_frontier_plan(plan, source=source)
         except FrontierExecutionError as exc:
             if exc.applied_deltas:
                 self._invalidate(reason="sleep:partial_failure")
@@ -364,6 +380,84 @@ class Homunculus:
         if applied:
             self._invalidate(reason="sleep")
         return applied
+
+    def take_forced_sleep_plan(self) -> ForcedSleepPlan | None:
+        """Return one advanceable floor plan, or stand down without looping."""
+
+        input_tokens = self._gas_gauge.input_tokens
+        if not self._sleep_enabled or input_tokens is None:
+            return None
+        history = self._planner.take_forced_sleep_history(input_tokens)
+        if history is None:
+            return None
+        plan = self.plan_sleep_frontier()
+        if plan.refused or plan.empty:
+            self._debug_event(
+                subsystem="planner",
+                event="forced_sleep_stood_down",
+                title="Forced Sleep stood down",
+                metadata={
+                    "input_tokens": input_tokens,
+                    "refused": plan.refused,
+                    "reason_codes": [reason.code for reason in plan.reasons],
+                },
+            )
+            return None
+        return ForcedSleepPlan(frontier=plan, history=history)
+
+    def execute_forced_sleep(self, forced: ForcedSleepPlan) -> MorningManifest:
+        """Apply only the existing frontier and queue its replayable morning account."""
+
+        try:
+            applied = self.apply_sleep_frontier(
+                forced.frontier,
+                source="planner",
+            )
+        except FrontierExecutionError as exc:
+            manifest = build_morning_manifest(
+                forced.frontier,
+                applied_deltas=exc.applied_deltas,
+                sleep_kind="forced_sleep",
+                prewarning_tokens=forced.history.prewarning_tokens,
+                floor_tokens=forced.history.floor_tokens,
+                additional_debts=(
+                    ManifestDebt(
+                        code="transition_not_applied",
+                        message=f"Forced Sleep failed unexpectedly: {exc}",
+                    ),
+                ),
+            )
+            self._queue_forced_sleep_manifest(manifest)
+            raise
+        manifest = build_morning_manifest(
+            forced.frontier,
+            applied_deltas=applied,
+            sleep_kind="forced_sleep",
+            prewarning_tokens=forced.history.prewarning_tokens,
+            floor_tokens=forced.history.floor_tokens,
+        )
+        self._queue_forced_sleep_manifest(manifest)
+        self._debug_event(
+            subsystem="planner",
+            event="forced_sleep_applied",
+            title="Forced Sleep applied between turns",
+            content=manifest.render(),
+            metadata={
+                "input_tokens": forced.history.floor_tokens,
+                "prewarning_tokens": forced.history.prewarning_tokens,
+                "transition_count": len(applied),
+                "known_tokens_freed": manifest.known_tokens_freed,
+            },
+        )
+        return manifest
+
+    def _queue_forced_sleep_manifest(self, manifest: MorningManifest) -> None:
+        self._footer_c.queue_footer(
+            text=manifest.render(),
+            footer_type="compaction",
+            source="planner",
+            key=f"forced_sleep_{uuid4().hex}",
+        )
 
     async def pin(
         self, block_idx: int, reason: str, facet_id: str | None = None
@@ -569,83 +663,114 @@ class Homunculus:
                 metadata={"reason": "input_tokens_unknown"},
             )
             return  # invalid, wait for next round
-        result = self._planner.plan(self._block_manager.semantic_blocks, input_tokens)
-        if result is None:
-            return  # no plan updates
-        update_msgs: list[str] = []
-        match result.kind:
-            case "proposal":
-                self._recorder.propose_plan(result.plan)
-                self._debug_event(
-                    subsystem="planner",
-                    event="proposal_generated",
-                    title="Planner proposal generated",
-                    content="\n".join(
-                        [
-                            "# Planner Proposal Generated",
-                            "",
-                            render_plan(
-                                result.plan,
-                                self._block_manager.semantic_blocks,
-                            ),
-                        ]
-                    ),
-                    metadata={
-                        "input_tokens": input_tokens,
-                        "intent_count": len(result.plan.intents),
-                    },
-                )
-                for intent in result.plan.intents:
-                    match intent:
-                        case IRCompactBlockIntent():
-                            until_medium = self._config.medium_threshold - input_tokens
-                            update_msgs.append(
-                                (
-                                    f"new proposal - {render_intent(intent, self._block_manager.semantic_blocks)} "
-                                    f"after another {until_medium} toks."
-                                )
-                            )
-                        case _:
-                            raise NotImplementedError(
-                                f"`check_planner` does not yet support a proposed intent of type {type(intent)}"
-                            )
-            case "action":
-                for intent in result.plan.intents:
-                    match intent:
-                        case IRCompactBlockIntent():
-                            await self.forget(intent.block_idx, source="planner")
-                            update_msgs.append(
-                                (
-                                    render_intent(
-                                        intent,
-                                        self._block_manager.semantic_blocks,
-                                        verb="compacted",
-                                    )
-                                    + "."
-                                )
-                            )
-                        case _:
-                            raise NotImplementedError(
-                                f"`check_planner` does not yet support an intent of type {type(intent)}"
-                            )
-                self._debug_event(
-                    subsystem="planner",
-                    event="proposal_applied",
-                    title="Planner proposal applied",
-                    content="\n".join(["# Planner Proposal Applied", "", *update_msgs]),
-                    metadata={
-                        "input_tokens": input_tokens,
-                        "intent_count": len(result.plan.intents),
-                    },
-                )
-        if len(update_msgs) > 0:
-            footer_text = "Planner:\n" + "\n".join(update_msgs)
-            self._footer_c.queue_footer(
-                text=footer_text,
-                footer_type="compaction",
-                source="planner",
-                key=f"compaction_{uuid4().hex}",
+        update_msgs = self._observe_sleep_pressure(input_tokens)
+        result = None
+        if not (self._sleep_enabled and self._planner.at_sleep_floor(input_tokens)):
+            result = self._planner.plan(
+                self._block_manager.semantic_blocks, input_tokens
             )
+        if result is not None:
+            match result.kind:
+                case "proposal":
+                    self._recorder.propose_plan(result.plan)
+                    self._debug_event(
+                        subsystem="planner",
+                        event="proposal_generated",
+                        title="Planner proposal generated",
+                        content="\n".join(
+                            [
+                                "# Planner Proposal Generated",
+                                "",
+                                render_plan(
+                                    result.plan,
+                                    self._block_manager.semantic_blocks,
+                                ),
+                            ]
+                        ),
+                        metadata={
+                            "input_tokens": input_tokens,
+                            "intent_count": len(result.plan.intents),
+                        },
+                    )
+                    for intent in result.plan.intents:
+                        match intent:
+                            case IRCompactBlockIntent():
+                                until_medium = (
+                                    self._config.medium_threshold - input_tokens
+                                )
+                                update_msgs.append(
+                                    (
+                                        f"new proposal - {render_intent(intent, self._block_manager.semantic_blocks)} "
+                                        f"after another {until_medium} toks."
+                                    )
+                                )
+                            case _:
+                                raise NotImplementedError(
+                                    f"`check_planner` does not yet support a proposed intent of type {type(intent)}"
+                                )
+                case "action":
+                    for intent in result.plan.intents:
+                        match intent:
+                            case IRCompactBlockIntent():
+                                await self.forget(intent.block_idx, source="planner")
+                                update_msgs.append(
+                                    (
+                                        render_intent(
+                                            intent,
+                                            self._block_manager.semantic_blocks,
+                                            verb="compacted",
+                                        )
+                                        + "."
+                                    )
+                                )
+                            case _:
+                                raise NotImplementedError(
+                                    f"`check_planner` does not yet support an intent of type {type(intent)}"
+                                )
+                    self._debug_event(
+                        subsystem="planner",
+                        event="proposal_applied",
+                        title="Planner proposal applied",
+                        content="\n".join(
+                            ["# Planner Proposal Applied", "", *update_msgs]
+                        ),
+                        metadata={
+                            "input_tokens": input_tokens,
+                            "intent_count": len(result.plan.intents),
+                        },
+                    )
+        self._queue_planner_updates(update_msgs)
+
+    def check_sleep_pressure(self) -> None:
+        """Emit Sleep-only planner lines at a terminal round boundary."""
+
+        input_tokens = self._gas_gauge.input_tokens
+        if input_tokens is None:
+            return
+        self._queue_planner_updates(self._observe_sleep_pressure(input_tokens))
+
+    def _observe_sleep_pressure(self, input_tokens: int) -> list[str]:
+        if not self._sleep_enabled:
+            return []
+        from spellbook.tools.sleep import dry_run_sleep
+
+        return list(
+            self._planner.observe_sleep_pressure(
+                input_tokens,
+                lambda: dry_run_sleep(self),
+            )
+        )
+
+    def _queue_planner_updates(self, update_msgs: Sequence[str]) -> None:
+        if not update_msgs:
+            return
+        footer_text = "Planner:\n" + "\n".join(update_msgs)
+        self._footer_c.queue_footer(
+            text=footer_text,
+            footer_type="compaction",
+            source="planner",
+            key=f"compaction_{uuid4().hex}",
+        )
 
     def tick_round_ttls(self) -> None:
         if self._ttl_registry.tick(TTL_TRIGGER_SEQ):
@@ -966,3 +1091,4 @@ class HomunculusRoundLifecycle(RoundLifecycle):
         await self._homunculus.check_nursery()
         if stop_reason == "end_turn":
             self._homunculus.tick_end_turn_ttls()
+        self._homunculus.check_sleep_pressure()

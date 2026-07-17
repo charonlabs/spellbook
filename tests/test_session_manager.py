@@ -1184,6 +1184,72 @@ class TestRunningPhase:
         assert lifecycle.events[1] == ("on_turn_ended", "end_turn")
 
     @pytest.mark.asyncio
+    async def test_forced_sleep_runs_only_after_turn_ended(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        events: list[tuple[str, str]] = []
+
+        class _BoundaryLifecycle(SessionLifecycle):
+            async def on_turn_ended(
+                self,
+                ctx: SessionContext,
+                result: IRLoopResult,
+                turn_id: str,
+            ) -> None:
+                events.append(("turn_ended", manager.state))
+
+            async def on_enter_dreaming(self, ctx: SessionContext) -> None:
+                events.append(("enter_dreaming", manager.state))
+
+            async def on_exit_dreaming(
+                self,
+                ctx: SessionContext,
+                outcome: DreamingOutcome,
+            ) -> None:
+                events.append(("exit_dreaming", manager.state))
+
+        manager = _make_manager(
+            tmp_path,
+            generator=cast(Generator, _FakeGenerator([_gen()])),
+            session_lifecycle=_BoundaryLifecycle(),
+        )
+        forced = object()
+
+        def take_forced_sleep_plan() -> object:
+            events.append(("floor_checked", manager.state))
+            assert manager.cancel_token is None
+            return forced
+
+        def execute_forced_sleep(request: object) -> None:
+            assert request is forced
+            assert manager.cancel_token is None
+            events.append(("floor_executed", manager.state))
+
+        monkeypatch.setattr(
+            manager.homunculus,
+            "take_forced_sleep_plan",
+            take_forced_sleep_plan,
+        )
+        monkeypatch.setattr(
+            manager.homunculus,
+            "execute_forced_sleep",
+            execute_forced_sleep,
+        )
+        await manager.submit_message(_user_msg("hello"))
+
+        await manager._running_phase()
+
+        assert events == [
+            ("turn_ended", "running"),
+            ("floor_checked", "running"),
+            ("enter_dreaming", "dreaming"),
+            ("floor_executed", "dreaming"),
+            ("exit_dreaming", "running"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_running_phase_drains_multiple_turn_messages(
         self, tmp_path: Path
     ) -> None:

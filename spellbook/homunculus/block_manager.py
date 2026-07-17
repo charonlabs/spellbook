@@ -1309,6 +1309,8 @@ class BlockManager:
     def apply_frontier_plan(
         self,
         plan: FrontierAdvancePlan,
+        *,
+        source: SemanticBlockApplyModeSource = "model",
     ) -> tuple[FrontierTransition, ...]:
         """Apply a fully planned Sleep frontier through apply-mode records.
 
@@ -1316,7 +1318,8 @@ class BlockManager:
         An active or newly-applied pair narrative is then committed as one
         record batch and installed in memory as one group. Other transitions
         retain plan order. If a later group fails, the raised error names the
-        earlier deltas whose append-only records already landed.
+        earlier deltas whose append-only records already landed. ``source``
+        distinguishes the mind's tool call from the planner's forced floor.
         """
 
         if plan.refused:
@@ -1381,7 +1384,7 @@ class BlockManager:
                         (group_transition.to_mode, group_transition.block_id)
                         for group_transition, _ in group
                     ),
-                    source="model",
+                    source=source,
                 )
             except RecordsPersistedError as exc:
                 for group_transition, new_block in group:

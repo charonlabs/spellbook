@@ -296,8 +296,8 @@
     <p class="lede">Every current state, transition, lifecycle hook, background integration boundary, memory projection, ambient route, and failure edge—traced to the code that makes it true.</p>
     <div class="meta-row">
       <span class="pill"><b>branch</b> dev</span>
-      <span class="pill"><b>commit</b> 40e55cb + Sleep WIP</span>
-      <span class="pill"><b>traced</b> 2026-07-16</span>
+      <span class="pill"><b>commit</b> dev + P1b pressure ring</span>
+      <span class="pill"><b>traced</b> 2026-07-17</span>
       <span class="pill"><b>artifact</b> offline / single file</span>
       <a class="pill" href="homunculus-state-machine.md"><b>prose</b> open Markdown reference</a>
     </div>
@@ -306,7 +306,7 @@
   <main class="shell">
     <div class="notice">
       <span aria-hidden="true">◇</span>
-      <div><strong>How to read this map.</strong> Solid edges are current runtime behavior, including self-triggered Sleep. Dashed magenta marks forced Sleep, Deep Sleep, and later scheduling that remain future work. Click any node or edge for its cited implementation. Drag to pan; wheel or controls zoom.</div>
+      <div><strong>How to read this map.</strong> Solid edges are current runtime behavior, including self-triggered Sleep and the warned 95% frontier floor. Dashed magenta marks Deep Sleep and later scheduling that remain future work. Click any node or edge for its cited implementation. Drag to pan; wheel or controls zoom.</div>
     </div>
 
     <section aria-labelledby="map-heading" style="padding-top:0">
@@ -323,7 +323,7 @@
           <div class="viewport" id="viewport">
             <svg id="machine" viewBox="0 0 1800 2760" role="img" aria-labelledby="svg-title svg-desc">
               <title id="svg-title">Interactive Homunculus state machine</title>
-              <desc id="svg-desc">A layered diagram of session, round, awareness, memory, pressure, inbound, failure, current Sleep, and future forced-Sleep states.</desc>
+              <desc id="svg-desc">A layered diagram of session, round, awareness, memory, pressure, inbound, failure, self-triggered Sleep, and the forced frontier floor.</desc>
             </svg>
             <div class="map-help">drag · wheel zoom · click for provenance</div>
           </div>
@@ -459,14 +459,14 @@
     </section>
 
     <section id="sleep" aria-labelledby="sleep-title">
-      <div class="eyebrow">Current, synchronous, self-triggered</div>
+      <div class="eyebrow">Current, synchronous, self-triggered + warned floor</div>
       <h2 class="section-title" id="sleep-title">The Sleep runtime contract</h2>
-      <p class="section-intro">Sleep is now a solid tool-execution path. The tool call is consent; the planner is pure; actual mode records land; the morning result names deltas and debts. Forced Sleep, Deep Sleep, scheduling, and nudges remain future work.</p>
+      <p class="section-intro">Self-triggered Sleep is a solid tool-execution path. With Sleep enabled, the planner also prices a dry-run invitation, warns at 90%, and may run one frontier-only floor after turn end at 95%. Deep Sleep authoring and scheduling remain future work.</p>
       <div class="card-grid">
         <article class="section-card"><div class="eyebrow">entry</div><h3>Execute → dreaming</h3><p><code>Sleep()</code> is the mind's consent. Session and app state enter dreaming during the tool call; <code>dry_run=true</code> previews the plan while staying awake. <a class="ref" href="../spellbook/tools/sleep.py">sleep.py</a></p></article>
         <article class="section-card"><div class="eyebrow">execution</div><h3>Plan → apply actual modes</h3><p>Homunculus derives the default frontier without mutation. Stable ids, modes, and artifacts preflight before model-source apply-mode records; narrative parent and child commit as one logical batch. <a class="ref" href="../spellbook/homunculus/block_manager.py">block_manager.py</a></p></article>
         <article class="section-card"><div class="eyebrow">exit</div><h3>Manifest → same waking turn</h3><p>The morning result is built from transitions that actually landed plus debts. State returns to running before normal tool-result recording and rerendering. <a class="ref" href="../spellbook/dreaming/frontier.py#L477">frontier.py:477-595</a></p></article>
-        <article class="section-card future-box"><div class="eyebrow">still future</div><h3>Critical → forced Sleep</h3><p>Forced Sleep, Deep Sleep authoring, scheduling, and tiredness nudges remain outside this slice. <span class="ref">memory-tree.md:115-120</span></p></article>
+        <article class="section-card"><div class="eyebrow">current, bounded exception</div><h3>Warned 95% → forced Sleep</h3><p>The floor runs only after <code>turn_end</code>, advances existing artifacts with planner provenance, preserves pins, and reports <code>forced=true</code> plus its pre-warning history. Empty or refused frontiers stand down. <a class="ref" href="../spellbook/session_manager.py">session_manager.py</a></p></article>
       </div>
     </section>
 
@@ -558,7 +558,7 @@
       {id:"ttl-collapsed", layer:"memory", x:535, y:1805, kicker:"T2", title:"Collapsed projection", sub:"replacement at render time", desc:"At zero, only provider-facing tool result content changes. Transcript remains full; rerender and counts are invalidated.", refs:["spellbook/homunculus/tool_result_ttl.py:169-174","spellbook/homunculus/tool_result_ttl.py:511-519"]},
       {id:"token-observe", layer:"pressure", x:780, y:1805, kicker:"G0", title:"Token observations", sub:"usage prefixes + direct slices", desc:"Provider generation usage seeds prefix observations and GasGauge input. Semantic metrics use direct slice counting with repair/chunk fallback.", refs:["spellbook/homunculus/token_meter.py:53-217","spellbook/homunculus/homunculus.py:499-505"]},
       {id:"gauge", layer:"pressure", x:1025, y:1805, kicker:"G1", title:"Gas gauge", sub:"50K buckets; numeric regimes", desc:"Bucket changes queue a keyed priority-10 footer. Default regimes: warning 700K, forced 850K, critical 933K; invalidation yields unknown.", refs:["spellbook/homunculus/gas_gauge.py:28-68","spellbook/config.py:32-38"]},
-      {id:"proposal", layer:"pressure", x:1270, y:1805, kicker:"P1", title:"Planner proposal", sub:"oldest ready full block", desc:"At warning pressure Planner records and announces the oldest full, unpinned, summary-ready block. Reflect also exposes the proposal.", refs:["spellbook/homunculus/planner.py:25-63","spellbook/homunculus/homunculus.py:524-610"]},
+      {id:"proposal", layer:"pressure", x:1270, y:1805, kicker:"P1", title:"Planner proposal", sub:"compaction + priced Sleep", desc:"At warning pressure Planner records the oldest ready compaction and, when Sleep is enabled, prices a real frontier dry-run once per warning entry. At 90% it states the 95% floor contract.", refs:["spellbook/homunculus/planner.py","spellbook/homunculus/homunculus.py"]},
       {id:"planner-action", layer:"pressure", x:1515, y:1805, kicker:"P2", title:"Forget / forced action", sub:"entity or Planner consumes", desc:"The entity may call Forget in response; at medium pressure Planner calls the same path with source planner. Apply-mode invalidates rendering and gauge.", refs:["spellbook/homunculus/homunculus.py:574-610","spellbook/homunculus/block_manager.py:955-985"]},
 
       {id:"queue", layer:"inbound", x:45, y:2110, kicker:"I0", title:"Inbound queue", sub:"turn · inject · footer", desc:"Turn and inject start directly. A wakeable footer may synthesize an empty trigger but remains queued for its normal round drain. Runtime distinguishes queued vs started based on running/pending state.", refs:["spellbook/inbound.py:9-104","spellbook/app/runtime.py:358-378"]},
@@ -663,10 +663,10 @@
       {id:"e-shutdown-force", from:"shutdown", to:"force-cancel", label:"CLI > 5s", layer:"failure", ref:"scripts/interactive.py:466-480"},
 
       {id:"e-execute-dreaming", from:"execute", to:"dreaming", label:"model calls Sleep()", layer:"session", ref:"spellbook/tools/sleep.py; spellbook/session_manager.py"},
-      {id:"e-gauge-dreaming", from:"gauge", to:"dreaming", label:"future: forced hard limit", layer:"future", future:true, ref:"Forge memory-tree.md:115-120; spellbook/dreaming/frontier.py:650-658"},
+      {id:"e-gauge-dreaming", from:"turn-ended", to:"dreaming", label:"warned 95% floor; frontier advanceable", layer:"session", ref:"spellbook/session_manager.py; spellbook/homunculus/homunculus.py"},
       {id:"e-dreaming-frontier", from:"dreaming", to:"frontier", label:"pure plan + actual deltas", layer:"memory", ref:"spellbook/tools/sleep.py; spellbook/dreaming/frontier.py"},
       {id:"e-frontier-execute", from:"frontier", to:"execute", label:"manifest + wake to running", layer:"session", ref:"spellbook/tools/sleep.py; spellbook/session_manager.py"},
-      {id:"e-frontier-summary", from:"frontier", to:"summary", label:"model-source apply mode", layer:"memory", ref:"spellbook/homunculus/block_manager.py; spellbook/recorder.py"},
+      {id:"e-frontier-summary", from:"frontier", to:"summary", label:"model- or planner-source apply mode", layer:"memory", ref:"spellbook/homunculus/block_manager.py; spellbook/recorder.py"},
       {id:"e-frontier-pair", from:"frontier", to:"pair-parent", label:"atomic parent + child", layer:"memory", ref:"spellbook/homunculus/block_manager.py; spellbook/recorder.py"},
       {id:"e-dreaming-crash", from:"dreaming", to:"crash", label:"unexpected failure after state restore", layer:"failure", ref:"spellbook/tools/sleep.py; spellbook/executor.py:61-137"}
     ];
