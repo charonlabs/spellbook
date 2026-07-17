@@ -346,7 +346,8 @@ class IRToolRecord(BaseModel, frozen=True):
 
 # "turn" starts or queues a new turn. "inject" joins the active turn at the
 # next round boundary, and starts a turn if the session is idle. "footer" is
-# ambient context rendered by the footer controller.
+# ambient context rendered by the footer controller. A footer may opt into
+# waking an otherwise-idle session through IRInboundMessage.wake_on_idle.
 InboundDelivery = Literal["turn", "inject", "footer"]
 
 
@@ -354,6 +355,13 @@ class IRInboundMessage(BaseModel, frozen=True):
     blocks: list[IRInboundBlock]
     source_metadata: dict = Field(default_factory=dict)
     delivery: InboundDelivery
+    wake_on_idle: bool = False
+
+    @model_validator(mode="after")
+    def _validate_wake_on_idle(self) -> Self:
+        if self.wake_on_idle and self.delivery != "footer":
+            raise ValueError("`wake_on_idle` is only valid for footer delivery.")
+        return self
 
 
 # TODO: these are guesses at names / future stuff. Subject to change.

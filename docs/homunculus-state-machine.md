@@ -89,8 +89,11 @@ been requested.
 ### S3 — Idle
 
 On entry the manager publishes `on_enter_idle`, then waits on the inbound queue
-for a turn-eligible `turn` or `inject` message. Footer-only messages remain
-queued. Slash commands are handled and recorded without starting a model turn.
+for a direct `turn` or `inject` message, or for a footer marked
+`wake_on_idle`. Ordinary footer-only messages remain queued. A wakeable footer
+supplies an empty synthetic turn trigger but itself stays queued for
+FooterController to record and drain at `before_round`. Slash commands are
+handled and recorded without starting a model turn.
 [`session_manager.py:148-160`](../spellbook/session_manager.py#L148),
 [`inbound.py:15-16`](../spellbook/inbound.py#L15),
 [`inbound.py:60-76`](../spellbook/inbound.py#L60),
@@ -123,7 +126,10 @@ increments the round number, clears `blocks_this_round`, and calls
 
 Transition `R6 Loop exit -> S4 next queued turn`: after a loop result, the manager
 records `turn_end`, clears the cancel token, fires `on_turn_ended`, and continues
-while turn-eligible messages remain.
+while a direct turn or wakeable footer remains. Direct turns take precedence;
+if only a wakeable footer remains, its synthetic empty trigger starts a new
+turn and FooterController surfaces the original footer in that turn's first
+round.
 [`session_manager.py:184-187`](../spellbook/session_manager.py#L184),
 [`recorder.py:199-206`](../spellbook/recorder.py#L199)
 
@@ -708,7 +714,11 @@ the normal inbound turn path. Crackle time is noted only after submission.
 - `turn`: eligible to start or queue a new turn.
 - `inject`: starts a turn while idle, but joins the next round while already
   running.
-- `footer`: never starts a turn; FooterController drains it at `before_round`.
+- `footer`: FooterController drains it at `before_round`. By default it never
+  starts a turn. A footer with `wake_on_idle=true` may supply an empty synthetic
+  turn trigger when no direct turn or injection is pending; the original footer
+  remains queued so normal footer priority, deduplication, recording, and
+  rendering still apply.
   [`inbound.py:9-58`](../spellbook/inbound.py#L9),
   [`footer.py:53-71`](../spellbook/footer.py#L53)
 
@@ -731,7 +741,10 @@ routing; the three fork/bodyless profiles set this flag false.
 - `message` submits an injection.
   [`runtime.py:197-230`](../spellbook/app/runtime.py#L197)
 - `notification` wakes an idle, turn-empty session as a framed injection;
-  otherwise it becomes a footer for the current/next round.
+  otherwise it becomes a `wake_on_idle` footer for the current/next round. If
+  the current turn ends before that footer is drained, it starts an immediate
+  follow-up turn without an intervening idle period. A direct queued turn still
+  wins and carries the footer into its first round.
   [`runtime.py:232-309`](../spellbook/app/runtime.py#L232)
 
 The “crackle path” is therefore an ordinary system-origin turn, while conduit
@@ -854,8 +867,9 @@ shutdown while preserving their snapshot directory.
 1. **Inbound.** Runtime accepts a `turn`, or an `inject` while idle, notes
    activity, and enqueues it. A queued turn waits behind the active turn.
    [`runtime.py:358-378`](../spellbook/app/runtime.py#L358)
-2. **Idle exits.** `take_turn()` selects the first turn-eligible message;
-   SessionManager announces exit from idle and pushes the message back for the
+2. **Idle exits.** `take_turn()` selects the first direct turn, or synthesizes an
+   empty trigger from a wakeable footer when no direct turn is pending;
+   SessionManager announces exit from idle and pushes the trigger back for the
    running phase. [`session_manager.py:148-160`](../spellbook/session_manager.py#L148)
 3. **Turn becomes transcript truth.** The manager writes turn start and inbound
    blocks, fires turn-start hooks (including timekeeper), creates a cancel token,
@@ -883,7 +897,8 @@ shutdown while preserving their snapshot directory.
    [`block_manager.py:729-743`](../spellbook/homunculus/block_manager.py#L729)
 9. **Turn ends.** A non-tool stop reason fires loop-exit nursery harvest; only
    `end_turn` ticks end-turn TTLs. The manager records the turn end and app
-   activity time, then handles the next queued turn or returns idle.
+   activity time, then handles the next queued turn, starts a follow-up turn for
+   a stranded wakeable footer, or returns idle.
    [`homunculus.py:927-930`](../spellbook/homunculus/homunculus.py#L927),
    [`session_manager.py:184-187`](../spellbook/session_manager.py#L184)
 
@@ -1133,15 +1148,15 @@ the same edge inventory rendered by the HTML diagram.
 | Planner proposal -> Forget / forced action | entity or >=850K | pressure | `spellbook/homunculus/homunculus.py:574-610` |
 | Forget / forced action -> Summary block | apply mode | pressure | `spellbook/homunculus/block_manager.py:1251-1290` |
 | Summary block -> Token observations | next generation | pressure | `spellbook/homunculus/gas_gauge.py:41-63` |
-| Inbound queue -> Running / turn | turn / idle inject | inbound | `spellbook/session_manager.py:148-187` |
+| Inbound queue -> Running / turn | turn / idle inject / wakeable footer | inbound | `spellbook/session_manager.py:148-187` |
 | Inbound queue -> Active injection | active inject | inbound | `spellbook/inbound.py:46-58,84-94` |
 | Active injection -> before_round | round + record | inbound | `spellbook/inbound.py` |
 | Active injection -> Append context | ids + detector accumulation | awareness | `spellbook/inbound.py; spellbook/homunculus/homunculus.py` |
-| Inbound queue -> Footer pending | footer delivery | inbound | `spellbook/inbound.py:32-44` |
+| Inbound queue -> Footer pending | footer delivery; optional wake trigger | inbound | `spellbook/inbound.py:32-81` |
 | Footer pending -> before_round | drain + record | inbound | `spellbook/footer.py` |
 | Footer pending -> Append context | ids + detector accumulation | awareness | `spellbook/footer.py; spellbook/homunculus/homunculus.py` |
 | Conduit routing -> Active injection | message / idle notif | inbound | `spellbook/app/runtime.py:197-283` |
-| Conduit routing -> Footer pending | context / busy notif | inbound | `spellbook/app/runtime.py:170-195,285-309` |
+| Conduit routing -> Footer pending | context / wakeable busy notif | inbound | `spellbook/app/runtime.py:170-195,285-309` |
 | Conduit routing -> Conduit refused | profile gate | failure | `spellbook/app/runtime.py:163-169` |
 | Hearth waiting / skipped -> Crackle turn | eligible tick | inbound | `spellbook/hearth.py:251-293` |
 | Crackle turn -> Inbound queue | normal turn | inbound | `spellbook/app/runtime.py:137-144` |

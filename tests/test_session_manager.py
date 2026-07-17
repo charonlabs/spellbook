@@ -13,7 +13,7 @@ from spellbook.cancel_token import CancelToken
 from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.executor import Executor
-from spellbook.footer import FooterController
+from spellbook.footer import FooterController, FooterControllerRoundLifecycle
 from spellbook.fork import (
     BlockDetectorConfig,
     BlockDetectorResult,
@@ -31,6 +31,8 @@ from spellbook.ir_types import (
     IRBlockRecord,
     IRExecution,
     IRFooter,
+    IRFooterDrainRecord,
+    IRFooterQueueRecord,
     IRGeneration,
     IRInboundMessage,
     IRLoopResult,
@@ -96,6 +98,25 @@ def _user_msg(text: str, delivery: InboundDelivery = "turn") -> IRInboundMessage
     return IRInboundMessage(
         blocks=[IRUserTextBlock(text=text, origin="human")],
         delivery=delivery,
+    )
+
+
+def _wake_footer(
+    text: str, *, key: str = "wake-footer", priority: int = 50
+) -> IRInboundMessage:
+    return IRInboundMessage(
+        blocks=[IRUserTextBlock(text=text, origin="system")],
+        source_metadata={
+            "source": "test-conduit",
+            "origin": "conduit",
+            "conduit_type": "notification",
+            "footer_type": "conduit",
+            "footer_source": "conduit",
+            "footer_key": key,
+            "footer_priority": priority,
+        },
+        delivery="footer",
+        wake_on_idle=True,
     )
 
 
@@ -774,6 +795,43 @@ class TestInboundQueueSemantics:
         assert queued[0].blocks[0].text == "background notification"
 
     @pytest.mark.asyncio
+    async def test_wakeable_footer_starts_idle_phase_and_remains_for_drain(
+        self, tmp_path: Path
+    ) -> None:
+        manager = _make_manager(tmp_path)
+        await manager.submit_message(_wake_footer("stranded notification"))
+
+        await manager._idle_phase()
+
+        queued = list(manager.inbound_queue._messages)
+        assert len(queued) == 2
+        trigger, footer = queued
+        assert trigger.delivery == "turn"
+        assert trigger.blocks == []
+        assert trigger.source_metadata["wake_reason"] == "pending_footer"
+        assert footer.delivery == "footer"
+        assert footer.wake_on_idle is True
+        assert isinstance(footer.blocks[0], IRUserTextBlock)
+        assert footer.blocks[0].text == "stranded notification"
+
+    @pytest.mark.asyncio
+    async def test_direct_turn_precedes_wakeable_footer(self, tmp_path: Path) -> None:
+        manager = _make_manager(tmp_path)
+        await manager.submit_message(_wake_footer("ambient notification"))
+        await manager.submit_message(_user_msg("human input"))
+
+        await manager._idle_phase()
+
+        queued = list(manager.inbound_queue._messages)
+        assert len(queued) == 2
+        turn, footer = queued
+        assert turn.delivery == "turn"
+        assert isinstance(turn.blocks[0], IRUserTextBlock)
+        assert turn.blocks[0].text == "human input"
+        assert footer.delivery == "footer"
+        assert footer.wake_on_idle is True
+
+    @pytest.mark.asyncio
     async def test_sleep_runtime_enters_dreaming_and_returns_to_running(
         self, tmp_path: Path
     ) -> None:
@@ -1154,6 +1212,201 @@ class TestRunningPhase:
         assert len(started) == 2
         assert len(ended) == 2
         assert not manager.inbound_queue.has_pending_turn()
+
+    @pytest.mark.asyncio
+    async def test_stranded_footer_starts_followup_turn_without_idle(
+        self, tmp_path: Path
+    ) -> None:
+        lifecycle = _RecordingSessionLifecycle()
+        manager = _make_manager(tmp_path, session_lifecycle=lifecycle)
+        footer_controller = manager.homunculus._footer_c  # noqa: SLF001
+
+        class _EnqueueFooterOnFirstRun(_FakeGenerator):
+            async def run(
+                self,
+                blocks: list[IRBlock],
+                cancel_token: CancelToken,
+                lifecycle: RoundLifecycle,
+            ) -> IRGeneration:
+                if not self.calls_seen:
+                    await manager.inbound_queue.put(
+                        _wake_footer("arrived during stream-out")
+                    )
+                return await super().run(blocks, cancel_token, lifecycle)
+
+        generator = _EnqueueFooterOnFirstRun(
+            [
+                _gen(blocks=[IRAssistantTextBlock(text="first", origin="model")]),
+                _gen(blocks=[IRAssistantTextBlock(text="second", origin="model")]),
+            ]
+        )
+        manager.generator = cast(Generator, generator)
+        manager.round_lifecycle = CompositeRoundLifecycle(
+            [
+                RecordingRoundLifecycle(manager.recorder),
+                FooterControllerRoundLifecycle(
+                    controller=footer_controller,
+                    recorder=manager.recorder,
+                    homunculus=manager.homunculus,
+                ),
+            ]
+        )
+        await manager.submit_message(_user_msg("start"))
+
+        await manager._running_phase()
+
+        assert len(generator.calls_seen) == 2
+        followup_blocks = generator.calls_seen[1]
+        rendered_footers = [
+            block.text
+            for block in followup_blocks
+            if isinstance(block, IRUserTextBlock) and block.origin == "system"
+        ]
+        assert rendered_footers == [
+            "<spellbook>\narrived during stream-out\n</spellbook>"
+        ]
+        assert [event[0] for event in lifecycle.events] == [
+            "on_turn_started",
+            "on_turn_ended",
+            "on_turn_started",
+            "on_turn_ended",
+        ]
+        assert not manager.inbound_queue.has_pending()
+
+        rehydrated = Rehydrator(manager.transcript_path).run()
+        assert rehydrated.last_completed_turn == 2
+        assert rehydrated.pending_footers == {}
+        assert any(
+            isinstance(record, IRFooterQueueRecord)
+            and record.footer.text == "arrived during stream-out"
+            for record in rehydrated.records
+        )
+        assert any(
+            isinstance(record, IRFooterDrainRecord)
+            and [footer.text for footer in record.footers]
+            == ["arrived during stream-out"]
+            for record in rehydrated.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_wakeable_footer_drained_mid_turn_does_not_add_turn(
+        self, tmp_path: Path
+    ) -> None:
+        lifecycle = _RecordingSessionLifecycle()
+        manager = _make_manager(tmp_path, session_lifecycle=lifecycle)
+        footer_controller = manager.homunculus._footer_c  # noqa: SLF001
+
+        class _EnqueueFooterBeforeToolRound(_FakeGenerator):
+            async def run(
+                self,
+                blocks: list[IRBlock],
+                cancel_token: CancelToken,
+                lifecycle: RoundLifecycle,
+            ) -> IRGeneration:
+                if not self.calls_seen:
+                    await manager.inbound_queue.put(
+                        _wake_footer("deliver in the next round")
+                    )
+                return await super().run(blocks, cancel_token, lifecycle)
+
+        generator = _EnqueueFooterBeforeToolRound(
+            [
+                _gen(blocks=[_tool_call("toolu_1")], stop_reason="tool_use"),
+                _gen(blocks=[IRAssistantTextBlock(text="done", origin="model")]),
+            ]
+        )
+        executor = _FakeExecutor([IRExecution(blocks=[_tool_result("toolu_1")])])
+        manager.generator = cast(Generator, generator)
+        manager.executor = cast(Executor, executor)
+        manager.round_lifecycle = CompositeRoundLifecycle(
+            [
+                RecordingRoundLifecycle(manager.recorder),
+                FooterControllerRoundLifecycle(
+                    controller=footer_controller,
+                    recorder=manager.recorder,
+                    homunculus=manager.homunculus,
+                ),
+            ]
+        )
+        await manager.submit_message(_user_msg("start"))
+
+        await manager._running_phase()
+
+        assert len(generator.calls_seen) == 2
+        assert any(
+            isinstance(block, IRUserTextBlock)
+            and "deliver in the next round" in block.text
+            for block in generator.calls_seen[1]
+        )
+        assert [event[0] for event in lifecycle.events] == [
+            "on_turn_started",
+            "on_turn_ended",
+        ]
+        assert not manager.inbound_queue.has_pending()
+
+    @pytest.mark.asyncio
+    async def test_wakeable_footers_batch_dedupe_and_start_one_turn(
+        self, tmp_path: Path
+    ) -> None:
+        lifecycle = _RecordingSessionLifecycle()
+        generator = _FakeGenerator([_gen()])
+        manager = _make_manager(
+            tmp_path,
+            generator=cast(Generator, generator),
+            session_lifecycle=lifecycle,
+        )
+        footer_controller = manager.homunculus._footer_c  # noqa: SLF001
+        manager.round_lifecycle = CompositeRoundLifecycle(
+            [
+                RecordingRoundLifecycle(manager.recorder),
+                FooterControllerRoundLifecycle(
+                    controller=footer_controller,
+                    recorder=manager.recorder,
+                    homunculus=manager.homunculus,
+                ),
+            ]
+        )
+        await manager.submit_message(
+            _wake_footer("superseded", key="shared", priority=80)
+        )
+        await manager.submit_message(
+            _wake_footer("first by priority", key="shared", priority=10)
+        )
+        await manager.submit_message(
+            _wake_footer("second by priority", key="other", priority=20)
+        )
+
+        await manager._running_phase()
+
+        assert len(generator.calls_seen) == 1
+        rendered = next(
+            block.text
+            for block in generator.calls_seen[0]
+            if isinstance(block, IRUserTextBlock) and block.origin == "system"
+        )
+        assert rendered == (
+            "<spellbook>\nfirst by priority\n---\nsecond by priority\n</spellbook>"
+        )
+        assert "superseded" not in rendered
+        assert [event[0] for event in lifecycle.events] == [
+            "on_turn_started",
+            "on_turn_ended",
+        ]
+        assert not manager.inbound_queue.has_pending()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_prevents_wakeable_footer_followup(
+        self, tmp_path: Path
+    ) -> None:
+        generator = _FakeGenerator([_gen()])
+        manager = _make_manager(tmp_path, generator=cast(Generator, generator))
+        await manager.submit_message(_wake_footer("do not restart"))
+        manager._shutdown_requested = True  # noqa: SLF001 - boundary invariant
+
+        await manager._running_phase()
+
+        assert generator.calls_seen == []
+        assert manager.inbound_queue.has_pending_turn()
 
     @pytest.mark.asyncio
     async def test_running_phase_handles_tool_use_roundtrip(
