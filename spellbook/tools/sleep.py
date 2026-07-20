@@ -149,6 +149,7 @@ def _render_preview(
         forecast.render(),
         "",
         "Plan",
+        f"- {plan.projection.render()}",
     ]
     if plan.refused:
         lines.append("- Refused as a whole; no partial frontier is available.")
@@ -191,6 +192,7 @@ def _preview_display(
         "refused": plan.refused,
         "transitions": [_transition_display(delta) for delta in plan.transitions],
         "reasons": [reason.code for reason in plan.reasons],
+        "projection": _projection_display(plan),
         "forecast_seconds": {
             "lower": forecast.estimate.lower_seconds,
             "likely": forecast.estimate.likely_seconds,
@@ -215,6 +217,25 @@ def _manifest_display(
         "debts": [debt.code for debt in manifest.debts],
         "known_tokens_freed": manifest.known_tokens_freed,
         "tokens_freed": manifest.tokens_freed,
+        "projection": {
+            "target_tokens": manifest.projection.target_tokens,
+            "projected_render_tokens": manifest.projection.projected_render_tokens,
+            "kept_full_blocks": manifest.projection.kept_full_blocks,
+            "estimate_quality": manifest.projection.estimate_quality,
+            "outcome": manifest.projection.outcome,
+        },
+    }
+
+
+def _projection_display(plan: FrontierAdvancePlan) -> dict:
+    return {
+        "target_tokens": plan.projection.target_tokens,
+        "current_render_tokens": plan.projection.current_render_tokens,
+        "projected_render_tokens": plan.projection.projected_render_tokens,
+        "estimated_tokens_freed": plan.projection.estimated_tokens_freed,
+        "kept_full_blocks": plan.projection.kept_full_blocks,
+        "estimate_quality": plan.projection.estimate_quality,
+        "outcome": plan.projection.outcome,
     }
 
 

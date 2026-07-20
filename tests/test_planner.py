@@ -1,5 +1,9 @@
 from spellbook.config import HomunculusConfig
-from spellbook.dreaming.frontier import forecast_sleep, plan_frontier_advance
+from spellbook.dreaming.frontier import (
+    FrontierPolicy,
+    forecast_sleep,
+    plan_frontier_advance,
+)
 from spellbook.homunculus.planner import Planner
 from spellbook.ir_types import (
     IRCompactBlockIntent,
@@ -121,8 +125,15 @@ def _sleep_preview(*, blocks: list[IRSemanticBlock] | None = None) -> SleepDryRu
     resolved = blocks or [
         _semantic_block(idx, full_tokens=100, summary_tokens=10) for idx in range(6)
     ]
+    current_render_tokens = sum(
+        block.toks.tokens for block in resolved if block.toks is not None
+    )
     return SleepDryRun(
-        plan=plan_frontier_advance(resolved),
+        plan=plan_frontier_advance(
+            resolved,
+            FrontierPolicy(calm_target_tokens=_sleep_config().soft_threshold),
+            current_render_tokens=current_render_tokens,
+        ),
         forecast=forecast_sleep(),
     )
 

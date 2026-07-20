@@ -7,6 +7,7 @@ from spellbook.backends.model_backend import TokenCounter
 from spellbook.config import HomunculusConfig
 from spellbook.dreaming.frontier import (
     FrontierAdvancePlan,
+    FrontierPolicy,
     FrontierTransition,
     ManifestDebt,
     MorningManifest,
@@ -361,7 +362,11 @@ class Homunculus:
     def plan_sleep_frontier(self) -> FrontierAdvancePlan:
         """Derive the default, mutation-free frontier plan for self-triggered Sleep."""
 
-        return plan_frontier_advance(self._block_manager.semantic_blocks)
+        return plan_frontier_advance(
+            self._block_manager.semantic_blocks,
+            FrontierPolicy(calm_target_tokens=self._config.soft_threshold),
+            current_render_tokens=self._gas_gauge.input_tokens,
+        )
 
     def apply_sleep_frontier(
         self,

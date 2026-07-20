@@ -176,7 +176,7 @@ async def _build_world(
     config = SpellbookConfig(
         cwd=tmp_path,
         sleep_enabled=sleep_enabled,
-        hom_config=homunculus_config or HomunculusConfig(),
+        hom_config=homunculus_config or HomunculusConfig(soft_threshold=500),
     )
     recorder = Recorder(config, transcript, "session_sleep", DEFAULT_TOOL_REGISTRY)
     recorder.write_session_record(skill_catalog=IRSkillCatalog())
@@ -269,12 +269,22 @@ async def test_sleep_lands_actual_modes_manifest_debts_and_smaller_render(
     text = _result_text(result)
     assert "Deltas\n" in text
     assert "Debts\n" in text
+    assert "Policy\n- Target: calm below 500 tokens" in text
+    assert "projected result 780 tokens" in text
+    assert "kept 4 recent blocks full" in text
     assert 'Block 0 "Block 0": full -> narrative (chapter 1)' in text
     assert "because its block pin is absolute" in text
     assert "The dream itself is kept, if you ever want to hold it: forks/." in text
     assert result.display["status"] == "completed"
     assert len(result.display["deltas"]) == 3
     assert result.display["debts"] == ["pinned"]
+    assert result.display["projection"] == {
+        "target_tokens": 500,
+        "projected_render_tokens": 780,
+        "kept_full_blocks": 4,
+        "estimate_quality": "conservative",
+        "outcome": "floor_reached",
+    }
     assert world.runtime.events == [("enter", None), ("exit", "completed")]
 
     rehydrated = Rehydrator(world.transcript).run()
@@ -385,10 +395,22 @@ async def test_sleep_dry_run_returns_plan_and_forecast_without_entering_dreaming
     text = _result_text(result)
     assert "Sleep dry run" in text
     assert "Sleep: ~seconds" in text
+    assert "Target: calm below 500 tokens" in text
+    assert "projected result 560 tokens" in text
+    assert "kept 4 recent blocks full" in text
     assert 'Block 0 "Block 0": full -> summary' in text
     assert result.display["status"] == "preview"
     assert result.display["dry_run"] is True
     assert len(result.display["transitions"]) == 2
+    assert result.display["projection"] == {
+        "target_tokens": 500,
+        "current_render_tokens": 750,
+        "projected_render_tokens": 560,
+        "estimated_tokens_freed": 190,
+        "kept_full_blocks": 4,
+        "estimate_quality": "conservative",
+        "outcome": "floor_reached",
+    }
 
 
 async def test_sleep_partial_failure_reports_only_already_landed_deltas(

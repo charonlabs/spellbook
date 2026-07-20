@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from spellbook.config import DEFAULT_SOFT_THRESHOLD
 from spellbook.dreaming.frontier import (
     DreamDurationCalibration,
     DreamTreeShape,
@@ -84,7 +85,7 @@ def _with_pair_narrative(
     first: int,
     *,
     active: bool,
-    narrative_tokens: int = 30,
+    narrative_tokens: int | None = 30,
     include_child: bool = True,
 ) -> list[IRSemanticBlock]:
     second = first + 1
@@ -96,7 +97,7 @@ def _with_pair_narrative(
         chapter_number=chapter,
         title=f"Chapter {chapter}",
         blocks=[IRUserTextBlock(text="Woven memory.", origin="memory")],
-        toks=_count(narrative_tokens),
+        toks=_count(narrative_tokens) if narrative_tokens is not None else None,
         source_chapter_path=f"dreams/chapter-{chapter:02d}.md",
         compiled_json_path=f"dreams/chapter-{chapter:02d}.compiled.json",
     )
@@ -190,6 +191,118 @@ def test_advance_prefers_narratives_then_summaries_and_is_minimal() -> None:
     assert any(reason.code == "pinned" for reason in plan.reasons)
     assert blocks == original
     assert all(block.mode == "full" for block in blocks)
+
+
+def test_default_policy_keeps_largest_tiny_block_window_that_reaches_calm() -> None:
+    blocks = [_block(idx, full_tokens=10, summary_tokens=1) for idx in range(20)]
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=150),
+        current_render_tokens=200,
+    )
+
+    assert plan.policy.mode == "calm_targeted"
+    assert [delta.block_idx for delta in plan.transitions] == list(range(6))
+    assert plan.projection.kept_full_blocks == 14
+    assert plan.projection.projected_render_tokens == 146
+    assert plan.projection.estimate_quality == "exact"
+    assert plan.projection.outcome == "calm_reached"
+    assert (
+        "kept 14 recent blocks full; calm reached without touching them"
+        in plan.projection.render()
+    )
+    manifest = build_morning_manifest(plan)
+    assert "Policy\n- Target: calm below 150 tokens" in manifest.render()
+    assert "projected result 146 tokens" in manifest.render()
+
+
+def test_default_policy_stops_at_four_block_floor_for_large_blocks() -> None:
+    blocks = [_block(idx, full_tokens=200, summary_tokens=10) for idx in range(8)]
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=500),
+        current_render_tokens=1_600,
+    )
+
+    assert [delta.block_idx for delta in plan.transitions] == [0, 1, 2, 3]
+    assert plan.projection.kept_full_blocks == 4
+    assert plan.projection.projected_render_tokens == 840
+    assert plan.projection.calm_reached is False
+    assert plan.projection.outcome == "floor_reached"
+
+
+def test_default_policy_does_nothing_when_render_is_already_calm() -> None:
+    blocks = [_block(idx, full_tokens=10, summary_tokens=1) for idx in range(12)]
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=150),
+        current_render_tokens=149,
+    )
+
+    assert plan.empty is True
+    assert plan.refused is False
+    assert plan.reasons == ()
+    assert plan.projection.kept_full_blocks == 12
+    assert plan.projection.outcome == "already_calm"
+
+
+def test_unknown_summary_size_counts_as_zero_relief_and_marks_projection() -> None:
+    blocks = [_block(idx, full_tokens=100, summary_tokens=10) for idx in range(10)]
+    unknown_summary = blocks[0].artifacts[0].model_copy(update={"toks": None})
+    blocks[0] = blocks[0].model_copy(update={"artifacts": [unknown_summary]})
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=850),
+        current_render_tokens=1_000,
+    )
+
+    assert [delta.block_idx for delta in plan.transitions] == [0, 1, 2]
+    assert plan.projection.kept_full_blocks == 7
+    assert plan.projection.estimated_tokens_freed == 180
+    assert plan.projection.projected_render_tokens == 820
+    assert plan.projection.estimate_quality == "conservative"
+    assert plan.tokens_freed is None
+
+
+def test_unknown_atomic_narrative_counts_neither_halfs_apparent_relief() -> None:
+    blocks = [_block(idx, full_tokens=100, summary_tokens=10) for idx in range(6)]
+    blocks[0] = _block(0, full_tokens=100)
+    blocks[1] = _block(1, full_tokens=100)
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=None,
+    )
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=550),
+        current_render_tokens=600,
+    )
+
+    assert [(delta.block_idx, delta.to_mode) for delta in plan.transitions] == [
+        (0, "pair_narrative"),
+        (1, "pair_narrative"),
+    ]
+    assert plan.projection.estimated_tokens_freed == 0
+    assert plan.projection.projected_render_tokens == 600
+    assert plan.projection.estimate_quality == "conservative"
+
+
+def test_policy_uses_configured_soft_threshold_constant_and_explicit_fixed_mode() -> (
+    None
+):
+    default_policy = FrontierPolicy()
+    fixed_policy = FrontierPolicy(recent_full_blocks=2)
+
+    assert default_policy.calm_target_tokens == DEFAULT_SOFT_THRESHOLD
+    assert default_policy.mode == "calm_targeted"
+    assert fixed_policy.mode == "fixed"
 
 
 def test_advance_refuses_entire_plan_when_an_eligible_summary_is_missing() -> None:

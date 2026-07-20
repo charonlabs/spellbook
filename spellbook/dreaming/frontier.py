@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
 
+from spellbook.config import DEFAULT_SOFT_THRESHOLD
 from spellbook.ir_types import (
     IRSemanticBlock,
     IRSemanticBlockPairNarrative,
@@ -47,6 +48,20 @@ ManifestDebtCode = Literal[
 ]
 ForecastKind = Literal["sleep", "deep_sleep"]
 ForecastConfidence = Literal["low", "medium", "high"]
+FrontierPolicyMode = Literal["calm_targeted", "fixed"]
+ProjectionEstimateQuality = Literal[
+    "exact",
+    "approximate",
+    "conservative",
+    "unavailable",
+]
+ProjectionOutcome = Literal[
+    "already_calm",
+    "calm_reached",
+    "floor_reached",
+    "fixed",
+    "refused",
+]
 
 
 class SemanticBlockWorld(Protocol):
@@ -140,18 +155,85 @@ class FrontierState:
 class FrontierPolicy:
     """Policy for a frontier-only Sleep.
 
-    Four recent blocks is the default because it retains two adjacent level-1
-    source pairs at full resolution. Recent and block-pinned memory targets full
-    mode. In the ordinary monotonic frontier this only prevents compaction; if a
-    mixed imported world violates that invariant, the plan explicitly heals it.
+    By default, Sleep advances the oldest memory only until its conservative
+    projection falls below the Homunculus warning threshold. Four recent blocks
+    is the hard floor because it retains two adjacent level-1 source pairs at
+    full resolution. Passing ``recent_full_blocks`` explicitly selects the
+    backward-compatible fixed-window policy.
     """
 
-    recent_full_blocks: int = DEFAULT_RECENT_FULL_BLOCKS
+    recent_full_blocks: int | None = None
+    calm_target_tokens: int = DEFAULT_SOFT_THRESHOLD
     prefer_narratives: bool = True
 
     def __post_init__(self) -> None:
-        if self.recent_full_blocks < 0:
+        if self.recent_full_blocks is not None and self.recent_full_blocks < 0:
             raise ValueError("recent_full_blocks must be non-negative.")
+        if self.calm_target_tokens < 0:
+            raise ValueError("calm_target_tokens must be non-negative.")
+
+    @property
+    def mode(self) -> FrontierPolicyMode:
+        return "calm_targeted" if self.recent_full_blocks is None else "fixed"
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierPlanProjection:
+    """The pressure calculation that selected a frontier boundary."""
+
+    policy_mode: FrontierPolicyMode
+    target_tokens: int
+    current_render_tokens: int | None
+    projected_render_tokens: int | None
+    estimated_tokens_freed: int
+    estimate_quality: ProjectionEstimateQuality
+    kept_full_blocks: int
+    outcome: ProjectionOutcome
+
+    @property
+    def calm_reached(self) -> bool:
+        return (
+            self.projected_render_tokens is not None
+            and self.projected_render_tokens < self.target_tokens
+        )
+
+    def render(self) -> str:
+        target = f"calm below {self.target_tokens:,} tokens"
+        kept = _counted_noun(
+            self.kept_full_blocks,
+            "recent block full",
+            "recent blocks full",
+        )
+        if self.projected_render_tokens is None:
+            projected = "projected result unavailable"
+        else:
+            projected = (
+                f"projected result {self.projected_render_tokens:,} tokens "
+                f"({self.estimate_quality} estimate)"
+            )
+
+        if self.outcome == "already_calm":
+            return (
+                f"Target: {target}; current render is already calm at "
+                f"{self.current_render_tokens:,} tokens; kept {kept} and advanced "
+                "nothing."
+            )
+        if self.outcome == "calm_reached":
+            return (
+                f"Target: {target}; {projected}; kept {kept}; calm reached without "
+                "touching them."
+            )
+        if self.outcome == "floor_reached":
+            return (
+                f"Target: {target}; {projected}; kept {kept}; the recent-full floor "
+                "stopped further advance."
+            )
+        if self.outcome == "refused":
+            return (
+                f"Target: {target}; {projected}; kept {kept}; the selected frontier "
+                "was refused rather than projecting unlandable relief."
+            )
+        return f"Fixed-N policy kept {kept}; {projected}."
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +284,7 @@ class FrontierAdvancePlan:
     transitions: tuple[FrontierTransition, ...]
     reasons: tuple[FrontierPlanReason, ...]
     narratives_applied: tuple[FrontierNarrative, ...]
+    projection: FrontierPlanProjection
     refused: bool = False
 
     @property
@@ -294,17 +377,89 @@ def derive_frontier(
 def plan_frontier_advance(
     world: SemanticBlockWorld | Sequence[IRSemanticBlock] | FrontierState,
     policy: FrontierPolicy | None = None,
+    *,
+    current_render_tokens: int | None = None,
 ) -> FrontierAdvancePlan:
-    """Compute the minimal safe transition set for a frontier-only Sleep.
+    """Compute the gentlest safe transition set for a frontier-only Sleep.
 
     Missing summaries are a global refusal, not an invitation to make a partial
     guess: when any eligible block has neither a usable narrative nor a summary,
-    the returned plan has no transitions and explains every known debt.
+    the returned plan has no transitions and explains every known debt. The
+    default policy searches from the full recent window toward the four-block
+    floor and selects the first boundary whose conservative projection is calm.
     """
 
     resolved_policy = policy or FrontierPolicy()
     frontier = world if isinstance(world, FrontierState) else derive_frontier(world)
-    recent_start = max(0, len(frontier.blocks) - resolved_policy.recent_full_blocks)
+    current_tokens, baseline_quality = _projection_baseline(
+        frontier,
+        current_render_tokens,
+    )
+
+    if resolved_policy.mode == "fixed":
+        fixed_count = resolved_policy.recent_full_blocks
+        assert fixed_count is not None
+        return _plan_fixed_frontier(
+            frontier,
+            resolved_policy,
+            recent_full_blocks=fixed_count,
+            current_render_tokens=current_tokens,
+            baseline_quality=baseline_quality,
+        )
+
+    kept_all = len(frontier.blocks)
+    if (
+        current_tokens is not None
+        and current_tokens < resolved_policy.calm_target_tokens
+    ):
+        return FrontierAdvancePlan(
+            frontier=frontier,
+            policy=resolved_policy,
+            transitions=(),
+            reasons=(),
+            narratives_applied=(),
+            projection=FrontierPlanProjection(
+                policy_mode="calm_targeted",
+                target_tokens=resolved_policy.calm_target_tokens,
+                current_render_tokens=current_tokens,
+                projected_render_tokens=current_tokens,
+                estimated_tokens_freed=0,
+                estimate_quality=baseline_quality,
+                kept_full_blocks=kept_all,
+                outcome="already_calm",
+            ),
+        )
+
+    recent_floor = min(DEFAULT_RECENT_FULL_BLOCKS, len(frontier.blocks))
+    floor_plan: FrontierAdvancePlan | None = None
+    for kept_full_blocks in range(kept_all, recent_floor - 1, -1):
+        candidate = _plan_fixed_frontier(
+            frontier,
+            resolved_policy,
+            recent_full_blocks=kept_full_blocks,
+            current_render_tokens=current_tokens,
+            baseline_quality=baseline_quality,
+        )
+        if kept_full_blocks == recent_floor:
+            floor_plan = candidate
+        if not candidate.refused and candidate.projection.calm_reached:
+            return candidate
+
+    assert floor_plan is not None
+    return floor_plan
+
+
+def _plan_fixed_frontier(
+    frontier: FrontierState,
+    policy: FrontierPolicy,
+    *,
+    recent_full_blocks: int,
+    current_render_tokens: int | None,
+    baseline_quality: ProjectionEstimateQuality,
+) -> FrontierAdvancePlan:
+    """Apply the established fixed boundary rules without mutating the world."""
+
+    recent_start = max(0, len(frontier.blocks) - recent_full_blocks)
     protected_recent = set(range(recent_start, len(frontier.blocks)))
     protected_pins = {block.block_idx for block in frontier.blocks if block.pinned}
     protected = protected_recent | protected_pins
@@ -331,7 +486,7 @@ def plan_frontier_advance(
             )
         )
 
-    if resolved_policy.prefer_narratives:
+    if policy.prefer_narratives:
         for narrative in frontier.narratives:
             pair = set(narrative.block_indices)
             if pair <= eligible:
@@ -391,10 +546,19 @@ def plan_frontier_advance(
     if missing:
         return FrontierAdvancePlan(
             frontier=frontier,
-            policy=resolved_policy,
+            policy=policy,
             transitions=(),
             reasons=tuple([*reasons, *missing]),
             narratives_applied=(),
+            projection=_project_frontier_plan(
+                frontier,
+                policy,
+                transitions=(),
+                current_render_tokens=current_render_tokens,
+                baseline_quality=baseline_quality,
+                kept_full_blocks=min(recent_full_blocks, len(frontier.blocks)),
+                refused=True,
+            ),
             refused=True,
         )
 
@@ -449,20 +613,153 @@ def plan_frontier_advance(
     )
     return FrontierAdvancePlan(
         frontier=frontier,
-        policy=resolved_policy,
+        policy=policy,
         transitions=tuple(transitions),
         reasons=tuple(reasons),
         narratives_applied=narratives_applied,
+        projection=_project_frontier_plan(
+            frontier,
+            policy,
+            transitions=tuple(transitions),
+            current_render_tokens=current_render_tokens,
+            baseline_quality=baseline_quality,
+            kept_full_blocks=min(recent_full_blocks, len(frontier.blocks)),
+            refused=False,
+        ),
     )
+
+
+def _projection_baseline(
+    frontier: FrontierState,
+    observed_render_tokens: int | None,
+) -> tuple[int | None, ProjectionEstimateQuality]:
+    """Prefer the gauge observation, while refusing an obviously stale low value."""
+
+    if observed_render_tokens is not None and observed_render_tokens < 0:
+        raise ValueError("current_render_tokens must be non-negative.")
+
+    counts = [block.current_tokens for block in frontier.blocks]
+    frontier_total = None
+    if all(count is not None for count in counts):
+        frontier_total = sum(count.tokens for count in counts if count is not None)
+
+    if observed_render_tokens is None:
+        if frontier_total is None:
+            return None, "unavailable"
+        # This is a useful pure-planner fallback, but it omits frame and tail
+        # overhead and therefore is never presented as an exact render count.
+        return frontier_total, "approximate"
+
+    if frontier_total is not None and frontier_total > observed_render_tokens:
+        # The gauge is an input-side observation and can lag newly integrated
+        # output. Taking the larger known component avoids claiming false calm.
+        return frontier_total, "conservative"
+    return observed_render_tokens, "exact"
+
+
+def _project_frontier_plan(
+    frontier: FrontierState,
+    policy: FrontierPolicy,
+    *,
+    transitions: tuple[FrontierTransition, ...],
+    current_render_tokens: int | None,
+    baseline_quality: ProjectionEstimateQuality,
+    kept_full_blocks: int,
+    refused: bool,
+) -> FrontierPlanProjection:
+    savings, savings_quality = _estimated_transition_savings(frontier, transitions)
+    if current_render_tokens is None:
+        projected_tokens = None
+        quality: ProjectionEstimateQuality = "unavailable"
+    else:
+        projected_tokens = max(0, current_render_tokens - savings)
+        quality = _least_certain_quality(baseline_quality, savings_quality)
+
+    if refused:
+        outcome: ProjectionOutcome = "refused"
+    elif policy.mode == "fixed":
+        outcome = "fixed"
+    elif projected_tokens is not None and projected_tokens < policy.calm_target_tokens:
+        outcome = "calm_reached"
+    else:
+        outcome = "floor_reached"
+
+    return FrontierPlanProjection(
+        policy_mode=policy.mode,
+        target_tokens=policy.calm_target_tokens,
+        current_render_tokens=current_render_tokens,
+        projected_render_tokens=projected_tokens,
+        estimated_tokens_freed=savings,
+        estimate_quality=quality,
+        kept_full_blocks=kept_full_blocks,
+        outcome=outcome,
+    )
+
+
+def _estimated_transition_savings(
+    frontier: FrontierState,
+    transitions: tuple[FrontierTransition, ...],
+) -> tuple[int, ProjectionEstimateQuality]:
+    """Under-promise relief for unknown destinations and atomic narratives."""
+
+    grouped: dict[str, list[FrontierTransition]] = {}
+    for transition in transitions:
+        key = (
+            f"narrative:{transition.narrative_id}"
+            if transition.narrative_id is not None
+            else f"block:{transition.block_idx}"
+        )
+        grouped.setdefault(key, []).append(transition)
+
+    estimated_savings = 0
+    quality: ProjectionEstimateQuality = "exact"
+    for group in grouped.values():
+        summary_with_facet_pins = any(
+            transition.to_mode == "summary"
+            and frontier.block(transition.block_idx).facet_pin_count > 0
+            for transition in group
+        )
+        if summary_with_facet_pins or any(
+            transition.tokens_freed is None for transition in group
+        ):
+            # A narrative is one atomic render. If either half is unknown, even
+            # the known half's apparent savings cannot safely price the pair.
+            quality = _least_certain_quality(quality, "conservative")
+            continue
+
+        group_savings = sum(transition.tokens_freed or 0 for transition in group)
+        estimated_savings += group_savings
+        if not all(transition.token_delta_exact for transition in group):
+            quality = _least_certain_quality(quality, "approximate")
+    return estimated_savings, quality
+
+
+def _least_certain_quality(
+    first: ProjectionEstimateQuality,
+    second: ProjectionEstimateQuality,
+) -> ProjectionEstimateQuality:
+    order: tuple[ProjectionEstimateQuality, ...] = (
+        "exact",
+        "approximate",
+        "conservative",
+        "unavailable",
+    )
+    return order[max(order.index(first), order.index(second))]
 
 
 def advance_frontier(
     world: SemanticBlockWorld | Sequence[IRSemanticBlock] | FrontierState,
     policy: FrontierPolicy | None = None,
+    *,
+    current_render_tokens: int | None = None,
 ) -> FrontierAdvancePlan:
     """Readable alias for ``plan_frontier_advance``; still pure and non-mutating."""
 
-    return plan_frontier_advance(world, policy)
+    return plan_frontier_advance(
+        world,
+        policy,
+        current_render_tokens=current_render_tokens,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +775,7 @@ class MorningManifest:
     """Covenant-grade account of one completed sleep."""
 
     sleep_kind: SleepKind
+    projection: FrontierPlanProjection
     deltas: tuple[FrontierTransition, ...]
     debts: tuple[ManifestDebt, ...]
     narratives_applied: tuple[FrontierNarrative, ...]
@@ -545,6 +843,7 @@ class MorningManifest:
                     f"{self.prewarning_tokens:,} tokens before this "
                     f"{self.floor_tokens:,}-token floor."
                 )
+        lines.extend(["", "Policy", f"- {self.projection.render()}"])
         lines.extend(["", "Deltas"])
         if self.deltas:
             for delta in self.deltas:
@@ -706,6 +1005,7 @@ def build_morning_manifest(
         pointers = (DEFAULT_DREAM_TRANSCRIPT_POINTER,)
     return MorningManifest(
         sleep_kind=sleep_kind,
+        projection=plan.projection,
         deltas=deltas,
         debts=tuple(debts),
         narratives_applied=narratives_applied,
