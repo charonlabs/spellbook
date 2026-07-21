@@ -452,3 +452,42 @@ def test_duration_forecaster_accepts_measured_calibration() -> None:
     assert forecast.estimate.contains(470)
     assert forecast.basis == "Observed batch timings."
     assert forecast.confidence == "high"
+
+
+def test_min_kept_floor_raises_kept_blocks_above_calm_requirement() -> None:
+    """Night-002 guard: min_kept widens the kept-full window even when calm
+    would be reached with fewer blocks; values below 4 raise to the hard
+    floor; fixed-window policy ignores min_kept."""
+    blocks = [_block(idx) for idx in range(12)]
+
+    calm_only = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=10_000_000),
+        current_render_tokens=100,
+    )
+    floored = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=10_000_000, min_kept=8),
+        current_render_tokens=100,
+    )
+    # A generous calm target is trivially reached; both plans should be
+    # empty/already calm — min_kept must not FORCE advancing.
+    assert calm_only.projection.outcome == "already_calm"
+    assert floored.projection.outcome == "already_calm"
+
+    tight = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=1, min_kept=8),
+        current_render_tokens=10_000,
+    )
+    # With an unreachable calm target the plan advances to its floor —
+    # which min_kept has raised from 4 to 8.
+    assert tight.projection.kept_full_blocks == 8
+    assert all(t.block_idx < 4 for t in tight.transitions)
+
+    below_hard_floor = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=1, min_kept=2),
+        current_render_tokens=10_000,
+    )
+    assert below_hard_floor.projection.kept_full_blocks == 4

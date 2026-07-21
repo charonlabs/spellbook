@@ -359,12 +359,17 @@ class Homunculus:
             self._invalidate(reason=f"forget:{source}")
         return result
 
-    def plan_sleep_frontier(self) -> FrontierAdvancePlan:
+    def plan_sleep_frontier(
+        self, *, min_kept: int | None = None
+    ) -> FrontierAdvancePlan:
         """Derive the default, mutation-free frontier plan for self-triggered Sleep."""
 
         return plan_frontier_advance(
             self._block_manager.semantic_blocks,
-            FrontierPolicy(calm_target_tokens=self._config.soft_threshold),
+            FrontierPolicy(
+                calm_target_tokens=self._config.soft_threshold,
+                min_kept=min_kept,
+            ),
             current_render_tokens=self._gas_gauge.input_tokens,
         )
 

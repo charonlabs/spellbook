@@ -165,6 +165,14 @@ class FrontierPolicy:
     recent_full_blocks: int | None = None
     calm_target_tokens: int = DEFAULT_SOFT_THRESHOLD
     prefer_narratives: bool = True
+    min_kept: int | None = None
+    """Optional floor on kept-full blocks for calm-targeted plans.
+
+    The calm search still runs, but the plan never advances past the point
+    that would leave fewer than ``min_kept`` recent blocks at full fidelity.
+    Values below the hard four-block floor are raised to it. Ignored when
+    ``recent_full_blocks`` selects the fixed-window policy.
+    """
 
     def __post_init__(self) -> None:
         if self.recent_full_blocks is not None and self.recent_full_blocks < 0:
@@ -430,7 +438,11 @@ def plan_frontier_advance(
             ),
         )
 
-    recent_floor = min(DEFAULT_RECENT_FULL_BLOCKS, len(frontier.blocks))
+    requested_floor = max(
+        DEFAULT_RECENT_FULL_BLOCKS,
+        policy.min_kept if policy.min_kept is not None else 0,
+    )
+    recent_floor = min(requested_floor, len(frontier.blocks))
     floor_plan: FrontierAdvancePlan | None = None
     for kept_full_blocks in range(kept_all, recent_floor - 1, -1):
         candidate = _plan_fixed_frontier(

@@ -37,6 +37,17 @@ from spellbook.tools.common import (
 class SleepInput(BaseModel):
     """Advance the existing dream frontier, or preview the night."""
 
+    min_kept: int | None = Field(
+        default=None,
+        ge=4,
+        description=(
+            "Optional floor on how many recent blocks stay at full fidelity. "
+            "The calm-targeted policy still runs, but the night never advances "
+            "past the point that would leave fewer than this many recent "
+            "blocks full. Use when you want a gentler night than the target "
+            "strictly requires."
+        ),
+    )
     dry_run: bool = Field(
         default=False,
         description=(
@@ -53,7 +64,9 @@ class SleepExecutionError(RuntimeError):
 class SleepFrontierPlanner(Protocol):
     """Narrow seam shared by the tool and planner dry-run paths."""
 
-    def plan_sleep_frontier(self) -> FrontierAdvancePlan: ...
+    def plan_sleep_frontier(
+        self, *, min_kept: int | None = None
+    ) -> FrontierAdvancePlan: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +77,13 @@ class SleepDryRun:
     forecast: DurationForecast
 
 
-def dry_run_sleep(planner: SleepFrontierPlanner) -> SleepDryRun:
+def dry_run_sleep(
+    planner: SleepFrontierPlanner, *, min_kept: int | None = None
+) -> SleepDryRun:
     """Run Sleep's real non-mutating preview path for tools or planner nudges."""
 
     return SleepDryRun(
-        plan=planner.plan_sleep_frontier(),
+        plan=planner.plan_sleep_frontier(min_kept=min_kept),
         forecast=forecast_sleep(),
     )
 
@@ -78,7 +93,7 @@ async def exec_sleep(meta: ToolMetadata, input: SleepInput) -> ToolExecutionResu
         raise ToolError("Sleep is unavailable because this session has no Homunculus.")
 
     if input.dry_run:
-        preview = dry_run_sleep(meta.homunculus)
+        preview = dry_run_sleep(meta.homunculus, min_kept=input.min_kept)
         return ToolExecutionResult(
             content=[
                 IRToolTextBlock(text=_render_preview(preview.plan, preview.forecast))
@@ -95,7 +110,7 @@ async def exec_sleep(meta: ToolMetadata, input: SleepInput) -> ToolExecutionResu
     outcome: DreamingOutcome = "failed"
     await runtime.enter_dreaming()
     try:
-        plan = meta.homunculus.plan_sleep_frontier()
+        plan = meta.homunculus.plan_sleep_frontier(min_kept=input.min_kept)
         if plan.refused:
             manifest = build_morning_manifest(plan, applied_deltas=())
             outcome = "refused"
