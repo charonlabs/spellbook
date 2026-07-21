@@ -592,3 +592,65 @@ async def test_sleep_disabled_preserves_existing_pressure_behavior(
     assert not any(
         isinstance(record, IRSemanticBlockApplyModeRecord) for record in records
     )
+
+
+@pytest.mark.anyio
+async def test_sleep_ignores_standing_active_narratives_not_in_plan(
+    tmp_path: Path,
+) -> None:
+    """Night-001 regression: a world with already-active narrative chapters
+    (applied on prior nights, mode == pair_narrative) must not trip the
+    pair-atomicity guard when the plan only moves unrelated blocks.
+    Atomicity governs transitions, not the standing world."""
+    semantic_blocks = [_block(idx) for idx in range(10)]
+    _add_pair(semantic_blocks)
+    # Make the pair STANDING-ACTIVE, exactly like a prior night's applied
+    # chapters: both members already render as pair_narrative.
+    for idx in (0, 1):
+        semantic_blocks[idx] = semantic_blocks[idx].model_copy(
+            update={"mode": "pair_narrative"}
+        )
+    world = await _build_world(tmp_path, semantic_blocks)
+
+    result = await exec_sleep(world.meta, SleepInput())
+
+    text = _result_text(result)
+    assert "Sleep failed" not in text
+    awareness = world.homunculus.build_awareness().semantic_blocks
+    # The standing chapter is untouched...
+    assert [awareness[0].mode, awareness[1].mode] == [
+        "pair_narrative",
+        "pair_narrative",
+    ]
+    # ...and unrelated old blocks actually moved.
+    assert any(block.mode == "summary" for block in awareness[2:6])
+    assert world.runtime.events == [("enter", None), ("exit", "completed")]
+
+
+@pytest.mark.anyio
+async def test_sleep_still_refuses_half_pair_transition(
+    tmp_path: Path,
+) -> None:
+    """The guard must still fire when a plan would move only one member of
+    a chapter: hand-build a plan containing exactly one half of an active
+    pair and apply it directly."""
+    semantic_blocks = [_block(idx) for idx in range(10)]
+    _add_pair(semantic_blocks)
+    world = await _build_world(tmp_path, semantic_blocks)
+    homunculus = world.homunculus
+    import dataclasses
+
+    full_plan = homunculus.plan_sleep_frontier()
+    template = full_plan.transitions[0]
+    half = [
+        dataclasses.replace(
+            template,
+            block_id="block_0",
+            block_idx=0,
+            to_mode="pair_narrative",
+            from_mode="full",
+        )
+    ]
+    lopsided = dataclasses.replace(full_plan, transitions=tuple(half))
+    with pytest.raises(ValueError, match="parent and child together"):
+        homunculus.apply_sleep_frontier(lopsided)

@@ -1356,6 +1356,11 @@ class BlockManager:
         for narrative in plan.frontier.narratives:
             pair = narrative.block_indices
             pair_transitions = transition_indices.intersection(pair)
+            if not pair_transitions:
+                # The plan does not touch this chapter. A standing active
+                # narrative (or any standing state) is the mind's own
+                # business — atomicity governs transitions, not the world.
+                continue
             moves_narrative = narrative.active or any(
                 prepared[idx][0].to_mode == "pair_narrative" for idx in pair_transitions
             )
