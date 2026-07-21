@@ -440,7 +440,7 @@ def plan_frontier_advance(
 
     requested_floor = max(
         DEFAULT_RECENT_FULL_BLOCKS,
-        policy.min_kept if policy.min_kept is not None else 0,
+        resolved_policy.min_kept if resolved_policy.min_kept is not None else 0,
     )
     recent_floor = min(requested_floor, len(frontier.blocks))
     floor_plan: FrontierAdvancePlan | None = None
