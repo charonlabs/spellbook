@@ -203,6 +203,10 @@ async def _build_world(
             recorder.write_block_artifact(artifact, block.id)
         if block.pin is not None:
             recorder.apply_block_pin(block.pin, block.id)
+    initial_modes = [
+        (block.mode, block.id) for block in semantic_blocks if block.mode != "full"
+    ]
+    recorder.apply_semantic_block_modes(initial_modes, source="model")
     recorder.end_turn()
     recorder.start_turn("turn_2", [])
 
@@ -392,6 +396,78 @@ async def test_sleep_projection_never_overstates_ttl_collapsed_render_relief(
     assert isinstance(projected_relief, int)
     assert raw_relief > actual_rendered_relief
     assert projected_relief <= actual_rendered_relief
+
+
+async def test_sleep_renders_applied_chapters_over_summaries_in_night_001_shape(
+    tmp_path: Path,
+) -> None:
+    """Night-001: Ch27-28 deepen settled summaries before full recents move."""
+
+    semantic_blocks: list[IRSemanticBlock] = []
+    for idx in range(60):
+        block = _block(idx)
+        if idx < 56:
+            summary_tokens = 40 if 52 <= idx <= 55 else 10
+            summary = _summary(idx, tokens=summary_tokens)
+            block = block.model_copy(
+                update={
+                    "mode": "summary",
+                    "toks": summary.toks,
+                    "artifacts": [summary],
+                }
+            )
+        semantic_blocks.append(block)
+    _add_pair(semantic_blocks, 52)
+    _add_pair(semantic_blocks, 54)
+    world = await _build_world(
+        tmp_path,
+        semantic_blocks,
+        homunculus_config=HomunculusConfig(soft_threshold=3_300),
+    )
+
+    preview = await exec_sleep(world.meta, SleepInput(dry_run=True))
+    assert "2 chapters would render into place: Ch27, Ch28 — 100 tokens freed" in (
+        _result_text(preview)
+    )
+    assert [
+        item["classification"] for item in preview.display["narrative_deepenings"]
+    ] == ["relief", "relief"]
+
+    result = await exec_sleep(world.meta, SleepInput())
+
+    awareness = world.homunculus.build_awareness().semantic_blocks
+    assert [awareness[idx].mode for idx in range(52, 56)] == [
+        "pair_narrative",
+        "pair_narrative",
+        "pair_narrative",
+        "pair_narrative",
+    ]
+    assert all(awareness[idx].mode == "full" for idx in range(56, 60))
+    assert "2 chapters rendered into place: Ch27, Ch28 — 100 tokens freed" in (
+        _result_text(result)
+    )
+    assert result.display["tokens_freed"] == 100
+    assert result.display["narrative_deepenings"] == [
+        {
+            "chapter": 27,
+            "block_indices": [52, 53],
+            "classification": "relief",
+            "token_delta": 50,
+            "estimated_tokens_freed": 50,
+            "token_delta_exact": True,
+            "selected": True,
+        },
+        {
+            "chapter": 28,
+            "block_indices": [54, 55],
+            "classification": "relief",
+            "token_delta": 50,
+            "estimated_tokens_freed": 50,
+            "token_delta_exact": True,
+            "selected": True,
+        },
+    ]
+    assert world.runtime.events == [("enter", None), ("exit", "completed")]
 
 
 async def test_sleep_refusal_names_missing_summary_and_mutates_nothing(

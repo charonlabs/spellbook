@@ -18,13 +18,14 @@ from pydantic import BaseModel, Field
 from spellbook.dreaming.frontier import (
     DurationForecast,
     FrontierAdvancePlan,
+    FrontierNarrativeDeepening,
     FrontierTransition,
     ManifestDebt,
     MorningManifest,
     build_morning_manifest,
     forecast_sleep,
 )
-from spellbook.ir_types import IRToolTextBlock
+from spellbook.ir_types import IRToolTextBlock, SemanticBlockMode
 from spellbook.session_lifecycle import DreamingOutcome
 from spellbook.tools.common import (
     Tool,
@@ -171,7 +172,17 @@ def _render_preview(
     elif not plan.transitions:
         lines.append("- No block modes would move.")
     else:
+        deepening_keys = {
+            _transition_display_key(transition)
+            for deepening in plan.selected_deepenings
+            for transition in deepening.transitions
+        }
+        rendered_deepening = plan.render_deepening(planned=True)
+        if rendered_deepening is not None:
+            lines.append(f"- {rendered_deepening}.")
         for transition in plan.transitions:
+            if _transition_display_key(transition) in deepening_keys:
+                continue
             lines.append(
                 f'- Block {transition.block_idx} "{transition.title}": '
                 f"{transition.from_mode} -> {transition.to_mode}; "
@@ -206,6 +217,13 @@ def _preview_display(
         "dry_run": True,
         "refused": plan.refused,
         "transitions": [_transition_display(delta) for delta in plan.transitions],
+        "narrative_deepenings": [
+            _deepening_display(
+                candidate,
+                selected=candidate in plan.selected_deepenings,
+            )
+            for candidate in plan.deepening_candidates
+        ],
         "reasons": [reason.code for reason in plan.reasons],
         "projection": _projection_display(plan),
         "forecast_seconds": {
@@ -231,6 +249,10 @@ def _manifest_display(
         "gauge_tokens_before": manifest.gauge_tokens_before,
         "gauge_tokens_after": manifest.gauge_tokens_after,
         "deltas": [_transition_display(delta) for delta in manifest.deltas],
+        "narrative_deepenings": [
+            _deepening_display(candidate, selected=True)
+            for candidate in manifest.narrative_deepenings
+        ],
         "debts": [debt.code for debt in manifest.debts],
         "known_tokens_freed": manifest.known_tokens_freed,
         "tokens_freed": manifest.tokens_freed,
@@ -265,6 +287,28 @@ def _transition_display(transition: FrontierTransition) -> dict:
         "to_mode": transition.to_mode,
         "tokens_freed": transition.tokens_freed,
         "narrative_chapter": transition.narrative_chapter,
+    }
+
+
+def _transition_display_key(
+    transition: FrontierTransition,
+) -> tuple[str, SemanticBlockMode, SemanticBlockMode]:
+    return transition.block_id, transition.from_mode, transition.to_mode
+
+
+def _deepening_display(
+    candidate: FrontierNarrativeDeepening,
+    *,
+    selected: bool,
+) -> dict:
+    return {
+        "chapter": candidate.narrative.chapter_number,
+        "block_indices": list(candidate.narrative.block_indices),
+        "classification": candidate.classification,
+        "token_delta": candidate.token_delta,
+        "estimated_tokens_freed": candidate.estimated_tokens_freed,
+        "token_delta_exact": candidate.token_delta_exact,
+        "selected": selected,
     }
 
 

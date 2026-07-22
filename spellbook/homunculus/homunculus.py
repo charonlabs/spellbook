@@ -48,6 +48,8 @@ from ..ir_types import (
     IRCompactBlockIntent,
     IRExecution,
     IRGeneration,
+    IRSemanticBlockPairNarrative,
+    IRSemanticBlockPairNarrativeChild,
     IRSemanticBlockSummary,
     IRTokenRangeCount,
     IRToolResultBlock,
@@ -366,6 +368,7 @@ class Homunculus:
         """Derive the default, mutation-free frontier plan for self-triggered Sleep."""
 
         rendered_current_tokens = await self._rendered_frontier_tokens()
+        rendered_narrative_tokens = await self._rendered_narrative_tokens()
         return plan_frontier_advance(
             self._block_manager.semantic_blocks,
             FrontierPolicy(
@@ -374,6 +377,7 @@ class Homunculus:
             ),
             current_render_tokens=self._gas_gauge.input_tokens,
             rendered_current_tokens=rendered_current_tokens,
+            rendered_narrative_tokens=rendered_narrative_tokens,
         )
 
     async def _rendered_frontier_tokens(
@@ -406,6 +410,62 @@ class Homunculus:
             counts[block.id] = (
                 measured if measured is not None and measured.exact else None
             )
+        return counts
+
+    async def _rendered_narrative_tokens(
+        self,
+    ) -> dict[str, IRTokenRangeCount | None]:
+        """Price complete narrative destinations through provider-facing render.
+
+        Narrative artifacts normally carry an exact compile-time count. Reuse it
+        when the live TTL projection leaves the artifact untouched; otherwise
+        count the collapsed blocks directly. Approximate counts remain unknown so
+        summary-pair deepening can never claim relief it has not proved.
+        """
+
+        counts: dict[str, IRTokenRangeCount | None] = {}
+        semantic_blocks = self._block_manager.semantic_blocks
+        for block in semantic_blocks:
+            parent = next(
+                (
+                    artifact
+                    for artifact in reversed(block.artifacts)
+                    if isinstance(artifact, IRSemanticBlockPairNarrative)
+                ),
+                None,
+            )
+            if parent is None:
+                continue
+            child_idx = parent.pair[1]
+            if child_idx < 0 or child_idx >= len(semantic_blocks):
+                continue
+            child_block = semantic_blocks[child_idx]
+            child = next(
+                (
+                    artifact
+                    for artifact in reversed(child_block.artifacts)
+                    if isinstance(artifact, IRSemanticBlockPairNarrativeChild)
+                    and artifact.narrative_id == parent.narrative_id
+                ),
+                None,
+            )
+            if child is None:
+                continue
+
+            rendered = self._ttl_registry.collapse_blocks(parent.blocks)
+            if rendered == parent.blocks and parent.toks is not None:
+                parent_count = parent.toks if parent.toks.exact else None
+            else:
+                measured = await self._token_meter.count_slice(
+                    rendered,
+                    0,
+                    len(rendered),
+                )
+                parent_count = (
+                    measured if measured is not None and measured.exact else None
+                )
+            counts[block.id] = parent_count
+            counts[child_block.id] = child.toks if child.toks.exact else None
         return counts
 
     def apply_sleep_frontier(

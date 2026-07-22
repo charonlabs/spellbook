@@ -291,6 +291,190 @@ def test_rendered_current_sizes_replace_raw_metrics_and_unknowns_claim_no_relief
     assert plan.projection.estimate_quality == "conservative"
 
 
+def test_summary_pair_deepening_uses_rendered_pair_delta_and_moves_atomically() -> None:
+    blocks = [
+        _block(0, mode="summary", summary_tokens=10),
+        _block(1, mode="summary", summary_tokens=10),
+        *[_block(idx, full_tokens=100, summary_tokens=10) for idx in range(2, 6)],
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=30,
+    )
+    rendered_current_tokens = {
+        block.id: (_count(50) if block.idx < 2 else block.toks) for block in blocks
+    }
+    rendered_narrative_tokens = {
+        blocks[0].id: _count(60),
+        blocks[1].id: _count(0),
+    }
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(recent_full_blocks=4),
+        current_render_tokens=500,
+        rendered_current_tokens=rendered_current_tokens,
+        rendered_narrative_tokens=rendered_narrative_tokens,
+    )
+
+    assert [
+        (delta.block_idx, delta.from_mode, delta.to_mode) for delta in plan.transitions
+    ] == [
+        (0, "summary", "pair_narrative"),
+        (1, "summary", "pair_narrative"),
+    ]
+    assert len(plan.deepening_candidates) == 1
+    candidate = plan.deepening_candidates[0]
+    assert candidate.classification == "relief"
+    assert candidate.token_delta == 40
+    assert candidate.estimated_tokens_freed == 40
+    assert plan.selected_deepenings == (candidate,)
+    assert "1 chapter rendered into place: Ch1 — 40 tokens freed" in (
+        build_morning_manifest(plan).render()
+    )
+
+
+def test_nonrelieving_summary_pair_stays_as_enrichment_candidate() -> None:
+    blocks = [
+        _block(0, mode="summary", summary_tokens=10),
+        _block(1, mode="summary", summary_tokens=10),
+        *[_block(idx, summary_tokens=10) for idx in range(2, 6)],
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=30,
+    )
+
+    plan = plan_frontier_advance(blocks, FrontierPolicy(recent_full_blocks=4))
+
+    assert plan.transitions == ()
+    assert plan.selected_deepenings == ()
+    assert len(plan.deepening_candidates) == 1
+    candidate = plan.deepening_candidates[0]
+    assert candidate.classification == "enrichment"
+    assert candidate.token_delta == -10
+    assert candidate.estimated_tokens_freed == 0
+
+
+@pytest.mark.parametrize("approximate_side", ["summary", "narrative"])
+def test_uncountable_summary_pair_claims_zero_deepening_relief(
+    approximate_side: str,
+) -> None:
+    blocks = [
+        _block(0, mode="summary", summary_tokens=40),
+        _block(1, mode="summary", summary_tokens=40),
+        *[_block(idx, summary_tokens=10) for idx in range(2, 6)],
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=50,
+    )
+    if approximate_side == "summary":
+        blocks[0] = blocks[0].model_copy(update={"toks": _count(40, exact=False)})
+    else:
+        blocks[0] = blocks[0].model_copy(
+            update={
+                "artifacts": [
+                    artifact.model_copy(update={"toks": _count(50, exact=False)})
+                    if isinstance(artifact, IRSemanticBlockPairNarrative)
+                    else artifact
+                    for artifact in blocks[0].artifacts
+                ]
+            }
+        )
+
+    plan = plan_frontier_advance(blocks, FrontierPolicy(recent_full_blocks=4))
+
+    assert plan.transitions == ()
+    candidate = plan.deepening_candidates[0]
+    assert candidate.classification == "enrichment"
+    assert candidate.token_delta is None
+    assert candidate.token_delta_exact is False
+    assert candidate.estimated_tokens_freed == 0
+
+
+@pytest.mark.parametrize("excluded_by", ["pin", "kept_window"])
+def test_pin_or_kept_window_excludes_summary_pair_deepening(
+    excluded_by: str,
+) -> None:
+    blocks = [
+        _block(
+            0,
+            mode="summary",
+            summary_tokens=40,
+            pinned=excluded_by == "pin",
+        ),
+        _block(1, mode="summary", summary_tokens=40),
+        *[_block(idx, summary_tokens=10) for idx in range(2, 6)],
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=50,
+    )
+    kept = 6 if excluded_by == "kept_window" else 4
+
+    plan = plan_frontier_advance(blocks, FrontierPolicy(recent_full_blocks=kept))
+
+    assert plan.deepening_candidates == ()
+    assert all(delta.to_mode != "pair_narrative" for delta in plan.transitions)
+
+
+def test_standing_narrative_inside_kept_window_remains_untouched() -> None:
+    blocks = [_block(idx, summary_tokens=10) for idx in range(6)]
+    blocks = _with_pair_narrative(
+        blocks,
+        4,
+        active=True,
+        narrative_tokens=30,
+    )
+
+    plan = plan_frontier_advance(blocks, FrontierPolicy(recent_full_blocks=4))
+
+    assert [delta.block_idx for delta in plan.transitions] == [0, 1]
+    assert all(delta.block_idx not in {4, 5} for delta in plan.transitions)
+    assert plan.narratives_applied == ()
+    assert all(reason.chapter_number != 3 for reason in plan.reasons)
+
+
+def test_calm_search_orders_summary_deepening_before_newer_full_advance() -> None:
+    blocks = [
+        _block(0, mode="summary", summary_tokens=40),
+        _block(1, mode="summary", summary_tokens=40),
+        *[_block(idx, full_tokens=100, summary_tokens=10) for idx in range(2, 8)],
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=50,
+    )
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(calm_target_tokens=600),
+        current_render_tokens=680,
+    )
+
+    assert [
+        (delta.block_idx, delta.from_mode, delta.to_mode) for delta in plan.transitions
+    ] == [
+        (0, "summary", "pair_narrative"),
+        (1, "summary", "pair_narrative"),
+        (2, "full", "summary"),
+    ]
+    assert plan.projection.kept_full_blocks == 5
+    assert plan.projection.projected_render_tokens == 560
+    assert [item.narrative.chapter_number for item in plan.selected_deepenings] == [1]
+
+
 def test_unknown_atomic_narrative_counts_neither_halfs_apparent_relief() -> None:
     blocks = [_block(idx, full_tokens=100, summary_tokens=10) for idx in range(6)]
     blocks[0] = _block(0, full_tokens=100)

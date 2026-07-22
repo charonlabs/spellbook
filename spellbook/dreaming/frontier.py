@@ -62,6 +62,7 @@ ProjectionOutcome = Literal[
     "fixed",
     "refused",
 ]
+NarrativeDeepeningClassification = Literal["relief", "enrichment"]
 
 
 class SemanticBlockWorld(Protocol):
@@ -284,6 +285,37 @@ class FrontierTransition:
 
 
 @dataclass(frozen=True, slots=True)
+class FrontierNarrativeDeepening:
+    """One atomic summary-pair -> narrative candidate and its honest price."""
+
+    narrative: FrontierNarrative
+    classification: NarrativeDeepeningClassification
+    transitions: tuple[FrontierTransition, FrontierTransition]
+
+    @property
+    def token_delta(self) -> int | None:
+        if not self.token_delta_exact:
+            return None
+        return sum(transition.tokens_freed or 0 for transition in self.transitions)
+
+    @property
+    def token_delta_exact(self) -> bool:
+        return all(
+            transition.tokens_freed is not None and transition.token_delta_exact
+            for transition in self.transitions
+        )
+
+    @property
+    def estimated_tokens_freed(self) -> int:
+        """Claim relief only when the complete pair has an exact positive delta."""
+
+        delta = self.token_delta
+        if delta is None or not self.token_delta_exact:
+            return 0
+        return max(0, delta)
+
+
+@dataclass(frozen=True, slots=True)
 class FrontierAdvancePlan:
     """The complete, mutation-free decision for one frontier advance."""
 
@@ -293,6 +325,7 @@ class FrontierAdvancePlan:
     reasons: tuple[FrontierPlanReason, ...]
     narratives_applied: tuple[FrontierNarrative, ...]
     projection: FrontierPlanProjection
+    deepening_candidates: tuple[FrontierNarrativeDeepening, ...] = ()
     refused: bool = False
 
     @property
@@ -320,11 +353,32 @@ class FrontierAdvancePlan:
             for transition in self.transitions
         )
 
+    @property
+    def selected_deepenings(self) -> tuple[FrontierNarrativeDeepening, ...]:
+        """Return atomic deepening candidates wholly present in this plan."""
+
+        selected_keys = {_transition_key(delta) for delta in self.transitions}
+        return tuple(
+            candidate
+            for candidate in self.deepening_candidates
+            if all(
+                _transition_key(transition) in selected_keys
+                for transition in candidate.transitions
+            )
+        )
+
+    def render_deepening(self, *, planned: bool) -> str | None:
+        deepenings = self.selected_deepenings
+        if not deepenings:
+            return None
+        return _render_narrative_deepenings(deepenings, planned=planned)
+
 
 def derive_frontier(
     world: SemanticBlockWorld | Sequence[IRSemanticBlock],
     *,
     rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
+    rendered_narrative_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierState:
     """Derive current frontier state without changing the rehydrated world.
 
@@ -332,11 +386,11 @@ def derive_frontier(
     orphaned inactive artifact is represented as present-but-unusable so the
     planner can disclose the debt and safely fall back to an existing summary.
 
-    When supplied, ``rendered_current_tokens`` is authoritative for every
-    block's present contribution. A missing or uncountable block is therefore
-    unknown rather than falling back to its raw persisted metrics; this is what
-    keeps render-time reductions such as expired tool-result TTLs from becoming
-    fictitious projected relief.
+    When supplied, the rendered token maps are authoritative for every present
+    block contribution and pair-narrative destination. A missing or uncountable
+    entry is therefore unknown rather than falling back to its raw persisted
+    metrics; this is what keeps render-time reductions such as expired
+    tool-result TTLs from becoming fictitious projected relief.
     """
 
     semantic_blocks = _semantic_blocks(world)
@@ -363,6 +417,8 @@ def derive_frontier(
         narrative_tokens = None
         if narrative is not None and narrative_artifact is not None:
             narrative_tokens = narrative_artifact.toks
+            if rendered_narrative_tokens is not None:
+                narrative_tokens = rendered_narrative_tokens.get(block.id)
         current_tokens = _current_token_count(
             block,
             summary=summary,
@@ -370,6 +426,10 @@ def derive_frontier(
         )
         if rendered_current_tokens is not None:
             current_tokens = rendered_current_tokens.get(block.id)
+        elif block.mode == "summary" and block.facet_pins:
+            # Persisted summary metrics omit the original conversation carried
+            # by facet pins. Only provider-facing measurement can price it.
+            current_tokens = None
         blocks.append(
             FrontierBlock(
                 block_id=block.id,
@@ -399,6 +459,7 @@ def plan_frontier_advance(
     *,
     current_render_tokens: int | None = None,
     rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
+    rendered_narrative_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierAdvancePlan:
     """Compute the gentlest safe transition set for a frontier-only Sleep.
 
@@ -415,11 +476,16 @@ def plan_frontier_advance(
             raise ValueError(
                 "rendered_current_tokens cannot override an already-derived frontier."
             )
+        if rendered_narrative_tokens is not None:
+            raise ValueError(
+                "rendered_narrative_tokens cannot override an already-derived frontier."
+            )
         frontier = world
     else:
         frontier = derive_frontier(
             world,
             rendered_current_tokens=rendered_current_tokens,
+            rendered_narrative_tokens=rendered_narrative_tokens,
         )
     current_tokens, baseline_quality = _projection_baseline(
         frontier,
@@ -448,6 +514,7 @@ def plan_frontier_advance(
             transitions=(),
             reasons=(),
             narratives_applied=(),
+            deepening_candidates=(),
             projection=FrontierPlanProjection(
                 policy_mode="calm_targeted",
                 target_tokens=resolved_policy.calm_target_tokens,
@@ -500,14 +567,32 @@ def _plan_fixed_frontier(
     eligible = {
         block.block_idx for block in frontier.blocks if block.block_idx not in protected
     }
+    deepening_candidates = _derive_narrative_deepenings(frontier, eligible)
+    deepening_by_narrative_id = {
+        candidate.narrative.narrative_id: candidate
+        for candidate in deepening_candidates
+    }
+    standing_narrative_indices = {
+        block_idx
+        for narrative in frontier.narratives
+        if narrative.active
+        for block_idx in narrative.block_indices
+    }
 
     reasons: list[FrontierPlanReason] = []
     targets: dict[int, SemanticBlockMode] = {
-        block_idx: "full" for block_idx in protected
+        block_idx: "full"
+        for block_idx in protected
+        if block_idx not in standing_narrative_indices
     }
+    targets.update(
+        {block_idx: "pair_narrative" for block_idx in standing_narrative_indices}
+    )
     target_narratives: dict[int, FrontierNarrative] = {}
 
     for block_idx in sorted(protected_pins - protected_recent):
+        if block_idx in standing_narrative_indices:
+            continue
         block = frontier.block(block_idx)
         reasons.append(
             FrontierPlanReason(
@@ -522,14 +607,24 @@ def _plan_fixed_frontier(
 
     if policy.prefer_narratives:
         for narrative in frontier.narratives:
+            if narrative.active:
+                # A standing chapter is already deepened. Recent-window probing
+                # and relief selection must not turn it back into source memory.
+                continue
             pair = set(narrative.block_indices)
             if pair <= eligible:
+                deepening = deepening_by_narrative_id.get(narrative.narrative_id)
+                if deepening is not None and deepening.classification == "enrichment":
+                    # V1 has no explicit enrichment surface. Calm-targeted and
+                    # fixed frontier plans only render a settled summary pair's
+                    # chapter when exact rendered truth proves positive relief.
+                    continue
                 for block_idx in narrative.block_indices:
                     targets[block_idx] = "pair_narrative"
                     target_narratives[block_idx] = narrative
                 continue
             eligible_half = tuple(sorted(pair & eligible))
-            if eligible_half or narrative.active:
+            if eligible_half:
                 reasons.append(
                     FrontierPlanReason(
                         code="narrative_deferred",
@@ -584,6 +679,7 @@ def _plan_fixed_frontier(
             transitions=(),
             reasons=tuple([*reasons, *missing]),
             narratives_applied=(),
+            deepening_candidates=deepening_candidates,
             projection=_project_frontier_plan(
                 frontier,
                 policy,
@@ -651,6 +747,7 @@ def _plan_fixed_frontier(
         transitions=tuple(transitions),
         reasons=tuple(reasons),
         narratives_applied=narratives_applied,
+        deepening_candidates=deepening_candidates,
         projection=_project_frontier_plan(
             frontier,
             policy,
@@ -661,6 +758,68 @@ def _plan_fixed_frontier(
             refused=False,
         ),
     )
+
+
+def _derive_narrative_deepenings(
+    frontier: FrontierState,
+    eligible: set[int],
+) -> tuple[FrontierNarrativeDeepening, ...]:
+    """Classify inactive summary pairs without selecting enrichment work.
+
+    Deepening is atomic: candidates exist only when both members are summaries
+    and both sit outside the pinned/recent kept window. Facet-pin overhead is
+    trustworthy only when the current contribution came from rendered truth.
+    An approximate or otherwise unknown side receives zero projected relief and
+    therefore remains enrichment-only until a future explicit surface asks for
+    that trade.
+    """
+
+    candidates: list[FrontierNarrativeDeepening] = []
+    for narrative in frontier.narratives:
+        if narrative.active or not set(narrative.block_indices) <= eligible:
+            continue
+        blocks = tuple(frontier.block(idx) for idx in narrative.block_indices)
+        if any(block.mode != "summary" for block in blocks):
+            continue
+
+        transitions: list[FrontierTransition] = []
+        for block in blocks:
+            transitions.append(
+                FrontierTransition(
+                    block_id=block.block_id,
+                    block_idx=block.block_idx,
+                    title=block.title,
+                    from_mode="summary",
+                    to_mode="pair_narrative",
+                    before_tokens=block.current_tokens,
+                    after_tokens=block.narrative_tokens,
+                    reason=(
+                        "an existing adjacent-pair narrative can deepen two settled "
+                        "summaries atomically"
+                    ),
+                    narrative_id=narrative.narrative_id,
+                    narrative_chapter=narrative.chapter_number,
+                )
+            )
+
+        first_transition, second_transition = transitions
+        pair_transitions = (first_transition, second_transition)
+        provisional = FrontierNarrativeDeepening(
+            narrative=narrative,
+            classification="enrichment",
+            transitions=pair_transitions,
+        )
+        classification: NarrativeDeepeningClassification = (
+            "relief" if provisional.estimated_tokens_freed > 0 else "enrichment"
+        )
+        candidates.append(
+            FrontierNarrativeDeepening(
+                narrative=narrative,
+                classification=classification,
+                transitions=pair_transitions,
+            )
+        )
+    return tuple(candidates)
 
 
 def _projection_baseline(
@@ -787,6 +946,7 @@ def advance_frontier(
     *,
     current_render_tokens: int | None = None,
     rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
+    rendered_narrative_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierAdvancePlan:
     """Readable alias for ``plan_frontier_advance``; still pure and non-mutating."""
 
@@ -795,6 +955,7 @@ def advance_frontier(
         policy,
         current_render_tokens=current_render_tokens,
         rendered_current_tokens=rendered_current_tokens,
+        rendered_narrative_tokens=rendered_narrative_tokens,
     )
 
 
@@ -817,6 +978,7 @@ class MorningManifest:
     narratives_applied: tuple[FrontierNarrative, ...]
     chapters_authored: int
     dream_transcript_paths: tuple[str, ...]
+    narrative_deepenings: tuple[FrontierNarrativeDeepening, ...] = ()
     prewarning_tokens: int | None = None
     floor_tokens: int | None = None
     gauge_tokens_before: int | None = None
@@ -910,7 +1072,23 @@ class MorningManifest:
         lines.extend(["", "Policy", f"- {self.projection.render()}"])
         lines.extend(["", "Deltas"])
         if self.deltas:
+            deepening_keys = {
+                _transition_key(transition)
+                for deepening in self.narrative_deepenings
+                for transition in deepening.transitions
+            }
+            if self.narrative_deepenings:
+                lines.append(
+                    "- "
+                    + _render_narrative_deepenings(
+                        self.narrative_deepenings,
+                        planned=False,
+                    )
+                    + "."
+                )
             for delta in self.deltas:
+                if _transition_key(delta) in deepening_keys:
+                    continue
                 destination = delta.to_mode.replace("pair_narrative", "narrative")
                 if delta.narrative_chapter is not None:
                     destination += f" (chapter {delta.narrative_chapter})"
@@ -1005,6 +1183,14 @@ def build_morning_manifest(
         for narrative in plan.narratives_applied
         if narrative.narrative_id in applied_narrative_ids
     )
+    narrative_deepenings = tuple(
+        candidate
+        for candidate in plan.deepening_candidates
+        if all(
+            _transition_key(transition) in applied_keys
+            for transition in candidate.transitions
+        )
+    )
     debts = [
         ManifestDebt(
             code=reason.code,
@@ -1075,6 +1261,7 @@ def build_morning_manifest(
         deltas=deltas,
         debts=tuple(debts),
         narratives_applied=narratives_applied,
+        narrative_deepenings=narrative_deepenings,
         chapters_authored=chapters_authored,
         dream_transcript_paths=pointers,
         prewarning_tokens=prewarning_tokens,
@@ -1340,6 +1527,31 @@ def _render_token_delta(delta: FrontierTransition) -> str:
     if tokens >= 0:
         return f"{qualifier}{tokens:,} tokens freed"
     return f"{qualifier}{abs(tokens):,} additional tokens carried"
+
+
+def _render_narrative_deepenings(
+    deepenings: Sequence[FrontierNarrativeDeepening],
+    *,
+    planned: bool,
+) -> str:
+    count = len(deepenings)
+    noun = "chapter" if count == 1 else "chapters"
+    verb = "would render" if planned else "rendered"
+    chapters = ", ".join(
+        f"Ch{deepening.narrative.chapter_number}" for deepening in deepenings
+    )
+    tokens = sum(deepening.estimated_tokens_freed for deepening in deepenings)
+    return (
+        f"{count} {noun} {verb} into place: {chapters} — "
+        f"{_render_compact_tokens(tokens)} freed"
+    )
+
+
+def _render_compact_tokens(tokens: int) -> str:
+    if abs(tokens) < 1_000:
+        return f"{tokens:,} tokens"
+    compact = f"{tokens / 1_000:.1f}".rstrip("0").rstrip(".")
+    return f"{compact}K"
 
 
 def _render_delta_total(manifest: MorningManifest) -> str:
