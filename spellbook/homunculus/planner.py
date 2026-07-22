@@ -1,20 +1,24 @@
 """Generate context plans and pressure-priced Sleep invitations.
 
 The compaction proposal remains transcript-facing IR. Sleep pressure state is
-ephemeral awareness: it decides when to speak, never mutates memory, and only
-arms the 95% floor after a prior 90% pre-warning observation. The actual floor
-is consumed by ``SessionManager`` after a turn has ended.
+awareness: it decides when to speak, never mutates memory, and only arms the
+95% floor after a prior 90% pre-warning observation. Invitation and warning
+cadence rehydrates from their explicit footer records; exact forced-Sleep
+consent history does not. The actual floor is consumed by ``SessionManager``
+after a turn has ended.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+import re
+from typing import Literal, Protocol
 
 from spellbook.config import HomunculusConfig
 from spellbook.dreaming.frontier import DurationForecast, FrontierAdvancePlan
 from spellbook.ir_types import (
     IRCompactBlockIntent,
     IRContextPlan,
+    IRFooterQueueRecord,
     IRPlannerResult,
     IRSemanticBlock,
 )
@@ -22,6 +26,21 @@ from spellbook.rehydrator import RehydrationResult
 
 SLEEP_PREWARNING_PERCENT = 90
 SLEEP_FLOOR_PERCENT = 95
+SLEEP_PRESSURE_HYSTERESIS_PERCENT = 2
+SLEEP_RELIEF_REOFFER_PERCENT = 25
+
+SleepNudgeRegime = Literal["calm", "warning", "hard"]
+
+_SLEEP_PREWARNING_MESSAGE = (
+    "Sleep pre-warning: at 95% the system will run a frontier-only sleep "
+    "automatically; sleeping now by your own hand would be gentler and keep "
+    "the choice yours."
+)
+_SLEEP_NUDGE_MARKERS = ("Sleep now:", "Sleep preview refused;")
+_GAS_GAUGE_RE = re.compile(
+    r"\[context: (?P<thousands>\d+)K / 1M - "
+    r"(?P<regime>calm|warning|forced|critical|unknown)\]"
+)
 
 
 class SleepDryRunPreview(Protocol):
@@ -49,13 +68,18 @@ class Planner:
     def __init__(self, *, config: HomunculusConfig):
         self._config = config
         self._proposal: IRContextPlan | None = None
-        self._last_sleep_pressure_tokens: int | None = None
+        self._sleep_nudge_regime: SleepNudgeRegime = "calm"
+        self._has_sleep_relief_baseline = False
+        self._last_sleep_relief_tokens: int | None = None
+        self._prewarning_active = False
         self._prewarning_tokens: int | None = None
+        self._floor_active = False
         self._forced_sleep_due = False
         self._floor_handled = False
 
     def rehydrate(self, rehydrated: RehydrationResult) -> None:
         self._proposal = rehydrated.plan_proposal
+        self._rehydrate_sleep_cadence(rehydrated)
 
     @property
     def proposal(self) -> IRContextPlan | None:
@@ -90,13 +114,20 @@ class Planner:
     def sleep_prewarning_threshold(self) -> int:
         return _percent_threshold(self._config.max_tokens, SLEEP_PREWARNING_PERCENT)
 
+    @property
+    def sleep_pressure_hysteresis(self) -> int:
+        return _percent_threshold(
+            self._config.max_tokens,
+            SLEEP_PRESSURE_HYSTERESIS_PERCENT,
+        )
+
     def at_sleep_floor(self, input_tokens: int) -> bool:
         return input_tokens >= self.sleep_floor_threshold
 
-    def observe_sleep_pressure(
+    async def observe_sleep_pressure(
         self,
         input_tokens: int,
-        dry_run: Callable[[], SleepDryRunPreview],
+        dry_run: Callable[[], Awaitable[SleepDryRunPreview]],
     ) -> tuple[str, ...]:
         """Price Sleep and announce threshold entries without nagging.
 
@@ -106,17 +137,26 @@ class Planner:
         before that next generation.
         """
 
-        previous = self._last_sleep_pressure_tokens
-        was_warning = previous is not None and previous >= self._config.soft_threshold
-        was_prewarning = (
-            previous is not None and previous >= self.sleep_prewarning_threshold
-        )
-        was_floor = previous is not None and previous >= self.sleep_floor_threshold
-        had_prewarning = self._prewarning_tokens is not None
+        previous_regime = self._sleep_nudge_regime
+        current_regime = self._next_sleep_nudge_regime(input_tokens)
+        self._sleep_nudge_regime = current_regime
 
-        is_warning = input_tokens >= self._config.soft_threshold
-        is_prewarning = input_tokens >= self.sleep_prewarning_threshold
-        is_floor = input_tokens >= self.sleep_floor_threshold
+        was_prewarning = self._prewarning_active
+        is_prewarning = self._threshold_active(
+            was_prewarning,
+            input_tokens,
+            self.sleep_prewarning_threshold,
+        )
+        self._prewarning_active = is_prewarning
+
+        was_floor = self._floor_active
+        is_floor = self._threshold_active(
+            was_floor,
+            input_tokens,
+            self.sleep_floor_threshold,
+        )
+        self._floor_active = is_floor
+        had_prewarning = self._prewarning_tokens is not None
 
         if not is_prewarning:
             self._prewarning_tokens = None
@@ -125,28 +165,171 @@ class Planner:
             self._floor_handled = False
 
         messages: list[str] = []
-        if is_warning and not was_warning:
-            rendered_nudge = _render_sleep_nudge(dry_run())
-            if rendered_nudge is not None:
-                messages.append(rendered_nudge)
+        if current_regime != "calm":
+            preview = await dry_run()
+            relief_tokens = preview.plan.tokens_freed
+            regime_entry = _regime_rank(current_regime) > _regime_rank(previous_regime)
+            materially_changed = self._sleep_relief_materially_changed(relief_tokens)
+            if regime_entry or materially_changed:
+                rendered_nudge = _render_sleep_nudge(preview)
+                if rendered_nudge is not None:
+                    messages.append(rendered_nudge)
+                self._remember_sleep_relief(relief_tokens)
+            elif not self._has_sleep_relief_baseline:
+                # A resumed planner knows that it already spoke in this regime,
+                # but footer text is not an exact pricing record. Establish the
+                # current exact baseline silently before considering deltas.
+                self._remember_sleep_relief(relief_tokens)
+        elif previous_regime != "calm":
+            self._has_sleep_relief_baseline = False
+            self._last_sleep_relief_tokens = None
 
         if is_prewarning and not was_prewarning:
             self._prewarning_tokens = input_tokens
-            messages.append(
-                "Sleep pre-warning: at 95% the system will run a frontier-only "
-                "sleep automatically; sleeping now by your own hand would be "
-                "gentler and keep the choice yours."
-            )
+            messages.append(_SLEEP_PREWARNING_MESSAGE)
 
-        if is_floor and not self._floor_handled and had_prewarning:
+        if (
+            input_tokens >= self.sleep_floor_threshold
+            and not self._floor_handled
+            and had_prewarning
+        ):
             self._forced_sleep_due = True
         elif is_floor and not was_floor:
             # This was a direct jump to the floor. The pre-warning above must be
             # seen before the floor can become an action.
             self._forced_sleep_due = False
 
-        self._last_sleep_pressure_tokens = input_tokens
         return tuple(messages)
+
+    def _next_sleep_nudge_regime(self, input_tokens: int) -> SleepNudgeRegime:
+        current = self._sleep_nudge_regime
+        margin = self.sleep_pressure_hysteresis
+        warning_exit = max(0, self._config.soft_threshold - margin)
+        hard_exit = max(0, self._config.hard_threshold - margin)
+
+        if current == "hard":
+            if input_tokens >= hard_exit:
+                return "hard"
+            if input_tokens >= warning_exit:
+                return "warning"
+            return "calm"
+        if current == "warning":
+            if input_tokens >= self._config.hard_threshold:
+                return "hard"
+            if input_tokens >= warning_exit:
+                return "warning"
+            return "calm"
+        if input_tokens >= self._config.hard_threshold:
+            return "hard"
+        if input_tokens >= self._config.soft_threshold:
+            return "warning"
+        return "calm"
+
+    def _threshold_active(
+        self,
+        was_active: bool,
+        input_tokens: int,
+        threshold: int,
+    ) -> bool:
+        entry_threshold = (
+            max(0, threshold - self.sleep_pressure_hysteresis)
+            if was_active
+            else threshold
+        )
+        return input_tokens >= entry_threshold
+
+    def _sleep_relief_materially_changed(self, relief_tokens: int | None) -> bool:
+        if not self._has_sleep_relief_baseline:
+            return False
+        previous = self._last_sleep_relief_tokens
+        if previous is None or relief_tokens is None:
+            return False
+        if previous == 0:
+            return relief_tokens != 0
+        difference = abs(relief_tokens - previous)
+        return difference * 100 > abs(previous) * SLEEP_RELIEF_REOFFER_PERCENT
+
+    def _remember_sleep_relief(self, relief_tokens: int | None) -> None:
+        self._has_sleep_relief_baseline = True
+        self._last_sleep_relief_tokens = relief_tokens
+
+    def _rehydrate_sleep_cadence(self, rehydrated: RehydrationResult) -> None:
+        """Recover quieting state from canonical footer events.
+
+        Planner footer text proves that an invitation or pre-warning was made.
+        Gas-gauge records after those events provide coarse pressure observations
+        for genuine exits. They do not prove the exact token count at which a
+        pre-warning was delivered, so rehydration never synthesizes
+        ``_prewarning_tokens`` or arms forced Sleep from them.
+        """
+
+        self._sleep_nudge_regime = "calm"
+        self._has_sleep_relief_baseline = False
+        self._last_sleep_relief_tokens = None
+        self._prewarning_active = False
+        self._prewarning_tokens = None
+        self._floor_active = False
+        self._forced_sleep_due = False
+        self._floor_handled = False
+
+        latest_gauge: tuple[int, int, str] | None = None
+        nudge_seen = False
+        prewarning_seen = False
+        for record in rehydrated.records:
+            if not isinstance(record, IRFooterQueueRecord):
+                continue
+            footer = record.footer
+            if footer.source == "telemetry" and footer.key == "gas_gauge":
+                latest_gauge = _parse_gas_gauge(footer.text)
+                if nudge_seen:
+                    self._rehydrate_nudge_gauge(latest_gauge)
+                if prewarning_seen:
+                    self._rehydrate_prewarning_gauge(latest_gauge)
+                continue
+            if footer.source != "planner":
+                continue
+            if any(marker in footer.text for marker in _SLEEP_NUDGE_MARKERS):
+                nudge_seen = True
+                self._sleep_nudge_regime = _nudge_regime_from_gauge(latest_gauge)
+            if _SLEEP_PREWARNING_MESSAGE in footer.text:
+                prewarning_seen = True
+                self._prewarning_active = True
+
+    def _rehydrate_nudge_gauge(
+        self,
+        gauge: tuple[int, int, str] | None,
+    ) -> None:
+        if gauge is None:
+            return
+        _lower_tokens, upper_tokens, _regime = gauge
+        warning_exit = max(
+            0,
+            self._config.soft_threshold - self.sleep_pressure_hysteresis,
+        )
+        hard_exit = max(
+            0,
+            self._config.hard_threshold - self.sleep_pressure_hysteresis,
+        )
+        if self._sleep_nudge_regime == "hard" and upper_tokens < hard_exit:
+            self._sleep_nudge_regime = (
+                "calm" if upper_tokens < warning_exit else "warning"
+            )
+        elif self._sleep_nudge_regime == "warning" and upper_tokens < warning_exit:
+            self._sleep_nudge_regime = "calm"
+
+    def _rehydrate_prewarning_gauge(
+        self,
+        gauge: tuple[int, int, str] | None,
+    ) -> None:
+        if gauge is None or not self._prewarning_active:
+            return
+        _lower_tokens, upper_tokens, _regime = gauge
+        prewarning_exit = max(
+            0,
+            self.sleep_prewarning_threshold - self.sleep_pressure_hysteresis,
+        )
+        if upper_tokens < prewarning_exit:
+            self._prewarning_active = False
 
     def take_forced_sleep_history(self, input_tokens: int) -> ForcedSleepHistory | None:
         """Consume at most one forced-Sleep attempt for the current floor entry."""
@@ -219,6 +402,26 @@ def _render_sleep_nudge(preview: SleepDryRunPreview) -> str | None:
     else:
         debts = "no known debts would remain"
     return f"Sleep now: {token_price} in {duration}; {debts}"
+
+
+def _regime_rank(regime: SleepNudgeRegime) -> int:
+    return {"calm": 0, "warning": 1, "hard": 2}[regime]
+
+
+def _parse_gas_gauge(text: str) -> tuple[int, int, str] | None:
+    match = _GAS_GAUGE_RE.search(text)
+    if match is None:
+        return None
+    lower_tokens = int(match.group("thousands")) * 1_000
+    return lower_tokens, lower_tokens + 999, match.group("regime")
+
+
+def _nudge_regime_from_gauge(
+    gauge: tuple[int, int, str] | None,
+) -> SleepNudgeRegime:
+    if gauge is not None and gauge[2] == "critical":
+        return "hard"
+    return "warning"
 
 
 def _format_tokens(tokens: int) -> str:
