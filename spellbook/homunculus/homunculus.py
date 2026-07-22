@@ -49,6 +49,7 @@ from ..ir_types import (
     IRExecution,
     IRGeneration,
     IRSemanticBlockSummary,
+    IRTokenRangeCount,
     IRToolResultBlock,
     IRUsage,
     RuntimeConfigNamespace,
@@ -359,11 +360,12 @@ class Homunculus:
             self._invalidate(reason=f"forget:{source}")
         return result
 
-    def plan_sleep_frontier(
+    async def plan_sleep_frontier(
         self, *, min_kept: int | None = None
     ) -> FrontierAdvancePlan:
         """Derive the default, mutation-free frontier plan for self-triggered Sleep."""
 
+        rendered_current_tokens = await self._rendered_frontier_tokens()
         return plan_frontier_advance(
             self._block_manager.semantic_blocks,
             FrontierPolicy(
@@ -371,7 +373,40 @@ class Homunculus:
                 min_kept=min_kept,
             ),
             current_render_tokens=self._gas_gauge.input_tokens,
+            rendered_current_tokens=rendered_current_tokens,
         )
+
+    async def _rendered_frontier_tokens(
+        self,
+    ) -> dict[str, IRTokenRangeCount | None]:
+        """Measure current blocks only where rendering differs from stored metrics.
+
+        Persisted semantic-block metrics describe the canonical source slice.
+        Expired TTLs and pinned-facet summaries can render a different slice, so
+        those contributions are counted through the same projection used by
+        ``render_context``. An unavailable count stays unknown; the frontier will
+        then price that block at zero relief instead of reviving its raw size.
+        """
+
+        counts: dict[str, IRTokenRangeCount | None] = {}
+        for block in self._block_manager.semantic_blocks:
+            source = self._block_manager.render_block(semantic_block=block)
+            rendered = self._ttl_registry.collapse_blocks(source)
+            rendered_differs = rendered != source or (
+                block.mode == "summary" and bool(block.facet_pins)
+            )
+            if not rendered_differs and block.toks is not None:
+                counts[block.id] = block.toks if block.toks.exact else None
+                continue
+            measured = await self._token_meter.count_slice(
+                rendered,
+                0,
+                len(rendered),
+            )
+            counts[block.id] = (
+                measured if measured is not None and measured.exact else None
+            )
+        return counts
 
     def apply_sleep_frontier(
         self,
@@ -391,7 +426,7 @@ class Homunculus:
             self._invalidate(reason="sleep")
         return applied
 
-    def take_forced_sleep_plan(self) -> ForcedSleepPlan | None:
+    async def take_forced_sleep_plan(self) -> ForcedSleepPlan | None:
         """Return one advanceable floor plan, or stand down without looping."""
 
         input_tokens = self._gas_gauge.input_tokens
@@ -400,7 +435,7 @@ class Homunculus:
         history = self._planner.take_forced_sleep_history(input_tokens)
         if history is None:
             return None
-        plan = self.plan_sleep_frontier()
+        plan = await self.plan_sleep_frontier()
         if plan.refused or plan.empty:
             self._debug_event(
                 subsystem="planner",
@@ -673,7 +708,7 @@ class Homunculus:
                 metadata={"reason": "input_tokens_unknown"},
             )
             return  # invalid, wait for next round
-        update_msgs = self._observe_sleep_pressure(input_tokens)
+        update_msgs = await self._observe_sleep_pressure(input_tokens)
         result = None
         if not (self._sleep_enabled and self._planner.at_sleep_floor(input_tokens)):
             result = self._planner.plan(
@@ -751,21 +786,21 @@ class Homunculus:
                     )
         self._queue_planner_updates(update_msgs)
 
-    def check_sleep_pressure(self) -> None:
+    async def check_sleep_pressure(self) -> None:
         """Emit Sleep-only planner lines at a terminal round boundary."""
 
         input_tokens = self._gas_gauge.input_tokens
         if input_tokens is None:
             return
-        self._queue_planner_updates(self._observe_sleep_pressure(input_tokens))
+        self._queue_planner_updates(await self._observe_sleep_pressure(input_tokens))
 
-    def _observe_sleep_pressure(self, input_tokens: int) -> list[str]:
+    async def _observe_sleep_pressure(self, input_tokens: int) -> list[str]:
         if not self._sleep_enabled:
             return []
         from spellbook.tools.sleep import dry_run_sleep
 
         return list(
-            self._planner.observe_sleep_pressure(
+            await self._planner.observe_sleep_pressure(
                 input_tokens,
                 lambda: dry_run_sleep(self),
             )
@@ -1101,4 +1136,4 @@ class HomunculusRoundLifecycle(RoundLifecycle):
         await self._homunculus.check_nursery()
         if stop_reason == "end_turn":
             self._homunculus.tick_end_turn_ttls()
-        self._homunculus.check_sleep_pressure()
+        await self._homunculus.check_sleep_pressure()

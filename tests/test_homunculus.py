@@ -1463,7 +1463,7 @@ async def test_loop_exit_harvests_ready_nursery_jobs_without_blocking() -> None:
         def tick_end_turn_ttls(self) -> None:
             pass
 
-        def check_sleep_pressure(self) -> None:
+        async def check_sleep_pressure(self) -> None:
             pass
 
     fake = _FakeHomunculus()

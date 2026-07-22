@@ -12,7 +12,7 @@ from spellbook.config import HomunculusConfig, SpellbookConfig
 from spellbook.footer import FooterController
 from spellbook.fork import BlockDetectorResult, ForkRunner
 from spellbook.homunculus import Homunculus
-from spellbook.homunculus.common import render_context_block
+from spellbook.homunculus.common import render_context_block, render_summary
 from spellbook.inbound import InboundMessageQueue
 from spellbook.ir_types import (
     IRBlock,
@@ -26,6 +26,8 @@ from spellbook.ir_types import (
     IRSemanticBlockSummary,
     IRSkillCatalog,
     IRTokenRangeCount,
+    IRToolCallBlock,
+    IRToolResultBlock,
     IRToolTextBlock,
     IRUsage,
     IRUserTextBlock,
@@ -171,6 +173,7 @@ async def _build_world(
     *,
     sleep_enabled: bool = False,
     homunculus_config: HomunculusConfig | None = None,
+    context_blocks: list[IRBlock] | None = None,
 ) -> _World:
     transcript = tmp_path / "transcript.jsonl"
     config = SpellbookConfig(
@@ -180,14 +183,14 @@ async def _build_world(
     )
     recorder = Recorder(config, transcript, "session_sleep", DEFAULT_TOOL_REGISTRY)
     recorder.write_session_record(skill_catalog=IRSkillCatalog())
-    context_blocks = [
+    resolved_context_blocks = context_blocks or [
         IRUserTextBlock(
             text=f"Full source {idx}: " + "detail " * 80,
             origin="human",
         )
         for idx in range(len(semantic_blocks))
     ]
-    recorder.start_turn("turn_1", context_blocks)
+    recorder.start_turn("turn_1", resolved_context_blocks)
     recorder.detect_blocks(
         BlockDetectorResult(
             completed=[block.range for block in semantic_blocks],
@@ -300,6 +303,95 @@ async def test_sleep_lands_actual_modes_manifest_debts_and_smaller_render(
         ("block_3", "summary"),
     ]
     assert all(record.source == "model" for record in mode_records)
+
+
+async def test_sleep_projection_never_overstates_ttl_collapsed_render_relief(
+    tmp_path: Path,
+) -> None:
+    """Night-001: raw tool outputs are not relief after TTL has collapsed them."""
+
+    context_blocks: list[IRBlock] = []
+    semantic_blocks: list[IRSemanticBlock] = []
+    for idx in range(6):
+        source: list[IRBlock] = [
+            IRUserTextBlock(text=f"Run command {idx}.", origin="human"),
+            IRToolCallBlock(
+                call_id=f"toolu_ttl_{idx}",
+                tool="Bash",
+                input={"command": f"large-{idx}"},
+            ),
+        ]
+        result = IRToolResultBlock(
+            call_id=f"toolu_ttl_{idx}",
+            tool="Bash",
+            content=[IRToolTextBlock(text=f"large result {idx}\n" + "x" * 20_000)],
+        )
+        source.append(result)
+        context_blocks.extend(source)
+        block = _block(idx)
+        block = block.model_copy(
+            update={
+                "range": block.range.model_copy(
+                    update={
+                        "start_block": idx * 3,
+                        "end_block": idx * 3 + 2,
+                    }
+                )
+            }
+        )
+        summary = cast(IRSemanticBlockSummary, block.artifacts[0])
+        summary = summary.model_copy(
+            update={"toks": _count(_block_size(render_summary(block)))}
+        )
+        raw_tokens = _count(_render_size(source))
+        semantic_blocks.append(
+            block.model_copy(
+                update={
+                    "toks": raw_tokens,
+                    "full_toks": raw_tokens,
+                    "artifacts": [summary],
+                }
+            )
+        )
+
+    world = await _build_world(
+        tmp_path,
+        semantic_blocks,
+        homunculus_config=HomunculusConfig(
+            soft_threshold=1,
+            tool_result_ttl_char_threshold=100_000,
+        ),
+        context_blocks=context_blocks,
+    )
+    for idx in range(6):
+        await world.homunculus.forget_tool_result(f"toolu_ttl_{idx}")
+
+    before_render = await world.homunculus.render_context([])
+    await world.homunculus.integrate_generation(
+        IRGeneration(
+            model="test-model",
+            blocks=[],
+            stop_reason="end_turn",
+            usage=IRUsage(input_tokens=_render_size(before_render)),
+        )
+    )
+    raw_relief = 0
+    for idx in (0, 1):
+        full_tokens = semantic_blocks[idx].full_toks
+        summary = cast(IRSemanticBlockSummary, semantic_blocks[idx].artifacts[0])
+        assert full_tokens is not None
+        assert summary.toks is not None
+        raw_relief += full_tokens.tokens - summary.toks.tokens
+
+    result = await exec_sleep(world.meta, SleepInput())
+
+    after_render = await world.homunculus.maybe_rerender()
+    assert after_render is not None
+    actual_rendered_relief = _render_size(before_render) - _render_size(after_render)
+    projected_relief = result.display["tokens_freed"]
+    assert isinstance(projected_relief, int)
+    assert raw_relief > actual_rendered_relief
+    assert projected_relief <= actual_rendered_relief
 
 
 async def test_sleep_refusal_names_missing_summary_and_mutates_nothing(
@@ -479,8 +571,8 @@ async def test_forced_sleep_uses_planner_source_manifest_history_and_preserves_p
             usage=IRUsage(input_tokens=900_000),
         )
     )
-    world.homunculus.check_sleep_pressure()
-    assert world.homunculus.take_forced_sleep_plan() is None
+    await world.homunculus.check_sleep_pressure()
+    assert await world.homunculus.take_forced_sleep_plan() is None
     planner_footers = [
         footer
         for footer in world.homunculus._footer_c.peek_pending()  # noqa: SLF001
@@ -498,8 +590,8 @@ async def test_forced_sleep_uses_planner_source_manifest_history_and_preserves_p
             usage=IRUsage(input_tokens=950_000),
         )
     )
-    world.homunculus.check_sleep_pressure()
-    forced = world.homunculus.take_forced_sleep_plan()
+    await world.homunculus.check_sleep_pressure()
+    forced = await world.homunculus.take_forced_sleep_plan()
 
     assert forced is not None
     world.recorder.end_turn()
@@ -544,7 +636,7 @@ async def test_forced_sleep_empty_frontier_stands_down_once_to_existing_warning(
             usage=IRUsage(input_tokens=900_000),
         )
     )
-    world.homunculus.check_sleep_pressure()
+    await world.homunculus.check_sleep_pressure()
     await world.homunculus.integrate_generation(
         IRGeneration(
             model="test-model",
@@ -553,10 +645,10 @@ async def test_forced_sleep_empty_frontier_stands_down_once_to_existing_warning(
             usage=IRUsage(input_tokens=950_000),
         )
     )
-    world.homunculus.check_sleep_pressure()
+    await world.homunculus.check_sleep_pressure()
 
-    assert world.homunculus.take_forced_sleep_plan() is None
-    assert world.homunculus.take_forced_sleep_plan() is None
+    assert await world.homunculus.take_forced_sleep_plan() is None
+    assert await world.homunculus.take_forced_sleep_plan() is None
     assert all(
         block.mode == "full"
         for block in world.homunculus.build_awareness().semantic_blocks
@@ -583,9 +675,9 @@ async def test_sleep_disabled_preserves_existing_pressure_behavior(
                 usage=IRUsage(input_tokens=input_tokens),
             )
         )
-        world.homunculus.check_sleep_pressure()
+        await world.homunculus.check_sleep_pressure()
 
-    assert world.homunculus.take_forced_sleep_plan() is None
+    assert await world.homunculus.take_forced_sleep_plan() is None
     pending = world.homunculus._footer_c.peek_pending()  # noqa: SLF001
     assert all(footer.source != "planner" for footer in pending)
     records = Rehydrator(world.transcript).run().records
@@ -640,7 +732,7 @@ async def test_sleep_still_refuses_half_pair_transition(
     homunculus = world.homunculus
     import dataclasses
 
-    full_plan = homunculus.plan_sleep_frontier()
+    full_plan = await homunculus.plan_sleep_frontier()
     template = full_plan.transitions[0]
     half = [
         dataclasses.replace(

@@ -12,7 +12,7 @@ landed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
 
@@ -323,12 +323,20 @@ class FrontierAdvancePlan:
 
 def derive_frontier(
     world: SemanticBlockWorld | Sequence[IRSemanticBlock],
+    *,
+    rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierState:
     """Derive current frontier state without changing the rehydrated world.
 
     Active pair narratives are validated as an atomic two-block rendering. An
     orphaned inactive artifact is represented as present-but-unusable so the
     planner can disclose the debt and safely fall back to an existing summary.
+
+    When supplied, ``rendered_current_tokens`` is authoritative for every
+    block's present contribution. A missing or uncountable block is therefore
+    unknown rather than falling back to its raw persisted metrics; this is what
+    keeps render-time reductions such as expired tool-result TTLs from becoming
+    fictitious projected relief.
     """
 
     semantic_blocks = _semantic_blocks(world)
@@ -355,6 +363,13 @@ def derive_frontier(
         narrative_tokens = None
         if narrative is not None and narrative_artifact is not None:
             narrative_tokens = narrative_artifact.toks
+        current_tokens = _current_token_count(
+            block,
+            summary=summary,
+            narrative_tokens=narrative_tokens,
+        )
+        if rendered_current_tokens is not None:
+            current_tokens = rendered_current_tokens.get(block.id)
         blocks.append(
             FrontierBlock(
                 block_id=block.id,
@@ -363,11 +378,7 @@ def derive_frontier(
                 mode=block.mode,
                 pinned=block.pin is not None,
                 facet_pin_count=len(block.facet_pins),
-                current_tokens=_current_token_count(
-                    block,
-                    summary=summary,
-                    narrative_tokens=narrative_tokens,
-                ),
+                current_tokens=current_tokens,
                 full_tokens=block.full_toks,
                 summary_artifact_id=summary.id if summary is not None else None,
                 summary_tokens=summary.toks if summary is not None else None,
@@ -387,6 +398,7 @@ def plan_frontier_advance(
     policy: FrontierPolicy | None = None,
     *,
     current_render_tokens: int | None = None,
+    rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierAdvancePlan:
     """Compute the gentlest safe transition set for a frontier-only Sleep.
 
@@ -398,7 +410,17 @@ def plan_frontier_advance(
     """
 
     resolved_policy = policy or FrontierPolicy()
-    frontier = world if isinstance(world, FrontierState) else derive_frontier(world)
+    if isinstance(world, FrontierState):
+        if rendered_current_tokens is not None:
+            raise ValueError(
+                "rendered_current_tokens cannot override an already-derived frontier."
+            )
+        frontier = world
+    else:
+        frontier = derive_frontier(
+            world,
+            rendered_current_tokens=rendered_current_tokens,
+        )
     current_tokens, baseline_quality = _projection_baseline(
         frontier,
         current_render_tokens,
@@ -764,6 +786,7 @@ def advance_frontier(
     policy: FrontierPolicy | None = None,
     *,
     current_render_tokens: int | None = None,
+    rendered_current_tokens: Mapping[str, IRTokenRangeCount | None] | None = None,
 ) -> FrontierAdvancePlan:
     """Readable alias for ``plan_frontier_advance``; still pure and non-mutating."""
 
@@ -771,6 +794,7 @@ def advance_frontier(
         world,
         policy,
         current_render_tokens=current_render_tokens,
+        rendered_current_tokens=rendered_current_tokens,
     )
 
 
@@ -795,6 +819,8 @@ class MorningManifest:
     dream_transcript_paths: tuple[str, ...]
     prewarning_tokens: int | None = None
     floor_tokens: int | None = None
+    gauge_tokens_before: int | None = None
+    gauge_tokens_after: int | None = None
 
     def __post_init__(self) -> None:
         if self.chapters_authored < 0:
@@ -815,6 +841,14 @@ class MorningManifest:
             self.prewarning_tokens is not None or self.floor_tokens is not None
         ):
             raise ValueError("Only forced Sleep carries pre-warning history.")
+        if (self.gauge_tokens_before is None) != (self.gauge_tokens_after is None):
+            raise ValueError(
+                "Gauge reconciliation needs both before and after observations."
+            )
+        if self.gauge_tokens_before is not None and self.gauge_tokens_before < 0:
+            raise ValueError("The before-Sleep gauge observation cannot be negative.")
+        if self.gauge_tokens_after is not None and self.gauge_tokens_after < 0:
+            raise ValueError("The after-Sleep gauge observation cannot be negative.")
 
     @property
     def forced(self) -> bool:
@@ -840,6 +874,24 @@ class MorningManifest:
             delta.tokens_freed is not None and delta.token_delta_exact
             for delta in self.deltas
         )
+
+    @property
+    def gauge_tokens_freed(self) -> int | None:
+        """Return the observed pressure delta when both gauge samples exist."""
+
+        if self.gauge_tokens_before is None or self.gauge_tokens_after is None:
+            return None
+        return self.gauge_tokens_before - self.gauge_tokens_after
+
+    @property
+    def gauge_projection_gap(self) -> int | None:
+        """Estimated relief minus observed relief; positive means overstatement."""
+
+        observed = self.gauge_tokens_freed
+        estimated = self.tokens_freed
+        if observed is None or estimated is None:
+            return None
+        return estimated - observed
 
     def render(self) -> str:
         """Render the structured manifest without hiding empty sections."""
@@ -924,6 +976,8 @@ def build_morning_manifest(
     additional_debts: Sequence[ManifestDebt] = (),
     prewarning_tokens: int | None = None,
     floor_tokens: int | None = None,
+    gauge_tokens_before: int | None = None,
+    gauge_tokens_after: int | None = None,
 ) -> MorningManifest:
     """Build a manifest from an advance decision and the deltas that landed.
 
@@ -1025,6 +1079,8 @@ def build_morning_manifest(
         dream_transcript_paths=pointers,
         prewarning_tokens=prewarning_tokens,
         floor_tokens=floor_tokens,
+        gauge_tokens_before=gauge_tokens_before,
+        gauge_tokens_after=gauge_tokens_after,
     )
 
 
@@ -1291,7 +1347,8 @@ def _render_delta_total(manifest: MorningManifest) -> str:
     narratives = _counted_noun(
         len(manifest.narratives_applied), "narrative applied", "narratives applied"
     )
-    if manifest.tokens_freed is None:
+    estimated = manifest.tokens_freed
+    if estimated is None:
         token_text = _render_token_total(
             manifest.known_tokens_freed,
             exact=manifest.token_delta_exact,
@@ -1299,10 +1356,28 @@ def _render_delta_total(manifest: MorningManifest) -> str:
         )
     else:
         token_text = _render_token_total(
-            manifest.tokens_freed,
+            estimated,
             exact=manifest.token_delta_exact,
         )
+    observed = manifest.gauge_tokens_freed
+    if observed is not None:
+        token_text = f"estimated {token_text}; gauge shows {_render_token_total(observed, exact=True)}"
+        gap = manifest.gauge_projection_gap
+        if (
+            gap is not None
+            and estimated is not None
+            and _material_projection_gap(estimated, observed)
+        ):
+            direction = "fewer" if gap > 0 else "more"
+            token_text += f"; gap: {abs(gap):,} {direction} than estimated"
     return f"Total: {moved}; {token_text}; {narratives}."
+
+
+def _material_projection_gap(estimated: int, observed: int) -> bool:
+    """Treat a 5% or 1K-token mismatch as material, whichever is larger."""
+
+    threshold = max(1_000, round(max(abs(estimated), abs(observed)) * 0.05))
+    return abs(estimated - observed) >= threshold
 
 
 def _render_token_total(tokens: int, *, exact: bool, suffix: str = "") -> str:

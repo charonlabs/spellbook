@@ -186,7 +186,7 @@ class SessionManager:
     async def _run_forced_sleep_if_needed(self) -> None:
         """Execute the 95% frontier floor only after the active turn has ended."""
 
-        forced = self.homunculus.take_forced_sleep_plan()
+        forced = await self.homunculus.take_forced_sleep_plan()
         if forced is None:
             return
         outcome: DreamingOutcome = "failed"

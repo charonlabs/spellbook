@@ -1217,7 +1217,7 @@ class TestRunningPhase:
         )
         forced = object()
 
-        def take_forced_sleep_plan() -> object:
+        async def take_forced_sleep_plan() -> object:
             events.append(("floor_checked", manager.state))
             assert manager.cancel_token is None
             return forced

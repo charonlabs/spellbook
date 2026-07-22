@@ -64,7 +64,7 @@ class SleepExecutionError(RuntimeError):
 class SleepFrontierPlanner(Protocol):
     """Narrow seam shared by the tool and planner dry-run paths."""
 
-    def plan_sleep_frontier(
+    async def plan_sleep_frontier(
         self, *, min_kept: int | None = None
     ) -> FrontierAdvancePlan: ...
 
@@ -77,13 +77,13 @@ class SleepDryRun:
     forecast: DurationForecast
 
 
-def dry_run_sleep(
+async def dry_run_sleep(
     planner: SleepFrontierPlanner, *, min_kept: int | None = None
 ) -> SleepDryRun:
     """Run Sleep's real non-mutating preview path for tools or planner nudges."""
 
     return SleepDryRun(
-        plan=planner.plan_sleep_frontier(min_kept=min_kept),
+        plan=await planner.plan_sleep_frontier(min_kept=min_kept),
         forecast=forecast_sleep(),
     )
 
@@ -93,7 +93,7 @@ async def exec_sleep(meta: ToolMetadata, input: SleepInput) -> ToolExecutionResu
         raise ToolError("Sleep is unavailable because this session has no Homunculus.")
 
     if input.dry_run:
-        preview = dry_run_sleep(meta.homunculus, min_kept=input.min_kept)
+        preview = await dry_run_sleep(meta.homunculus, min_kept=input.min_kept)
         return ToolExecutionResult(
             content=[
                 IRToolTextBlock(text=_render_preview(preview.plan, preview.forecast))
@@ -110,7 +110,7 @@ async def exec_sleep(meta: ToolMetadata, input: SleepInput) -> ToolExecutionResu
     outcome: DreamingOutcome = "failed"
     await runtime.enter_dreaming()
     try:
-        plan = meta.homunculus.plan_sleep_frontier(min_kept=input.min_kept)
+        plan = await meta.homunculus.plan_sleep_frontier(min_kept=input.min_kept)
         if plan.refused:
             manifest = build_morning_manifest(plan, applied_deltas=())
             outcome = "refused"
@@ -228,10 +228,13 @@ def _manifest_display(
         "forced": manifest.forced,
         "prewarning_tokens": manifest.prewarning_tokens,
         "floor_tokens": manifest.floor_tokens,
+        "gauge_tokens_before": manifest.gauge_tokens_before,
+        "gauge_tokens_after": manifest.gauge_tokens_after,
         "deltas": [_transition_display(delta) for delta in manifest.deltas],
         "debts": [debt.code for debt in manifest.debts],
         "known_tokens_freed": manifest.known_tokens_freed,
         "tokens_freed": manifest.tokens_freed,
+        "gauge_tokens_freed": manifest.gauge_tokens_freed,
         "projection": {
             "target_tokens": manifest.projection.target_tokens,
             "projected_render_tokens": manifest.projection.projected_render_tokens,

@@ -268,6 +268,29 @@ def test_unknown_summary_size_counts_as_zero_relief_and_marks_projection() -> No
     assert plan.tokens_freed is None
 
 
+def test_rendered_current_sizes_replace_raw_metrics_and_unknowns_claim_no_relief() -> (
+    None
+):
+    blocks = [_block(idx, full_tokens=1_000, summary_tokens=100) for idx in range(6)]
+    rendered_current_tokens = {
+        block.id: (_count(150) if block.idx == 1 else block.toks) for block in blocks
+    }
+    rendered_current_tokens[blocks[0].id] = None
+
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(recent_full_blocks=4),
+        current_render_tokens=4_300,
+        rendered_current_tokens=rendered_current_tokens,
+    )
+
+    assert [delta.block_idx for delta in plan.transitions] == [0, 1]
+    assert plan.transitions[0].before_tokens is None
+    assert plan.transitions[1].before_tokens == _count(150)
+    assert plan.projection.estimated_tokens_freed == 50
+    assert plan.projection.estimate_quality == "conservative"
+
+
 def test_unknown_atomic_narrative_counts_neither_halfs_apparent_relief() -> None:
     blocks = [_block(idx, full_tokens=100, summary_tokens=10) for idx in range(6)]
     blocks[0] = _block(0, full_tokens=100)
@@ -399,6 +422,38 @@ def test_morning_manifest_renders_deltas_debts_and_dream_pointer() -> None:
     assert "no new memory may be authored" in rendered
     assert "The dream itself is kept, if you ever want to hold it" in rendered
     assert "forks/quantum_dream_1/transcript.jsonl" in rendered
+
+
+def test_morning_manifest_names_material_gauge_gap_beside_estimate() -> None:
+    blocks = [
+        _block(0, full_tokens=100_000),
+        _block(1, full_tokens=120_000),
+    ]
+    blocks = _with_pair_narrative(
+        blocks,
+        0,
+        active=False,
+        narrative_tokens=30_000,
+    )
+    plan = plan_frontier_advance(
+        blocks,
+        FrontierPolicy(recent_full_blocks=0),
+        current_render_tokens=220_000,
+    )
+
+    manifest = build_morning_manifest(
+        plan,
+        gauge_tokens_before=220_000,
+        gauge_tokens_after=121_000,
+    )
+
+    assert manifest.tokens_freed == 190_000
+    assert manifest.gauge_tokens_freed == 99_000
+    assert manifest.gauge_projection_gap == 91_000
+    assert (
+        "estimated 190,000 tokens freed; gauge shows 99,000 tokens freed; "
+        "gap: 91,000 fewer than estimated"
+    ) in manifest.render()
 
 
 def test_manifest_discloses_unknown_token_measurement_and_uses_default_pointer() -> (
