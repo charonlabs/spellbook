@@ -43,7 +43,7 @@ class SessionLifecycle:
         rest decision, any subsystem work triggered by turn boundaries."""
 
     async def on_enter_dreaming(self, ctx: SessionContext) -> None:
-        """A self-triggered Sleep entered its synchronous dreaming window."""
+        """Self-triggered or forced Sleep entered its synchronous dream window."""
 
     async def on_exit_dreaming(
         self,

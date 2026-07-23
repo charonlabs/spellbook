@@ -115,12 +115,13 @@ async def run_triage(
     model: str = DEFAULT_TRIAGE_MODEL,
     transcript_path: Path | None = None,
     chapters_per_call: int = 4,
+    min_chapter: int = 0,
 ) -> TriageRunResult:
     if chapters_per_call < 1:
         raise ValueError("chapters_per_call must be at least 1.")
     review_dir = review_dir.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
-    missing_items = tuple(_load_missing_items(review_dir))
+    missing_items = tuple(_load_missing_items(review_dir, min_chapter))
     if not missing_items:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}\n", encoding="utf-8")
@@ -226,7 +227,7 @@ def _submit_triage_tool(holder: _TriageHolder) -> Tool[SubmitTriageInput]:
     )
 
 
-def _load_missing_items(review_dir: Path) -> list[MissingItem]:
+def _load_missing_items(review_dir: Path, min_chapter: int = 0) -> list[MissingItem]:
     items: list[MissingItem] = []
     for review_path in sorted(review_dir.glob("review-*.json")):
         data = json.loads(review_path.read_text(encoding="utf-8"))
@@ -234,6 +235,8 @@ def _load_missing_items(review_dir: Path) -> list[MissingItem]:
         if not missing:
             continue
         chapter_number = int(data.get("chapter_number") or _chapter_number(review_path))
+        if chapter_number < min_chapter:
+            continue
         chapter_id = f"chapter_{chapter_number:02d}"
         for idx, item in enumerate(missing, start=1):
             items.append(
@@ -410,6 +413,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=4,
         help="Number of chapters to classify per Sonnet call. Defaults to 4.",
     )
+    parser.add_argument(
+        "--min-chapter",
+        type=int,
+        default=0,
+        help="Skips triage on all chapter numbers less than this.",
+    )
     return parser.parse_args(argv)
 
 
@@ -423,6 +432,7 @@ async def _async_main(argv: list[str] | None = None) -> None:
         output_path=args.out,
         model=args.model,
         chapters_per_call=args.chapters_per_call,
+        min_chapter=args.min_chapter,
     )
     _print_summary(result)
 

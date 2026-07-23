@@ -1,9 +1,5 @@
 # Spellbook SDK
 
-> Draft interface guide. This document sketches the intended shape of the
-> Spellbook SDK before the API is implemented. Names and signatures may still
-> change, but the lifecycle model is the design center.
-
 The Spellbook SDK is a small Python interface for scripting Spellbook entities
 from ordinary async code.
 
