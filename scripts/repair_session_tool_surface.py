@@ -105,6 +105,7 @@ def current_main_tool_surface(config: SpellbookConfig) -> list[IRToolRecord]:
         config.tool_categories,
         surface="main",
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     return registry.records
 

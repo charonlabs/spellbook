@@ -730,6 +730,7 @@ def _build_surface_builder(config: SpellbookConfig) -> RequestSurfaceBuilder:
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     return RequestSurfaceBuilder.from_config(
         backend=backend,
@@ -744,6 +745,7 @@ def _build_token_counter(config: SpellbookConfig) -> TokenCounter:
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,

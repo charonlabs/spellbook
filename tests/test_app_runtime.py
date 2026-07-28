@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from spellbook.app.event_bus import AppEventBus
-from spellbook.app.lifecycle import AppRoundLifecycle, AppSessionLifecycle
+from spellbook.app.lifecycle import AppSessionLifecycle
 from spellbook.app.protocol import (
     MessageQueuedEvent,
     RecordWrittenEvent,
@@ -27,7 +27,7 @@ from spellbook.ir_types import (
     IRUserTextBlock,
 )
 from spellbook.recorder import Recorder, RecordTap
-from spellbook.round_lifecycle import RoundLifecycle
+from spellbook.round_lifecycle import CompositeRoundLifecycle, RoundLifecycle
 from spellbook.session_lifecycle import SessionContext, SessionLifecycle
 from spellbook.session_manager import SessionBuilder, SessionManager, SessionState
 from spellbook.slash_commands import parse_slash_command_message
@@ -159,6 +159,7 @@ class _FakeSessionBuilder:
                 surface=config.profile.tool_surface,
                 custom=custom_surface,
                 body_url=config.body_url,
+                minecraft_url=config.minecraft_url,
             )
             Recorder(
                 config=config,
@@ -200,7 +201,7 @@ async def test_startup_wires_app_lifecycles_and_record_tap(tmp_path: Path) -> No
 
     call = builder.calls[0]
     assert isinstance(call["lifecycle"], AppSessionLifecycle)
-    assert isinstance(call["pre_round_lifecycle"], AppRoundLifecycle)
+    assert isinstance(call["pre_round_lifecycle"], CompositeRoundLifecycle)
     assert call["record_tap"] == bus.record_tap
 
     record_event = await asyncio.wait_for(subscription.__anext__(), timeout=1)

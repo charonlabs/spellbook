@@ -70,6 +70,7 @@ ToolCategory = Literal[
     "block_summarization",
     "chorus_tools",
     "body",
+    "minecraft",
 ]
 
 TOOL_DESCS_DIR = Path(__file__).parent / "descs"
@@ -95,6 +96,8 @@ class ToolMetadata:
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
     body_url: str | None = None
+    minecraft_url: str | None = None
+    minecraft_surface: object | None = None
     dreaming_runtime: DreamingRuntime | None = None
 
 
@@ -162,6 +165,8 @@ def build_tool_metadata(
                 chorus_url=config.chorus_url,
                 chorus_entity_name=config.chorus_entity_name,
                 body_url=config.body_url,
+                minecraft_url=config.minecraft_url,
+                minecraft_surface=_build_minecraft_surface(config.minecraft_url),
             )
         case "block_detector":
             assert isinstance(fork_config, BlockDetectorConfig)
@@ -199,6 +204,8 @@ def build_tool_metadata(
                 chorus_url=config.chorus_url,
                 chorus_entity_name=config.chorus_entity_name,
                 body_url=config.body_url,
+                minecraft_url=config.minecraft_url,
+                minecraft_surface=_build_minecraft_surface(config.minecraft_url),
             )
 
 
@@ -216,3 +223,11 @@ def tool_to_record(tool: Tool) -> IRToolRecord:
         input_schema=input_schema,
         category=tool.category,
     )
+
+
+def _build_minecraft_surface(minecraft_url: str | None) -> object | None:
+    if minecraft_url is None:
+        return None
+    from spellbook.minecraft_surface import MinecraftSurface
+
+    return MinecraftSurface(minecraft_url=minecraft_url)

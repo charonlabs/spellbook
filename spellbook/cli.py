@@ -115,6 +115,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override tools.categories; repeat for multiple categories.",
     )
     serve.add_argument("--body-url")
+    serve.add_argument("--minecraft-url")
     serve.add_argument("--chorus-url")
     serve.add_argument("--chorus-entity-name")
     serve.add_argument("--host", default=DEFAULT_HOST)
@@ -189,6 +190,7 @@ def _overrides_from_args(args: argparse.Namespace) -> ServeOverrides:
         hearth_quiet_hours=args.hearth_quiet_hours,
         tool_categories=args.tool_categories,
         body_url=args.body_url,
+        minecraft_url=args.minecraft_url,
         chorus_url=args.chorus_url,
         chorus_entity_name=args.chorus_entity_name,
     )

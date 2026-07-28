@@ -22,6 +22,7 @@ from spellbook.custom import CustomSurface
 from spellbook.profiles import ToolSurface
 from spellbook.tools.body import BODY_TOOL
 from spellbook.tools.chorus import REACH_TOOL
+from spellbook.tools.minecraft import MINECRAFT_TOOL
 from spellbook.tools.skills import SKILL_TOOL
 from spellbook.tools.web import WEB_ANSWER_TOOL, WEB_READ_TOOL, WEB_SEARCH_TOOL
 
@@ -48,7 +49,9 @@ from .sleep import SLEEP_TOOL
 
 CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
     "coding": frozenset({"filesystem", "thinking"}),
-    "main": frozenset({"filesystem", "thinking", "memory", "web", "skills", "body"}),
+    "main": frozenset(
+        {"filesystem", "thinking", "memory", "web", "skills", "body", "minecraft"}
+    ),
     "chorus": frozenset(
         {
             "filesystem",
@@ -57,6 +60,7 @@ CATEGORY_HIERARCHY: dict[str, frozenset[str]] = {
             "web",
             "skills",
             "body",
+            "minecraft",
             "chorus_tools",
         }
     ),
@@ -92,6 +96,7 @@ class ToolRegistry(BaseModel, frozen=True):
         custom: CustomSurface | None = None,
         include_quantum_submit: bool = True,
         body_url: str | None = None,
+        minecraft_url: str | None = None,
         sleep_enabled: bool = False,
     ) -> "ToolRegistry":
         if surface == "custom" and custom is None:
@@ -100,7 +105,9 @@ class ToolRegistry(BaseModel, frozen=True):
             if surface != "custom":
                 raise ValueError(f"Found surface={surface} instead of `custom`.")
             main_tools = _main_tools(
-                body_enabled=body_url is not None, sleep_enabled=sleep_enabled
+                body_enabled=body_url is not None,
+                minecraft_enabled=minecraft_url is not None,
+                sleep_enabled=sleep_enabled,
             )
             custom_tools = [
                 tool
@@ -111,7 +118,10 @@ class ToolRegistry(BaseModel, frozen=True):
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
         surface_tools = _tools_for_surface(
-            surface, body_enabled=body_url is not None, sleep_enabled=sleep_enabled
+            surface,
+            body_enabled=body_url is not None,
+            minecraft_enabled=minecraft_url is not None,
+            sleep_enabled=sleep_enabled,
         )
         if surface == "quantum" and not include_quantum_submit:
             surface_tools = [
@@ -186,24 +196,42 @@ TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
 }
 
 
-def _main_tools(*, body_enabled: bool, sleep_enabled: bool = False) -> list[Tool[Any]]:
-    tools = BODY_ENABLED_MAIN_TOOLS if body_enabled else MAIN_TOOLS
+def _main_tools(
+    *,
+    body_enabled: bool,
+    minecraft_enabled: bool,
+    sleep_enabled: bool = False,
+) -> list[Tool[Any]]:
+    tools = list(MAIN_TOOLS)
+    if body_enabled:
+        tools.append(BODY_TOOL)
+    if minecraft_enabled:
+        tools.append(MINECRAFT_TOOL)
     if sleep_enabled:
         return [*tools, SLEEP_TOOL]
-    return list(tools)
+    return tools
 
 
 def _tools_for_surface(
-    surface: ToolSurface, *, body_enabled: bool, sleep_enabled: bool = False
+    surface: ToolSurface,
+    *,
+    body_enabled: bool,
+    minecraft_enabled: bool,
+    sleep_enabled: bool = False,
 ) -> list[Tool[Any]]:
     if surface == "main":
-        return _main_tools(body_enabled=body_enabled, sleep_enabled=sleep_enabled)
+        return _main_tools(
+            body_enabled=body_enabled,
+            minecraft_enabled=minecraft_enabled,
+            sleep_enabled=sleep_enabled,
+        )
     return TOOLS_BY_SURFACE[surface]
 
 
 # Every tool this binary knows how to validate and execute.
 ALL_TOOLS: list[Tool[Any]] = (
     BODY_ENABLED_MAIN_TOOLS
+    + [MINECRAFT_TOOL]
     + BLOCK_DETECTOR_TOOLS
     + BLOCK_SUMMARIZER_TOOLS
     + [SUBMIT_RESULT_TOOL]

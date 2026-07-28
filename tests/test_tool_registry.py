@@ -213,6 +213,7 @@ class TestToolSurfaces:
             "Pin",
             "Recall",
             "Body",
+            "Minecraft",
             "Reach",
             "ProposeBlock",
             "AmendBlock",
@@ -244,16 +245,25 @@ class TestToolSurfaces:
         }
         assert "Reach" not in registry.tool_names
 
-    def test_main_surface_includes_body_only_when_configured(self) -> None:
-        without_body = ToolRegistry.build(categories=None, surface="main")
+    def test_main_surface_includes_external_surfaces_only_when_configured(self) -> None:
+        without_external = ToolRegistry.build(categories=None, surface="main")
         with_body = ToolRegistry.build(
             categories=None,
             surface="main",
             body_url="http://127.0.0.1:8765",
         )
+        with_minecraft = ToolRegistry.build(
+            categories=None,
+            surface="main",
+            minecraft_url="http://127.0.0.1:3000",
+        )
 
-        assert "Body" not in without_body.tool_names
+        assert "Body" not in without_external.tool_names
+        assert "Minecraft" not in without_external.tool_names
         assert with_body.tool_names == DEFAULT_TOOL_REGISTRY.tool_names | {"Body"}
+        assert with_minecraft.tool_names == DEFAULT_TOOL_REGISTRY.tool_names | {
+            "Minecraft"
+        }
 
     def test_body_category_is_empty_without_body_url(self) -> None:
         registry = ToolRegistry.build(categories={"body"}, surface="main")
@@ -268,6 +278,20 @@ class TestToolSurfaces:
         )
 
         assert registry.tool_names == {"Body"}
+
+    def test_minecraft_category_is_empty_without_minecraft_url(self) -> None:
+        registry = ToolRegistry.build(categories={"minecraft"}, surface="main")
+
+        assert registry.tool_names == set()
+
+    def test_minecraft_category_mounts_minecraft_when_url_is_configured(self) -> None:
+        registry = ToolRegistry.build(
+            categories={"minecraft"},
+            surface="main",
+            minecraft_url="http://127.0.0.1:3000",
+        )
+
+        assert registry.tool_names == {"Minecraft"}
 
     def test_main_category_expands_to_normal_entity_registry(self) -> None:
         registry = ToolRegistry.build(categories={"main"}, surface="main")
@@ -355,9 +379,11 @@ class TestToolSurfaces:
             categories=None,
             surface="quantum",
             body_url="http://127.0.0.1:8765",
+            minecraft_url="http://127.0.0.1:3000",
         )
 
         assert "Body" not in registry.tool_names
+        assert "Minecraft" not in registry.tool_names
         assert registry.tool_names == {
             "Read",
             "Reflect",

@@ -564,6 +564,7 @@ class ForkRunner:
                     surface=fork_config.profile.tool_surface,
                     include_quantum_submit=fork_config.submit_tool,
                     body_url=config.body_url,
+                    minecraft_url=config.minecraft_url,
                 )
                 update.update({"config": config, "tools": tool_registry.records})
             records.append(record.model_copy(update=update))

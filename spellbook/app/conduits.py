@@ -14,6 +14,7 @@ HUMAN_SURFACES: dict[str, str] = {
     "human": "web UI",
     "telegram": "Telegram",
     "web": "web UI",
+    "minecraft": "Minecraft",
 }
 
 RESERVED_CONDUIT_METADATA = frozenset({"priority", "title", "key"})

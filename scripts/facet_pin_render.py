@@ -299,6 +299,7 @@ def _build_block_manager(
         rehydrated.config.tool_categories,
         surface=rehydrated.config.profile.tool_surface,
         body_url=rehydrated.config.body_url,
+        minecraft_url=rehydrated.config.minecraft_url,
     )
     recorder = Recorder(
         rehydrated.config,
@@ -361,6 +362,7 @@ def _build_token_counter(config: SpellbookConfig) -> TokenCounter:
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,

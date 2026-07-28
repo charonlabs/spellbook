@@ -88,6 +88,7 @@ quiet_hours = "23:00-07:00"
 [tools]
 categories = ["main", "chorus"]
 body_url = "http://body.example"
+minecraft_url = "http://minecraft.example"
 chorus_url = "http://chorus.example"
 chorus_entity_name = "philosopher"
 """.strip(),
@@ -105,6 +106,7 @@ chorus_entity_name = "philosopher"
     assert config.skill_discovery_dirs == [".spellbook"]
     assert config.tool_categories == {"main", "chorus"}
     assert config.body_url == "http://body.example"
+    assert config.minecraft_url == "http://minecraft.example"
     assert config.chorus_url == "http://chorus.example"
     assert config.chorus_entity_name == "philosopher"
     assert config.hearth_enabled is True
@@ -253,7 +255,7 @@ def test_new_config_requires_model_and_unknown_model_requires_provider() -> None
 
 @pytest.mark.parametrize(
     ("category", "field"),
-    [("body", "body_url"), ("chorus", "chorus_url")],
+    [("body", "body_url"), ("minecraft", "minecraft_url"), ("chorus", "chorus_url")],
 )
 def test_explicit_external_tool_categories_require_their_url(
     category: str, field: str, monkeypatch: pytest.MonkeyPatch

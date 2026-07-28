@@ -753,6 +753,26 @@ class TestSessionProfileBuild:
         assert "Body" in manager.tool_registry.tool_names
         assert manager.executor.meta.body_url == "http://127.0.0.1:8765"
 
+    @pytest.mark.asyncio
+    async def test_minecraft_url_mounts_minecraft_tool_and_metadata(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "minecraft.jsonl"
+        config = _config(tmp_path).model_copy(
+            update={"minecraft_url": "http://127.0.0.1:3000"}
+        )
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        manager = await SessionManager.build(transcript_path=transcript, config=config)
+
+        assert "Minecraft" in manager.tool_registry.tool_names
+        assert manager.executor.meta.minecraft_url == "http://127.0.0.1:3000"
+        assert manager.executor.meta.minecraft_surface is not None
+
 
 class TestInboundQueueSemantics:
     @pytest.mark.asyncio

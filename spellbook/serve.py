@@ -108,6 +108,7 @@ class HearthSection(_Section):
 class ToolsSection(_Section):
     categories: list[str] = Field(default_factory=lambda: ["main"])
     body_url: str = ""
+    minecraft_url: str = ""
     chorus_url: str = ""
     chorus_entity_name: str = ""
 
@@ -165,6 +166,7 @@ class ServeOverrides:
     hearth_quiet_hours: str | None = None
     tool_categories: list[str] | None = None
     body_url: str | None = None
+    minecraft_url: str | None = None
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
 
@@ -254,11 +256,13 @@ def build_spellbook_config(
     tools = source.tools
     tool_categories = _prefer(overrides.tool_categories, tools.categories)
     body_url = _override_optional_url(overrides.body_url, tools.body_url)
+    minecraft_url = _override_optional_url(overrides.minecraft_url, tools.minecraft_url)
     chorus_url = _chorus_url(overrides, tools)
     chorus_entity_name = _chorus_entity_name(overrides, tools)
     _validate_tool_dependencies(
         categories=tool_categories,
         body_url=body_url,
+        minecraft_url=minecraft_url,
         chorus_url=chorus_url,
     )
 
@@ -286,6 +290,7 @@ def build_spellbook_config(
         "chorus_url": chorus_url,
         "chorus_entity_name": chorus_entity_name,
         "body_url": body_url,
+        "minecraft_url": minecraft_url,
         "session_type": _prefer(overrides.session_type, entity.session_type),
         "cwd": cwd,
         "system_prompt": system_prompt,
@@ -437,10 +442,15 @@ def _validate_tool_dependencies(
     *,
     categories: list[str],
     body_url: str | None,
+    minecraft_url: str | None,
     chorus_url: str | None,
 ) -> None:
     if "body" in categories and body_url is None:
         raise ServeConfigError("The 'body' tool category requires tools.body_url.")
+    if "minecraft" in categories and minecraft_url is None:
+        raise ServeConfigError(
+            "The 'minecraft' tool category requires tools.minecraft_url."
+        )
     if {"chorus", "chorus_tools"}.intersection(categories) and chorus_url is None:
         raise ServeConfigError(
             "The 'chorus' tool category requires tools.chorus_url or a Chorus URL "

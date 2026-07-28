@@ -66,6 +66,7 @@ async def main() -> None:
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     recorder = Recorder(
         config=config,

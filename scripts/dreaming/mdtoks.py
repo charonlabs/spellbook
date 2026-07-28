@@ -59,6 +59,7 @@ def _build_token_counter(model: str) -> TokenCounter:
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     surface_builder = RequestSurfaceBuilder.from_config(
         backend=backend,

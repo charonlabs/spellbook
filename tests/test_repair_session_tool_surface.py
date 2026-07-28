@@ -51,7 +51,10 @@ def test_repair_session_tool_surface_updates_old_tools(tmp_path: Path) -> None:
     expected_names = [
         record.name
         for record in ToolRegistry.build(
-            config.tool_categories, surface="main", body_url=config.body_url
+            config.tool_categories,
+            surface="main",
+            body_url=config.body_url,
+            minecraft_url=config.minecraft_url,
         ).records
     ]
     result = Rehydrator(transcript).run()
@@ -65,7 +68,10 @@ def test_repair_session_tool_surface_is_unchanged_when_current(tmp_path: Path) -
     transcript = tmp_path / "transcript.jsonl"
     config = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)
     registry = ToolRegistry.build(
-        config.tool_categories, surface="main", body_url=config.body_url
+        config.tool_categories,
+        surface="main",
+        body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     _write_session(
         transcript,

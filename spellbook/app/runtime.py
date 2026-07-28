@@ -37,7 +37,9 @@ from spellbook.config import SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.hearth import HearthScheduler
 from spellbook.ir_types import IRInboundMessage, IRLoopResult, IRUserTextBlock
+from spellbook.minecraft_surface import MinecraftRoundLifecycle, MinecraftSurface
 from spellbook.rehydrator import Rehydrator
+from spellbook.round_lifecycle import CompositeRoundLifecycle
 from spellbook.session_lifecycle import SessionContext
 from spellbook.session_manager import SessionBuilder, SessionManager
 
@@ -71,6 +73,7 @@ class CoreAppRuntime:
         self._last_active_surface: str | None = None
         self._last_surface_time: datetime | None = None
         self._last_reported_surface: str | None = None
+        self._minecraft_surface: MinecraftSurface | None = None
 
     @property
     def session(self) -> SessionManager | None:
@@ -90,6 +93,10 @@ class CoreAppRuntime:
         if self._session is not None:
             raise RuntimeError("CoreAppRuntime has already been started.")
 
+        app_round_lifecycle = AppRoundLifecycle(self.bus)
+        minecraft_round_lifecycle = MinecraftRoundLifecycle(
+            lambda: self._minecraft_surface
+        )
         session = await self._session_builder(
             transcript_path=self.transcript_path,
             config=self.config,
@@ -98,11 +105,14 @@ class CoreAppRuntime:
                 before_turn_started=self._before_turn_started,
                 after_turn_ended=self._after_turn_ended,
             ),
-            pre_round_lifecycle=AppRoundLifecycle(self.bus),
+            pre_round_lifecycle=CompositeRoundLifecycle(
+                [minecraft_round_lifecycle, app_round_lifecycle]
+            ),
             record_tap=self.bus.record_tap,
             custom_surface=self._custom_surface,
         )
         self._session = session
+        self._bind_minecraft_surface(session)
         self._session_task = asyncio.create_task(session.run())
         self._session_task.add_done_callback(self._on_session_task_done)
         if session.config.profile.hearth:
@@ -513,6 +523,41 @@ class CoreAppRuntime:
             )
         )
 
+    def _bind_minecraft_surface(self, session: SessionManager) -> None:
+        executor = getattr(session, "executor", None)
+        meta = getattr(executor, "meta", None)
+        surface = getattr(meta, "minecraft_surface", None)
+        if not isinstance(surface, MinecraftSurface):
+            return
+        self._minecraft_surface = surface
+        surface.bind_runtime(
+            submit_message=self.submit_message,
+            queue_footer=self._queue_minecraft_footer,
+        )
+
+    async def _queue_minecraft_footer(
+        self,
+        *,
+        text: str,
+        key: str,
+        priority: int,
+        wake_on_idle: bool,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        await self._queue_footer(
+            text=text,
+            footer_type="notif",
+            footer_source="minecraft",
+            key=key,
+            priority=priority,
+            wake_on_idle=wake_on_idle,
+            source_metadata={
+                "source": "minecraft",
+                "origin": "minecraft",
+                "metadata": dict(metadata or {}),
+            },
+        )
+
     async def shutdown(self) -> None:
         """Stop the session loop and close live subscriptions."""
         async with self._shutdown_lock:
@@ -527,6 +572,9 @@ class CoreAppRuntime:
 
             if hearth_scheduler is not None:
                 await hearth_scheduler.stop()
+
+            if self._minecraft_surface is not None:
+                await self._minecraft_surface.close()
 
             if session is not None:
                 await session.shutdown()

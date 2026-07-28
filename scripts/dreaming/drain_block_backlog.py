@@ -684,6 +684,7 @@ def _build_runtime(
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     backend = build_backend(config)
     surface_builder = RequestSurfaceBuilder.from_config(
@@ -729,6 +730,7 @@ def _build_recorder(
         config.tool_categories,
         surface=config.profile.tool_surface,
         body_url=config.body_url,
+        minecraft_url=config.minecraft_url,
     )
     recorder = Recorder(
         config=config,
