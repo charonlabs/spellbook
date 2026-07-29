@@ -58,6 +58,7 @@ class MinecraftSurface:
     minecraft_url: str
     booted: bool = False
     chat_routing: bool = False
+    tool_call_echo: bool = True
     focus_mode: MinecraftFocusMode = "idle"
     chat_cursor: int = 0
     event_cursor: int = 0
@@ -99,10 +100,13 @@ class MinecraftSurface:
         self,
         *,
         chat_routing: bool | None = None,
+        tool_call_echo: bool | None = None,
         focus_mode: MinecraftFocusMode | None = None,
     ) -> None:
         if chat_routing is not None:
             self.chat_routing = chat_routing
+        if tool_call_echo is not None:
+            self.tool_call_echo = tool_call_echo
         if focus_mode is not None:
             self.focus_mode = focus_mode
 

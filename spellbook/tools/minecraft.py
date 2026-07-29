@@ -133,6 +133,30 @@ REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
     "withdraw": ("name",),
 }
 
+ECHO_PRIMARY_ARGS = ("name", "item", "resource", "template")
+ECHO_ARG_ORDER = (
+    "x",
+    "y",
+    "z",
+    "count",
+    "amount",
+    "radius",
+    "range",
+    "dir",
+    "up",
+    "steps",
+    "length",
+    "face",
+    "dest",
+    "on",
+    "slot",
+    "set",
+    "sec",
+)
+ECHO_SKIP_ARGS = frozenset({"brief", "verbose", "then", "fresh", "wait", "hud", "pov"})
+MAX_ECHO_ARGS = 6
+MAX_ECHO_CHARS = 220
+
 
 class MinecraftInput(BaseModel):
     """Use the configured Minecraft surface."""
@@ -180,6 +204,13 @@ async def exec_minecraft(
             path=f"/{action}",
             params=args,
         )
+        await _echo_tool_call(
+            client,
+            minecraft_url=minecraft_url,
+            surface=surface,
+            action=action,
+            args=args,
+        )
         _require_ok(data)
         return _formatted_result(action, data, surface=surface)
 
@@ -192,6 +223,9 @@ async def _exec_boot(
     surface.mark_booted(
         chat_cursor=data.get("chatSeq") or data.get("chat_cursor"),
         event_cursor=data.get("eventSeq") or data.get("event_cursor"),
+    )
+    await _echo_tool_call(
+        client, minecraft_url=minecraft_url, surface=surface, action="boot", args={}
     )
     result = _formatted_result("boot", data, surface=surface)
     text = _first_text(result)
@@ -208,6 +242,13 @@ async def _exec_shutdown(
 ) -> ToolExecutionResult:
     try:
         await _get_json(client, minecraft_url=minecraft_url, path="/stop", params={})
+        await _echo_tool_call(
+            client,
+            minecraft_url=minecraft_url,
+            surface=surface,
+            action="shutdown",
+            args={},
+        )
     except ToolError:
         pass
     surface.mark_shutdown()
@@ -221,7 +262,7 @@ async def _exec_shutdown(
 def _exec_config(
     *, surface: MinecraftSurface, args: dict[str, Any]
 ) -> ToolExecutionResult:
-    allowed = {"chat_routing", "focus_mode", "focus"}
+    allowed = {"chat_routing", "tool_call_echo", "focus_mode", "focus"}
     unknown = sorted(set(args) - allowed)
     if unknown:
         raise ToolError(f"config does not understand: {', '.join(unknown)}.")
@@ -230,14 +271,27 @@ def _exec_config(
         if "chat_routing" in args
         else None
     )
+    tool_call_echo = (
+        _bool_arg(args["tool_call_echo"], field_name="tool_call_echo")
+        if "tool_call_echo" in args
+        else None
+    )
     focus_value = args.get("focus_mode", args.get("focus"))
     focus_mode = _focus_mode(focus_value) if focus_value is not None else None
-    surface.configure(chat_routing=chat_routing, focus_mode=focus_mode)
+    surface.configure(
+        chat_routing=chat_routing,
+        tool_call_echo=tool_call_echo,
+        focus_mode=focus_mode,
+    )
     return _text_result(
-        f"Minecraft config: chat routing {'on' if surface.chat_routing else 'off'}, focus {surface.focus_mode}.",
+        "Minecraft config: "
+        f"chat routing {'on' if surface.chat_routing else 'off'}, "
+        f"tool echo {'on' if surface.tool_call_echo else 'off'}, "
+        f"focus {surface.focus_mode}.",
         action="config",
         running=surface.booted,
         chat_routing=surface.chat_routing,
+        tool_call_echo=surface.tool_call_echo,
         focus_mode=surface.focus_mode,
     )
 
@@ -285,6 +339,66 @@ def _require_ok(data: dict[str, Any]) -> None:
         raise ToolError("Minecraft returned an unexpected response.")
 
 
+async def _echo_tool_call(
+    client: httpx.AsyncClient,
+    *,
+    minecraft_url: str,
+    surface: MinecraftSurface,
+    action: str,
+    args: dict[str, Any],
+) -> None:
+    if action == "chat" or not surface.tool_call_echo:
+        return
+    message = _tool_echo_message(action, args)
+    try:
+        data = await _get_json(
+            client,
+            minecraft_url=minecraft_url,
+            path="/chat",
+            params={"msg": message},
+        )
+        _require_ok(data)
+    except ToolError:
+        return
+
+
+def _tool_echo_message(action: str, args: dict[str, Any]) -> str:
+    consumed: set[str] = set()
+    parts = ["[Tool]", action]
+    for key in ECHO_PRIMARY_ARGS:
+        if key in args:
+            parts.append(_echo_value(args[key]))
+            consumed.add(key)
+            break
+
+    for key in ECHO_ARG_ORDER:
+        if key in args and key not in consumed and key not in ECHO_SKIP_ARGS:
+            parts.append(f"{key}={_echo_value(args[key])}")
+            consumed.add(key)
+        if len(parts) >= MAX_ECHO_ARGS + 2:
+            break
+
+    if len(parts) < MAX_ECHO_ARGS + 2:
+        for key in sorted(args):
+            if key in consumed or key in ECHO_SKIP_ARGS:
+                continue
+            parts.append(f"{key}={_echo_value(args[key])}")
+            if len(parts) >= MAX_ECHO_ARGS + 2:
+                break
+
+    text = " ".join(part for part in parts if part)
+    if len(text) <= MAX_ECHO_CHARS:
+        return text
+    return f"{text[: MAX_ECHO_CHARS - 3].rstrip()}..."
+
+
+def _echo_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = " ".join(str(value).split())
+    return text.encode("ascii", "ignore").decode("ascii")
+
+
 def _formatted_result(
     action: str, data: dict[str, Any], *, surface: MinecraftSurface
 ) -> ToolExecutionResult:
@@ -299,6 +413,7 @@ def _formatted_result(
             "data": clean,
             "running": surface.booted,
             "chat_routing": surface.chat_routing,
+            "tool_call_echo": surface.tool_call_echo,
             "focus_mode": surface.focus_mode,
         },
     )

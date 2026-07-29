@@ -114,7 +114,11 @@ async def test_boot_marks_surface_running_and_turns_chat_routing_on(
                     "chatSeq": 7,
                     "empty": None,
                 },
-            )
+            ),
+            ("GET", "http://minecraft.local/chat"): _FakeResponse(
+                status=200,
+                payload={"ok": True, "said": "[Tool] boot"},
+            ),
         },
     )
     meta = _meta(tmp_path)
@@ -126,9 +130,11 @@ async def test_boot_marks_surface_running_and_turns_chat_routing_on(
     assert isinstance(meta.minecraft_surface, MinecraftSurface)
     assert meta.minecraft_surface.booted is True
     assert meta.minecraft_surface.chat_routing is True
+    assert meta.minecraft_surface.tool_call_echo is True
     assert meta.minecraft_surface.chat_cursor == 7
     assert _FakeAsyncClient.instances[0].gets == [
-        ("http://minecraft.local/boot", {"brief": "1"})
+        ("http://minecraft.local/boot", {"brief": "1"}),
+        ("http://minecraft.local/chat", {"msg": "[Tool] boot", "brief": "1"}),
     ]
     text = _text(result.content[0])
     assert "Claude @ (1,64,2), HP 20/20." in text
@@ -144,14 +150,20 @@ async def test_config_can_disable_chat_routing_after_boot(tmp_path: Path) -> Non
     result = await minecraft_tools.exec_minecraft(
         meta,
         minecraft_tools.MinecraftInput(
-            action="config", args={"chat_routing": False, "focus_mode": "combat"}
+            action="config",
+            args={
+                "chat_routing": False,
+                "tool_call_echo": False,
+                "focus_mode": "combat",
+            },
         ),
     )
 
     assert meta.minecraft_surface.chat_routing is False
+    assert meta.minecraft_surface.tool_call_echo is False
     assert meta.minecraft_surface.focus_mode == "combat"
     assert _text(result.content[0]) == (
-        "Minecraft config: chat routing off, focus combat."
+        "Minecraft config: chat routing off, tool echo off, focus combat."
     )
 
 
@@ -175,7 +187,11 @@ async def test_action_dispatch_sends_args_and_formats_spatial_context(
                         }
                     ],
                 },
-            )
+            ),
+            ("GET", "http://minecraft.local/chat"): _FakeResponse(
+                status=200,
+                payload={"ok": True},
+            ),
         },
     )
     meta = _meta(tmp_path)
@@ -193,7 +209,14 @@ async def test_action_dispatch_sends_args_and_formats_spatial_context(
         (
             "http://minecraft.local/find",
             {"name": "iron_ore", "radius": 16, "sense": "1", "brief": "1"},
-        )
+        ),
+        (
+            "http://minecraft.local/chat",
+            {
+                "msg": "[Tool] find iron_ore radius=16 sense=true",
+                "brief": "1",
+            },
+        ),
     ]
     text = _text(result.content[0])
     assert "Minecraft find complete." in text
@@ -209,7 +232,11 @@ async def test_golem_error_becomes_natural_tool_error(
             ("GET", "http://minecraft.local/blockat"): _FakeResponse(
                 status=200,
                 payload={"ok": False, "error": "not in my line of sight"},
-            )
+            ),
+            ("GET", "http://minecraft.local/chat"): _FakeResponse(
+                status=200,
+                payload={"ok": True},
+            ),
         },
     )
     meta = _meta(tmp_path)
@@ -227,3 +254,73 @@ async def test_golem_error_becomes_natural_tool_error(
     assert exc_info.value.message == (
         "you can't see that from here; walk closer or clear the view first."
     )
+
+
+@pytest.mark.parametrize(
+    ("action", "args", "expected"),
+    [
+        ("goto", {"x": 5, "y": 65, "z": 10}, "[Tool] goto x=5 y=65 z=10"),
+        ("mine", {"name": "iron_ore", "count": 3}, "[Tool] mine iron_ore count=3"),
+        (
+            "craft",
+            {"item": "stone_bricks", "count": 64},
+            "[Tool] craft stone_bricks count=64",
+        ),
+    ],
+)
+async def test_tool_echo_formats_action_and_key_args(
+    action: str, args: dict[str, Any], expected: str
+) -> None:
+    assert minecraft_tools._tool_echo_message(action, args) == expected
+
+
+async def test_tool_echo_can_be_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client(
+        monkeypatch,
+        {
+            ("GET", "http://minecraft.local/scene"): _FakeResponse(
+                status=200,
+                payload={"ok": True, "summary": "Facing N. all clear."},
+            )
+        },
+    )
+    meta = _meta(tmp_path)
+    assert isinstance(meta.minecraft_surface, MinecraftSurface)
+    meta.minecraft_surface.mark_booted()
+    meta.minecraft_surface.configure(tool_call_echo=False)
+
+    await minecraft_tools.exec_minecraft(
+        meta, minecraft_tools.MinecraftInput(action="scene")
+    )
+
+    assert _FakeAsyncClient.instances[0].gets == [
+        ("http://minecraft.local/scene", {"brief": "1"})
+    ]
+
+
+async def test_chat_action_is_not_echoed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client(
+        monkeypatch,
+        {
+            ("GET", "http://minecraft.local/chat"): _FakeResponse(
+                status=200,
+                payload={"ok": True, "said": "hello"},
+            )
+        },
+    )
+    meta = _meta(tmp_path)
+    assert isinstance(meta.minecraft_surface, MinecraftSurface)
+    meta.minecraft_surface.mark_booted()
+
+    await minecraft_tools.exec_minecraft(
+        meta,
+        minecraft_tools.MinecraftInput(action="chat", args={"msg": "hello"}),
+    )
+
+    assert _FakeAsyncClient.instances[0].gets == [
+        ("http://minecraft.local/chat", {"msg": "hello", "brief": "1"})
+    ]

@@ -10,6 +10,6 @@ Use one action string and an `args` object. Core actions:
 - `mine`: mine visible blocks by `name`, optional `count` and `radius`.
 - `craft`: craft an `item`, optional `count`.
 - `chat`: speak with `msg`, send paced `lines`, or listen with no args.
-- `config`: set `chat_routing` true/false.
+- `config`: set `chat_routing` or `tool_call_echo` true/false.
 
-When booted, normal assistant text is also spoken in Minecraft chat. Full verb reference lives in the Minecraft skill/field guide.
+When booted, normal assistant text is also spoken in Minecraft chat, and Minecraft tool calls are echoed as short `[Tool] ...` chat lines unless `tool_call_echo` is off. Full verb reference lives in the Minecraft skill/field guide.
