@@ -26,6 +26,7 @@ from spellbook.app.server import (
     create_app,
 )
 from spellbook.config import SpellbookConfig
+from spellbook.config_override import validate_override
 from spellbook.custom import CustomSurface
 from spellbook.homunculus.common import (
     AwarenessBudgetSnapshot,
@@ -69,6 +70,7 @@ class _FakeRuntime:
         self.conduits: list[dict] = []
         self.full_catchup_calls = 0
         self.lite_catchup_calls = 0
+        self.config_overrides: list[dict[str, object]] = []
         self._tmp_path = tmp_path
 
     async def startup(self) -> None:
@@ -127,6 +129,24 @@ class _FakeRuntime:
                 surface="Telegram",
                 surface_time=None,
             )
+        )
+
+    def append_config_override(
+        self,
+        *,
+        updates: dict[str, object],
+        source: str,
+        actor: str,
+        note: str | None = None,
+    ) -> None:
+        normalized = validate_override(updates)
+        self.config_overrides.append(
+            {
+                "updates": normalized,
+                "source": source,
+                "actor": actor,
+                "note": note,
+            }
         )
 
     async def submit_message(self, message: IRInboundMessage) -> SubmitMessageResponse:
@@ -349,6 +369,57 @@ def test_shutdown_route_stops_runtime_and_requests_process_shutdown(
     assert runtime.shutdown_called is True
     assert runtime.shutdown_calls >= 1
     assert shutdown_requests == ["requested"]
+
+
+def test_config_override_route_freezes_success_and_validation_contract(
+    tmp_path: Path,
+) -> None:
+    client, runtime = _make_app(tmp_path)
+
+    with client:
+        accepted = client.post(
+            "/config-override",
+            json={
+                "updates": {"hearth_interval_minutes": 40},
+                "source": "configurator",
+                "actor": "Ryan",
+                "note": "shorter cadence",
+            },
+        )
+        denied = client.post(
+            "/config-override",
+            json={
+                "updates": {"model": "different-model"},
+                "source": "configurator",
+                "actor": "Ryan",
+            },
+        )
+        unknown = client.post(
+            "/config-override",
+            json={
+                "updates": {"hearth_intervl_minutes": 40},
+                "source": "configurator",
+                "actor": "Ryan",
+            },
+        )
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"applies_at": "next_resume"}
+    assert runtime.config_overrides == [
+        {
+            "updates": {"hearth_interval_minutes": 40},
+            "source": "configurator",
+            "actor": "Ryan",
+            "note": "shorter cadence",
+        }
+    ]
+    assert denied.status_code == 400
+    assert "frozen identity field(s): model" in denied.json()["detail"]
+    assert unknown.status_code == 400
+    assert (
+        "unknown SpellbookConfig field(s): hearth_intervl_minutes"
+        in unknown.json()["detail"]
+    )
 
 
 def test_message_rejects_empty_and_unknown_fields(tmp_path: Path) -> None:

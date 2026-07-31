@@ -721,6 +721,17 @@ class IRRuntimeConfigRecord(BaseModel, frozen=True):
     turn_id: str
 
 
+class IRConfigOverrideRecord(BaseModel, frozen=True):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    ir: Literal["config_override"] = "config_override"
+    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source: str = Field(min_length=1)
+    actor: str = Field(min_length=1)
+    updates: dict[str, Any]
+    note: str | None = None
+
+
 class IRFooterQueueRecord(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
     session_id: str
@@ -872,6 +883,7 @@ IRRecord = Annotated[
     | IRBlockRecord
     | IRToolResultTTLRecord
     | IRRuntimeConfigRecord
+    | IRConfigOverrideRecord
     | IRFooterQueueRecord
     | IRFooterDrainRecord
     | IRBlockDetectionRecord

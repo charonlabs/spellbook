@@ -36,6 +36,11 @@ from spellbook.app.protocol import (
 )
 from spellbook.app.runtime import CoreAppRuntime
 from spellbook.config import SpellbookConfig
+from spellbook.config_override import (
+    ConfigOverrideBody,
+    ConfigOverrideResponse,
+    ConfigOverrideValidationError,
+)
 from spellbook.custom import CustomSurface
 from spellbook.ir_types import IRInboundMessage, IRUserTextBlock
 
@@ -245,6 +250,28 @@ def create_app(
         interrupted = await _runtime_from_request(request).interrupt()
         logger.info("interrupt.routed interrupted=%s", interrupted)
         return InterruptResponse(interrupted=interrupted)
+
+    @app.post("/config-override")
+    async def handle_config_override(
+        request: Request,
+        body: ConfigOverrideBody,
+    ) -> ConfigOverrideResponse:
+        try:
+            _runtime_from_request(request).append_config_override(
+                updates=body.updates,
+                source=body.source,
+                actor=body.actor,
+                note=body.note,
+            )
+        except ConfigOverrideValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.info(
+            "config_override.appended source=%r actor=%r fields=%s",
+            body.source,
+            body.actor,
+            sorted(body.updates),
+        )
+        return ConfigOverrideResponse()
 
     @app.post("/shutdown")
     async def handle_shutdown(

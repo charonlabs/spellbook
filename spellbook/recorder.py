@@ -9,6 +9,7 @@ from uuid import uuid4
 from spellbook.round_lifecycle import RoundContext, RoundLifecycle
 
 from .config import SessionType, SpellbookConfig
+from .config_override import validate_override
 from .image_blobs import persist_image_blobs_in_block
 from .ir_types import (
     IRBlock,
@@ -16,6 +17,7 @@ from .ir_types import (
     IRBlockRecord,
     IRContextPlan,
     IRContextPlanProposalRecord,
+    IRConfigOverrideRecord,
     IRExecution,
     IRFooter,
     IRFooterDrainRecord,
@@ -154,6 +156,27 @@ class Recorder:
             source=source,
             turn=self._turn,
             turn_id=self._curr_turn_id,
+        )
+        self._write_record(record)
+        return record
+
+    def write_config_override(
+        self,
+        *,
+        updates: dict[str, object],
+        source: str,
+        actor: str,
+        note: str | None = None,
+    ) -> IRConfigOverrideRecord:
+        """Append a validated override that takes effect on the next resume."""
+
+        normalized_updates = validate_override(updates)
+        record = IRConfigOverrideRecord(
+            session_id=self._session_id,
+            source=source,
+            actor=actor,
+            updates=normalized_updates,
+            note=note,
         )
         self._write_record(record)
         return record

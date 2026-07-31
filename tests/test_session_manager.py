@@ -754,6 +754,43 @@ class TestSessionProfileBuild:
         assert manager.executor.meta.body_url == "http://127.0.0.1:8765"
 
     @pytest.mark.asyncio
+    async def test_body_url_override_is_live_inert_then_mounts_on_resume(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "body_override.jsonl"
+        config = _config(tmp_path).model_copy(update={"skill_discovery_dirs": []})
+
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _DummyBackend(),
+        )
+
+        live = await SessionManager.build(transcript_path=transcript, config=config)
+        live.recorder.write_config_override(
+            updates={"body_url": "http://127.0.0.1:8765"},
+            source="configurator",
+            actor="Ryan",
+        )
+
+        assert live.config.body_url is None
+        assert "Body" not in live.tool_registry.tool_names
+
+        resumed = await SessionManager.build(transcript_path=transcript)
+
+        assert resumed.config.body_url == "http://127.0.0.1:8765"
+        assert "Body" in resumed.tool_registry.tool_names
+        assert resumed.executor.meta.body_url == "http://127.0.0.1:8765"
+        disclosure = resumed.homunculus._footer_c.peek_pending()[0]  # noqa: SLF001
+        assert disclosure.key == "config_override_disclosure"
+        assert (
+            "body_url null->http://127.0.0.1:8765 (source: configurator, by Ryan)"
+        ) in disclosure.text
+
+        replayed = Rehydrator(transcript).run()
+        assert replayed.config.body_url == "http://127.0.0.1:8765"
+        assert replayed.config_override_disclosure_footer is None
+
+    @pytest.mark.asyncio
     async def test_minecraft_url_mounts_minecraft_tool_and_metadata(
         self, tmp_path: Path, monkeypatch
     ) -> None:

@@ -25,6 +25,7 @@ from spellbook.ir_types import (
     IRAssistantTextBlock,
     IRBlock,
     IRBlockRecord,
+    IRConfigOverrideRecord,
     IRFooter,
     IRFooterDrainRecord,
     IRFooterQueueRecord,
@@ -419,6 +420,23 @@ class TestInboundMessage:
 
 
 class TestIRRecordDiscrimination:
+    def test_config_override_record_round_trips(self) -> None:
+        record = IRConfigOverrideRecord(
+            session_id="s1",
+            source="configurator",
+            actor="Ryan",
+            updates={"hearth_interval_minutes": 40},
+            note="shorter cadence",
+        )
+
+        parsed = TypeAdapter(IRRecord).validate_json(record.model_dump_json())
+
+        assert isinstance(parsed, IRConfigOverrideRecord)
+        assert parsed.updates == {"hearth_interval_minutes": 40}
+        assert parsed.source == "configurator"
+        assert parsed.actor == "Ryan"
+        assert parsed.note == "shorter cadence"
+
     def test_operator_semantic_mode_record_round_trips(self) -> None:
         record = IRSemanticBlockApplyModeRecord(
             session_id="s1",

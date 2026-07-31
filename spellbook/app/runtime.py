@@ -36,7 +36,12 @@ from spellbook.app.protocol import (
 from spellbook.config import SpellbookConfig
 from spellbook.custom import CustomSurface
 from spellbook.hearth import HearthScheduler
-from spellbook.ir_types import IRInboundMessage, IRLoopResult, IRUserTextBlock
+from spellbook.ir_types import (
+    IRConfigOverrideRecord,
+    IRInboundMessage,
+    IRLoopResult,
+    IRUserTextBlock,
+)
 from spellbook.minecraft_surface import MinecraftRoundLifecycle, MinecraftSurface
 from spellbook.rehydrator import Rehydrator
 from spellbook.round_lifecycle import CompositeRoundLifecycle
@@ -328,6 +333,24 @@ class CoreAppRuntime:
         async with self._command_lock:
             session = self._require_session()
             return session.interrupt()
+
+    def append_config_override(
+        self,
+        *,
+        updates: dict[str, object],
+        source: str,
+        actor: str,
+        note: str | None = None,
+    ) -> IRConfigOverrideRecord:
+        """Append an override without changing the live session config."""
+
+        session = self._require_session()
+        return session.recorder.write_config_override(
+            updates=updates,
+            source=source,
+            actor=actor,
+            note=note,
+        )
 
     def build_catchup(self) -> CatchupResponse:
         """Build a transcript-backed catchup snapshot."""

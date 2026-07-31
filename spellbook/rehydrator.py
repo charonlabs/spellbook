@@ -1,16 +1,27 @@
 """Rehydration from transcript back into memory."""
 
+from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from .config import SpellbookConfig
+from .config_override import (
+    CONFIG_OVERRIDE_DISCLOSURE_FOOTER_KEY,
+    CONFIG_OVERRIDE_DISCLOSURE_PRIORITY,
+    FROZEN_IDENTITY_FIELDS,
+    ConfigOverrideValidationError,
+    apply_override,
+)
 from .image_blobs import hydrate_image_blobs_in_block
 from .ir_types import (
     IRBlock,
     IRBlockDetectionRecord,
     IRBlockRecord,
+    IRConfigOverrideRecord,
     IRContextPlan,
     IRContextPlanProposalRecord,
     IRFooter,
@@ -44,6 +55,22 @@ MISSING_SKILL_CATALOG_ERROR = (
 )
 
 adapter = TypeAdapter(IRRecord)
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _OverrideEntry:
+    position: int
+    record: IRConfigOverrideRecord | None
+    raw: dict[str, Any] | None = None
+    parse_error: str | None = None
+
+
+@dataclass(frozen=True)
+class _ReadTranscript:
+    records: list[IRRecord]
+    override_entries: list[_OverrideEntry]
+    latest_disclosure_position: int
 
 
 class RehydrationResult(BaseModel, frozen=True):
@@ -65,6 +92,8 @@ class RehydrationResult(BaseModel, frozen=True):
     skill_catalog: IRSkillCatalog
     tool_result_ttls: list[IRToolResultTTLRecord] = Field(default_factory=list)
     runtime_config_updates: list[IRRuntimeConfigRecord] = Field(default_factory=list)
+    config_override_updates: list[IRConfigOverrideRecord] = Field(default_factory=list)
+    config_override_disclosure_footer: IRFooter | None = None
     system_responses: list[IRSystemResponseRecord] = Field(default_factory=list)
     is_unfinished_turn: bool = False
     current_turn_id: str | None = None
@@ -98,27 +127,76 @@ class Rehydrator:
                     raise ValueError(MISSING_SKILL_CATALOG_ERROR)
                 return
 
-    def _read_records(self) -> list[IRRecord]:
+    def _read_records(self) -> _ReadTranscript:
         records: list[IRRecord] = []
+        override_entries: list[_OverrideEntry] = []
+        latest_disclosure_position = -1
         with open(self._path, "r") as f:
-            for raw_line in f:
+            for position, raw_line in enumerate(f):
                 line = raw_line.strip()
                 if not line:
                     continue
-                # Fails loudly. Malformed transcripts should never silently sneak through.
-                records.append(adapter.validate_json(line))
-        return records
+                # Config overrides are the one poison-pill-safe exception to the
+                # normal fail-loud transcript policy.
+                try:
+                    record = adapter.validate_json(line)
+                except ValidationError as exc:
+                    try:
+                        raw_record = json.loads(line)
+                    except json.JSONDecodeError:
+                        raise exc
+                    if not (
+                        isinstance(raw_record, dict)
+                        and raw_record.get("ir") == "config_override"
+                    ):
+                        raise
+                    override_entries.append(
+                        _OverrideEntry(
+                            position=position,
+                            record=None,
+                            raw=raw_record,
+                            parse_error=str(exc),
+                        )
+                    )
+                    continue
+                records.append(record)
+                if isinstance(record, IRConfigOverrideRecord):
+                    override_entries.append(
+                        _OverrideEntry(position=position, record=record)
+                    )
+                elif (
+                    isinstance(record, IRFooterQueueRecord)
+                    and record.footer.key == CONFIG_OVERRIDE_DISCLOSURE_FOOTER_KEY
+                ):
+                    latest_disclosure_position = position
+        return _ReadTranscript(
+            records=records,
+            override_entries=override_entries,
+            latest_disclosure_position=latest_disclosure_position,
+        )
 
     def run(self) -> RehydrationResult:
         self._validate_session_record_shape()
-        records = self._read_records()
+        read_result = self._read_records()
+        records = read_result.records
+        session_record = next(
+            (record for record in records if isinstance(record, IRSessionRecord)),
+            None,
+        )
+        config: SpellbookConfig | None = None
+        disclosure_lines: list[str] = []
+        if session_record is not None:
+            config, disclosure_lines = self._merge_config_overrides(
+                session_record.config,
+                read_result.override_entries,
+                latest_disclosure_position=read_result.latest_disclosure_position,
+            )
         refusal_turns = {
             record.turn
             for record in records
             if isinstance(record, IRTurnEndRecord) and record.stop_reason == "refusal"
         }
         blocks: list[IRBlock] = []
-        config: SpellbookConfig | None = None
         tools: list[IRToolRecord] = []
         pending_footers: dict[str, IRFooter] = {}
         completed_semantic_block_ranges: list[IRSemanticBlockRange] = []
@@ -128,6 +206,7 @@ class Rehydrator:
         skill_catalog: IRSkillCatalog | None = None
         tool_result_ttls: list[IRToolResultTTLRecord] = []
         runtime_config_updates: list[IRRuntimeConfigRecord] = []
+        config_override_updates: list[IRConfigOverrideRecord] = []
         system_responses: list[IRSystemResponseRecord] = []
         current_turn: int = 0
         in_progress_turn: int | None = None
@@ -139,7 +218,7 @@ class Rehydrator:
         for record in records:
             match record:
                 case IRSessionRecord():
-                    config = record.config
+                    assert config is not None
                     session_id = record.session_id
                     skill_catalog = record.skill_catalog
                     # TODO: figure out how to deal with tool refreshing. In the old version,
@@ -192,6 +271,8 @@ class Rehydrator:
                     tool_result_ttls.append(record)
                 case IRRuntimeConfigRecord():
                     runtime_config_updates.append(record)
+                case IRConfigOverrideRecord():
+                    config_override_updates.append(record)
                 case IRSystemResponseRecord():
                     system_responses.append(record)
                 case IRFooterQueueRecord():
@@ -287,6 +368,23 @@ class Rehydrator:
             )
         if skill_catalog is None:
             raise ValueError(MISSING_SKILL_CATALOG_ERROR)
+        disclosure_footer: IRFooter | None = None
+        if disclosure_lines:
+            disclosure_text = "\n".join(disclosure_lines)
+            existing_disclosure = pending_footers.get(
+                CONFIG_OVERRIDE_DISCLOSURE_FOOTER_KEY
+            )
+            if existing_disclosure is not None:
+                disclosure_text = f"{existing_disclosure.text}\n{disclosure_text}"
+            disclosure_footer = IRFooter(
+                text=disclosure_text,
+                id="footer_config_override_disclosure",
+                type="notif",
+                source="runtime",
+                key=CONFIG_OVERRIDE_DISCLOSURE_FOOTER_KEY,
+                priority=CONFIG_OVERRIDE_DISCLOSURE_PRIORITY,
+            )
+            pending_footers[CONFIG_OVERRIDE_DISCLOSURE_FOOTER_KEY] = disclosure_footer
         if current_turn_id is not None:  # unfinished
             is_unfinished_turn = True
             in_progress_turn = current_turn
@@ -307,9 +405,119 @@ class Rehydrator:
             skill_catalog=skill_catalog,
             tool_result_ttls=tool_result_ttls,
             runtime_config_updates=runtime_config_updates,
+            config_override_updates=config_override_updates,
+            config_override_disclosure_footer=disclosure_footer,
             system_responses=system_responses,
             is_unfinished_turn=is_unfinished_turn,
             current_turn_id=current_turn_id,
             last_seq=current_seq,
             in_progress_turn=in_progress_turn,
         )
+
+    def _merge_config_overrides(
+        self,
+        base_config: SpellbookConfig,
+        entries: list[_OverrideEntry],
+        *,
+        latest_disclosure_position: int,
+    ) -> tuple[SpellbookConfig, list[str]]:
+        config = base_config
+        disclosure_lines: list[str] = []
+        for entry in entries:
+            record = entry.record
+            if record is None:
+                refusal = _malformed_override_refusal(entry)
+                logger.critical(
+                    "config_override.refused position=%s error=%s",
+                    entry.position,
+                    entry.parse_error,
+                )
+                if entry.position > latest_disclosure_position:
+                    disclosure_lines.append(refusal)
+                continue
+
+            try:
+                updated_config, effective_updates = apply_override(
+                    config, record.updates
+                )
+            except ConfigOverrideValidationError as exc:
+                refusal = _override_refusal(record, exc)
+                logger.critical(
+                    "config_override.refused position=%s source=%r actor=%r error=%s",
+                    entry.position,
+                    record.source,
+                    record.actor,
+                    exc,
+                )
+                if entry.position > latest_disclosure_position:
+                    disclosure_lines.append(refusal)
+                continue
+
+            if entry.position > latest_disclosure_position:
+                for field, new_value in effective_updates.items():
+                    old_value = getattr(config, field)
+                    disclosure_lines.append(
+                        "since you last ran, your config changed: "
+                        f"{field} {_format_override_value(old_value)}"
+                        f"->{_format_override_value(new_value)} "
+                        f"(source: {record.source}, by {record.actor})"
+                    )
+            config = updated_config
+        return config, disclosure_lines
+
+
+def _override_refusal(
+    record: IRConfigOverrideRecord, error: ConfigOverrideValidationError
+) -> str:
+    frozen_fields = sorted(set(record.updates) & FROZEN_IDENTITY_FIELDS)
+    if frozen_fields:
+        reason = "attempted to change " + ", ".join(frozen_fields)
+    else:
+        reason = str(error)
+    return (
+        f"a config override record was refused: {reason} "
+        f"(source: {record.source}, by {record.actor})"
+    )
+
+
+def _malformed_override_refusal(entry: _OverrideEntry) -> str:
+    raw = entry.raw or {}
+    updates = raw.get("updates")
+    frozen_fields = (
+        sorted(set(updates) & FROZEN_IDENTITY_FIELDS)
+        if isinstance(updates, dict)
+        else []
+    )
+    if frozen_fields:
+        reason = "attempted to change " + ", ".join(frozen_fields)
+    else:
+        reason = "malformed record"
+    attribution = _override_attribution(raw)
+    return f"a config override record was refused: {reason}{attribution}"
+
+
+def _override_attribution(raw: dict[str, Any]) -> str:
+    source = raw.get("source")
+    actor = raw.get("actor")
+    if isinstance(source, str) and isinstance(actor, str) and source and actor:
+        return f" (source: {source}, by {actor})"
+    if isinstance(source, str) and source:
+        return f" (source: {source})"
+    return ""
+
+
+def _format_override_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, str | Path):
+        return str(value)
+    if isinstance(value, BaseModel):
+        return value.model_dump_json()
+    if isinstance(value, set | frozenset):
+        return json.dumps(sorted(value), sort_keys=True)
+    try:
+        return json.dumps(value, sort_keys=True)
+    except TypeError:
+        return str(value)

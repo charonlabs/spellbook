@@ -404,6 +404,8 @@ class SessionManager:
             else rehydrated.in_progress_turn,
             seq=(rehydrated.last_seq + 1) if rehydrated.last_seq is not None else 0,
         )
+        if rehydrated.config_override_disclosure_footer is not None:
+            recorder.queue_footer(rehydrated.config_override_disclosure_footer)
         timekeeper: Timekeeper | None = None
         if profile.ambient_time:
             timekeeper = Timekeeper(config=config, footer_c=footer_controller)
