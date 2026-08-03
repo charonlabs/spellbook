@@ -378,6 +378,7 @@ FooterType = Literal[
     "skill_catalog_update",
     "conduit",
     "surface",
+    "minecraft",
 ]
 FooterSource = Literal[
     "telemetry",
@@ -387,6 +388,7 @@ FooterSource = Literal[
     "detector",
     "skill_manager",
     "runtime",
+    "minecraft",
 ]
 
 

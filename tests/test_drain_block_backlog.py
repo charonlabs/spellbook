@@ -223,7 +223,7 @@ def _runtime_builder(
             tok_counter=_FakeTokenCounter(),  # type: ignore[arg-type]
         ),
         context_projector=context_projector,
-        enable_block_metrics=False,
+        enable_block_metrics=True,
     )
     return DrainRuntime(block_manager=manager, nursery=nursery)
 
@@ -340,6 +340,23 @@ async def test_drain_block_backlog_appends_detection_and_summaries(
     assert all(
         "summary" in block.available_modes for block in rehydrated.semantic_blocks
     )
+    new_blocks = rehydrated.semantic_blocks[1:]
+    assert [
+        block.full_toks.tokens if block.full_toks else None for block in new_blocks
+    ] == [
+        2,
+        2,
+    ]
+    assert [block.toks.tokens if block.toks else None for block in new_blocks] == [2, 2]
+    assert [
+        next(
+            artifact.toks.tokens
+            for artifact in block.artifacts
+            if isinstance(artifact, IRSemanticBlockSummary)
+            and artifact.toks is not None
+        )
+        for block in new_blocks
+    ] == [1, 1]
 
 
 async def test_drain_block_backlog_discard_policy_supersedes_stale_buffered_ranges(

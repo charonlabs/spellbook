@@ -586,6 +586,12 @@ async def _run_drain_loop(
         summary_task=summary_task,
         event_printer=event_printer,
     )
+    await _wait_for_jobs(
+        manager,
+        nursery,
+        kind="block_metrics",
+        event_printer=event_printer,
+    )
     report.final_semantic_blocks = len(manager.semantic_blocks)
     report.final_summaries = _summary_count(manager.semantic_blocks)
     report.final_buffered_blocks = len(manager.proposed_semantic_blocks)
@@ -715,7 +721,7 @@ def _build_runtime(
         recorder=recorder,
         token_meter=TokenMeter(config=config.hom_config, tok_counter=token_counter),
         context_projector=context_projector,
-        enable_block_metrics=False,
+        enable_block_metrics=True,
     )
     return DrainRuntime(block_manager=manager, nursery=nursery)
 
