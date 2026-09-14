@@ -23,6 +23,7 @@ dream_archive/
 art/
 legacy_scripts/
 surgery/
+configs/
 
 # Local agent worktrees
 .chorus-worktrees/
