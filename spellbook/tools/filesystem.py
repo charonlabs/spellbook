@@ -211,6 +211,10 @@ async def exec_read(meta: ToolMetadata, input: ReadInput) -> ToolExecutionResult
     output = indicator
     if numbered:
         output = output + "\n" + "\n".join(numbered)
+    if len(output) > 256_000:
+        raise ToolError(
+            message=f"Read too large. {line_count} lines, {len(output)} chars. Try again in smaller slices."
+        )
 
     return ToolExecutionResult(
         content=_tool_text(output),
@@ -487,16 +491,6 @@ async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult
             else:
                 await wait_task
 
-        if timed_out:
-            output_complete = await _drain_bash_output(reader_task)
-            if not output_complete:
-                capture_output.clear()
-                keep_output_drain = True
-            partial_output = b"".join(collected).decode(errors="replace").rstrip()
-            raise ToolError(
-                f"Command timed out after {timeout_s:.0f}s\n{partial_output}"
-            )
-
         output_complete = await _drain_bash_output(reader_task)
         if not output_complete:
             capture_output.clear()
@@ -523,12 +517,26 @@ async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult
             if output
             else _BASH_BACKGROUND_OUTPUT_NOTE
         )
-    if proc.returncode != 0:
+    if timed_out:
+        output = f"Command timed out after {timeout_s:.0f}s\n{output}"
+    elif proc.returncode != 0:
         output = (
             f"Exit code {proc.returncode}\n{output}"
             if output
             else f"Exit code {proc.returncode}"
         )
+    if len(output) > 256_000:
+        status = (
+            f"Command timed out after {timeout_s:.0f}s"
+            if timed_out
+            else "Command executed"
+        )
+        raise ToolError(
+            f"{status}, but output too large. {len(output)} chars. "
+            f"The first 1000 chars of the output were: {output[:1000]}"
+        )
+    if timed_out:
+        raise ToolError(output)
     return ToolExecutionResult(
         content=_tool_text(output),
         display={

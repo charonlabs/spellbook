@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import shlex
 import signal
+import sys
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter
@@ -331,6 +333,38 @@ async def test_bash_happy_path_is_unchanged(tmp_path: Path) -> None:
     assert _result_text(result.content[0]) == "hello from bash"
     assert result.display["exit_code"] == 0
     assert result.display["stdout"] == "hello from bash"
+
+
+@pytest.mark.parametrize("output_size", [100, 256_000, 300_000])
+@pytest.mark.parametrize("timed_out", [False, True])
+async def test_bash_output_limit_includes_timeout_errors(
+    tmp_path: Path, output_size: int, timed_out: bool
+) -> None:
+    source = f"import time; print('x' * {output_size}, flush=True)"
+    if timed_out:
+        source += "; time.sleep(60)"
+    command = shlex.join([sys.executable, "-c", source])
+    input = BashInput(command=command, timeout=1000 if timed_out else 5000)
+
+    if not timed_out and output_size <= 256_000:
+        result = await exec_bash(_meta(tmp_path), input)
+        assert _result_text(result.content[0]) == "x" * output_size
+        return
+
+    with pytest.raises(ToolError) as excinfo:
+        await exec_bash(_meta(tmp_path), input)
+
+    message = excinfo.value.message
+    assert len(message) <= 256_000
+    if timed_out:
+        assert message.startswith("Command timed out after 1s")
+    if output_size >= 256_000:
+        assert "output too large" in message
+        assert "first 1000 chars" in message
+        assert "x" * 900 in message
+        assert "x" * 1001 not in message
+    else:
+        assert message == f"Command timed out after 1s\n{'x' * output_size}"
 
 
 async def test_bash_exited_shell_with_open_background_pipe_returns_promptly(
