@@ -50,7 +50,11 @@ from .cancel_token import CancelToken
 from .config import SpellbookConfig
 from .executor import Executor
 from .generator import Generator
-from .homunculus import Homunculus, HomunculusRoundLifecycle
+from .homunculus import (
+    ContextHistoryRoundLifecycle,
+    Homunculus,
+    HomunculusRoundLifecycle,
+)
 from .inbound import InboundInjectionRoundLifecycle, InboundMessageQueue
 from .recorder import Recorder, RecordingRoundLifecycle, RecordTap
 from .round_lifecycle import CompositeRoundLifecycle, RoundLifecycle
@@ -492,8 +496,14 @@ class SessionManager:
             )
             comp_round_lifecycle = CompositeRoundLifecycle(lifecycles=lifecycles)
         else:
+            # History is not an awareness feature: without it the next turn is
+            # rendered from inbound messages alone and the entity forgets its own
+            # output (thinking, text, tool calls and results) between turns.
             comp_round_lifecycle = CompositeRoundLifecycle(
-                lifecycles=[RecordingRoundLifecycle(recorder=recorder)]
+                lifecycles=[
+                    RecordingRoundLifecycle(recorder=recorder),
+                    ContextHistoryRoundLifecycle(homunculus=homunculus),
+                ]
             )
         if pre_round_lifecycle:
             comp_round_lifecycle.add_pre(pre_round_lifecycle)

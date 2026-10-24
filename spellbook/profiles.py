@@ -41,6 +41,8 @@ class SessionProfile(BaseModel, frozen=True):
     tool_surface: ToolSurface
     tool_metadata: ToolMetadataKind = "standard"
     custom_surface: bool = False
+    # Awareness round hooks: gas gauge, tool-result TTLs, planner, footers, sleep
+    # pressure. Conversation history between turns is kept either way.
     homunculus_lifecycle: bool = False
     block_detection: bool = False
     skill_discovery: bool = False

@@ -619,6 +619,14 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
         buffer.clear()
 
     for block in blocks:
+        if isinstance(block, IRThinkingBlock) and not block.signature:
+            # A turn interrupted mid-thinking leaves a thinking block with no
+            # signature. Anthropic rejects unsigned thinking (400 "Invalid
+            # `signature` in `thinking` block") and, since the block is in the
+            # transcript, would reject every later request too. Skip it here,
+            # at the provider projection; the transcript keeps it unchanged.
+            # Neighbouring blocks then merge as if it were never sent.
+            continue
         match block:
             case IRUserTextBlock():
                 if last_role == "assistant":

@@ -1,3 +1,13 @@
-from .homunculus import Homunculus, HomunculusConfig, HomunculusRoundLifecycle
+from .homunculus import (
+    ContextHistoryRoundLifecycle,
+    Homunculus,
+    HomunculusConfig,
+    HomunculusRoundLifecycle,
+)
 
-__all__ = ["Homunculus", "HomunculusConfig", "HomunculusRoundLifecycle"]
+__all__ = [
+    "ContextHistoryRoundLifecycle",
+    "Homunculus",
+    "HomunculusConfig",
+    "HomunculusRoundLifecycle",
+]

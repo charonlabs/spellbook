@@ -607,7 +607,10 @@ class TestSessionProfileBuild:
                     "AmendBlock",
                     "CompleteBlock",
                 },
-                "round_lifecycles": ["RecordingRoundLifecycle"],
+                "round_lifecycles": [
+                    "RecordingRoundLifecycle",
+                    "ContextHistoryRoundLifecycle",
+                ],
                 "session_lifecycles": ["SessionLifecycle"],
                 "meta_type": BlockDetectorToolMetadata,
             },
@@ -621,7 +624,10 @@ class TestSessionProfileBuild:
                 "fork_config": _summarizer_fork_config(),
                 "session_id_prefix": "bs_session_",
                 "tool_names": {"Summarize"},
-                "round_lifecycles": ["RecordingRoundLifecycle"],
+                "round_lifecycles": [
+                    "RecordingRoundLifecycle",
+                    "ContextHistoryRoundLifecycle",
+                ],
                 "session_lifecycles": ["SessionLifecycle"],
                 "meta_type": BlockSummarizerToolMetadata,
             },

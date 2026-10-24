@@ -301,3 +301,97 @@ def test_anthropic_stream_bypasses_typed_transform_helper() -> None:
     assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert body["stream"] is True
     assert call["kwargs"]["stream"] is True
+
+
+# --- Unsigned thinking (turn interrupted mid-thinking) ---------------------
+
+
+def _unsigned_thinking_messages(blocks: list[Any]) -> list[Any]:
+    from spellbook.backends.anthropic import _ir_blocks_to_message_params
+
+    return _ir_blocks_to_message_params(blocks)
+
+
+def test_unsigned_thinking_is_skipped_and_neighbours_merge() -> None:
+    from spellbook.ir_types import IRThinkingBlock, IRUserTextBlock
+
+    messages = _unsigned_thinking_messages(
+        [
+            IRUserTextBlock(text="first", origin="human"),
+            IRThinkingBlock(text="interrupted", signature=""),
+            IRUserTextBlock(text="second", origin="human"),
+        ]
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+        }
+    ]
+
+
+def test_unsigned_thinking_dropped_but_assistant_text_kept() -> None:
+    from spellbook.ir_types import (
+        IRAssistantTextBlock,
+        IRThinkingBlock,
+        IRUserTextBlock,
+    )
+
+    messages = _unsigned_thinking_messages(
+        [
+            IRUserTextBlock(text="hi", origin="human"),
+            IRThinkingBlock(text="partial", signature=""),
+            IRAssistantTextBlock(text="partial answer"),
+            IRUserTextBlock(text="again", origin="human"),
+        ]
+    )
+
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[1]["content"] == [{"type": "text", "text": "partial answer"}]
+
+
+def test_signed_thinking_only_turn_is_sent_with_signature() -> None:
+    from spellbook.ir_types import IRThinkingBlock, IRUserTextBlock
+
+    messages = _unsigned_thinking_messages(
+        [
+            IRUserTextBlock(text="solve", origin="human"),
+            IRThinkingBlock(text="hit max_tokens here", signature="sig-abc"),
+            IRUserTextBlock(text="keep going", origin="human"),
+        ]
+    )
+
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[1]["content"] == [
+        {"type": "thinking", "thinking": "hit max_tokens here", "signature": "sig-abc"}
+    ]
+
+
+def test_cancelled_snapshot_thinking_never_reaches_request_surface() -> None:
+    """End to end through the backend: a partial (cancelled) generation's
+    unsigned thinking stays in IR but is absent from the provider request."""
+    from spellbook.ir_types import IRThinkingBlock, IRUserTextBlock
+
+    backend = AnthropicBackend(client=cast(AsyncAnthropic, _FakeAnthropicClient()))
+    surface = backend.build_request_surface(
+        model="claude-sonnet-4-6",
+        system="system",
+        blocks=[
+            IRUserTextBlock(text="think", origin="human"),
+            IRThinkingBlock(text="half", signature=""),
+            IRUserTextBlock(text="hello?", origin="human"),
+        ],
+        tools=[],
+        max_output_tokens=1024,
+        effort="high",
+    )
+
+    assert all(
+        part["type"] != "thinking"
+        for message in surface.messages
+        for part in message["content"]
+    )

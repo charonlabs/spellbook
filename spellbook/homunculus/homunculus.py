@@ -1166,7 +1166,45 @@ class Homunculus:
         )
 
 
+class ContextHistoryRoundLifecycle(RoundLifecycle):
+    """Conversation history only: carry each round's output into the next turn.
+
+    The loop keeps generations and executions in ``RoundContext.blocks`` for the
+    rest of the current turn, but the *next* turn is rendered from the
+    Homunculus (``render_context``). Something must hand every generation and
+    execution to it, or the entity forgets its own output between turns.
+
+    ``HomunculusRoundLifecycle`` does this as part of full awareness. This
+    lifecycle is the history-only half, for profiles with
+    ``homunculus_lifecycle=False``: blocks (and generation usage, for the token
+    meter) are integrated, and nothing else. There is no gas gauge, no TTL
+    registration, no planner, no footers, and no compaction.
+    """
+
+    def __init__(self, homunculus: Homunculus):
+        self._homunculus = homunculus
+
+    async def after_generate(
+        self,
+        ctx: RoundContext,
+        generation: IRGeneration,
+    ) -> None:
+        await self._homunculus.integrate_context_blocks(
+            generation.blocks, usage=generation.usage
+        )
+
+    async def after_execute(
+        self,
+        ctx: RoundContext,
+        execution: IRExecution,
+    ) -> None:
+        await self._homunculus.integrate_context_blocks(execution.blocks)
+
+
 class HomunculusRoundLifecycle(RoundLifecycle):
+    """Full awareness: history (with gas gauge + TTL observation) plus
+    between-round nursery, TTL ticks, planner, rerender, and sleep pressure."""
+
     def __init__(self, homunculus: Homunculus):
         self._homunculus = homunculus
 
