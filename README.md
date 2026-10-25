@@ -61,6 +61,37 @@ The inner loop is 96 lines. Everything else — memory management, block detecti
 
 ## Orientation Profiles
 
+New entities launched through `spellbook serve` use
+[`minimal.md`](spellbook/orientation/minimal.md) by default. Omitting
+`prompt.orientation` is equivalent to setting it to `"default"`. The shared runtime
+prompt helpers, including `scripts/server.py`, use the same default.
+
+To keep model-specific orientation selection, opt in explicitly:
+
+```toml
+[entity]
+model = "claude-opus-4-7"
+
+[prompt]
+orientation = "auto"
+```
+
+`"auto"` preserves exact-slug files, the model mapping, and family matching; models
+without a matching orientation fall back to `minimal.md`. You can also set
+`prompt.orientation` to a Markdown path, relative to the TOML file. CLI
+`--orientation` overrides the setting, with relative paths resolved from the
+invocation directory. Resumed sessions keep their recorded system prompt.
+
+Orientation templates support `{model_orientation_line}` for a complete identity
+line. Add slug-specific wording to `MODEL_ORIENTATION_LINES` in
+[`spellbook/orientation/__init__.py`](spellbook/orientation/__init__.py); for example,
+`claude-fable-5-1` renders as "You are a Claude Mythos 5.1 entity." Other slugs use
+"You are a &lt;display name&gt; entity." The `{model}` and `{model_name}` placeholders
+still expand to display names, and the provider model slug is unchanged.
+`{cwd}`, `{is_git_repo}`, `{platform}`, and `{user_name}` are also supported.
+Role and frame text is appended without placeholder substitution; include a role
+heading in that text if desired.
+
 Different models think differently. A Claude 4.6 entity benefits from full tool documentation. A Claude 4.7 entity already knows the tools from training and benefits more from self-work guidance. A GPT 5.5 entity has its own cognitive texture.
 
 Spellbook ships with orientation profiles written **by each model for its own kind:**

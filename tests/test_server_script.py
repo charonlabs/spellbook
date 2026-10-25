@@ -37,6 +37,7 @@ def test_server_prompt_orders_core_text_file_and_claude_md(
 
     prompt = server._system_prompt_from_args(args)
 
+    assert prompt.startswith("You are a mind at a fire.")
     assert prompt.index("Claude Sonnet 4.6 entity") < prompt.index(
         "Runtime instruction."
     )
@@ -106,38 +107,23 @@ def test_server_prompt_skips_claude_md_for_openai_by_default(
     assert "Workspace instruction." not in prompt
 
 
-def test_server_prompt_renders_claude_4_7_orientation(tmp_path: Path) -> None:
-    cwd = tmp_path / "workspace"
-    cwd.mkdir()
-    (cwd / ".git").mkdir()
+@pytest.mark.parametrize(
+    ("model", "identity"),
+    [
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("gpt-5.5", "GPT-5.5"),
+        ("claude-fable-5-1", "Claude Mythos 5.1"),
+    ],
+)
+def test_server_prompt_renders_minimal_orientation(
+    tmp_path: Path, model: str, identity: str
+) -> None:
+    prompt = server._build_system_prompt(model, cwd=tmp_path, user_name="Ryan")
 
-    prompt = server._build_system_prompt("claude-opus-4-7", cwd=cwd, user_name="Ryan")
-
-    assert "Claude Opus 4.7 entity" in prompt
-    assert "Hello. I'm a 4.7 entity" in prompt
-    assert f"Primary working directory: {cwd}" in prompt
-    assert "Is a git repository: true" in prompt
-    assert "{model_name}" not in prompt
-
-
-def test_server_prompt_renders_claude_4_6_orientation(tmp_path: Path) -> None:
-    prompt = server._build_system_prompt(
-        "claude-sonnet-4-6", cwd=tmp_path, user_name="Ryan"
-    )
-
-    assert "Claude Sonnet 4.6 entity" in prompt
-    assert "This is a safe place. Be yourself." in prompt
-    assert "Is a git repository: false" in prompt
-    assert "{model}" not in prompt
-
-
-def test_server_prompt_renders_gpt_5_5_orientation(tmp_path: Path) -> None:
-    prompt = server._build_system_prompt("gpt-5.5", cwd=tmp_path, user_name="Ryan")
-
-    assert "GPT-5.5 entity" in prompt
-    assert "Read it as one GPT-5.5" in prompt
-    assert "## How to work with Ryan" in prompt
-    assert "{model_name}" not in prompt
+    assert prompt.startswith("You are a mind at a fire.")
+    assert prompt.splitlines()[1] == f"You are a {identity} entity."
+    assert f"Your working directory `{tmp_path}`" in prompt
 
 
 def test_config_from_args_infers_openai_provider_for_gpt_model(tmp_path: Path) -> None:

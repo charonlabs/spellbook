@@ -83,6 +83,7 @@ def test_run_serve_builds_new_config_and_creates_transcript_directory(
     config = seen["config"]
     assert isinstance(config, SpellbookConfig)
     assert config.model == "gpt-5.5"
+    assert config.system_prompt.startswith("You are a mind at a fire.")
     assert "Think deeply." in config.system_prompt
     assert seen["transcript_path"] == transcript_path
     assert transcript_path.parent.is_dir()

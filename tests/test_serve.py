@@ -29,6 +29,88 @@ def test_minimal_entity_file_infers_provider_and_uses_safe_defaults(
     assert config.tool_categories == {"main"}
     assert config.hearth_enabled is False
     assert "Claude Sonnet 4.6 entity" in config.system_prompt
+    assert config.system_prompt.startswith("You are a mind at a fire.")
+    assert f"Your working directory `{config.cwd}`" in config.system_prompt
+    assert "{CWD}" not in config.system_prompt
+    assert "## Your role" not in config.system_prompt
+
+
+@pytest.mark.parametrize("orientation", [None, "default"])
+@pytest.mark.parametrize(
+    ("model", "identity"),
+    [
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("gpt-5.5", "GPT-5.5"),
+        ("claude-fable-5-1", "Claude Mythos 5.1"),
+    ],
+)
+def test_new_entity_uses_minimal_orientation(
+    tmp_path: Path, orientation: str | None, model: str, identity: str
+) -> None:
+    config_path = tmp_path / "entity.toml"
+    text = f'[entity]\nmodel = "{model}"\n'
+    if orientation is not None:
+        text += f'[prompt]\norientation = "{orientation}"\n'
+    config_path.write_text(text, encoding="utf-8")
+
+    config = build_spellbook_config(load_entity_file(config_path))
+
+    assert config.model == model
+    assert config.system_prompt.startswith("You are a mind at a fire.")
+    assert config.system_prompt.splitlines()[1] == f"You are a {identity} entity."
+    assert "{model_orientation_line}" not in config.system_prompt
+
+
+@pytest.mark.parametrize(
+    ("model", "marker"),
+    [
+        ("claude-sonnet-4-6", "This is a safe place. Be yourself."),
+        ("claude-opus-4-6", "This is a safe place. Be yourself."),
+        ("claude-opus-4-7", "Hello. I'm a 4.7 entity"),
+        ("gpt-5.5", "Read it as one GPT-5.5"),
+        ("claude-fable-5", "# To the Fable reading this"),
+        ("claude-sonnet-4-6-20260101", "This is a safe place. Be yourself."),
+        ("claude-opus-4-7-20260101", "Hello. I'm a 4.7 entity"),
+        ("gpt-5.5-20260101", "Read it as one GPT-5.5"),
+    ],
+)
+def test_explicit_auto_keeps_model_specific_orientations(
+    tmp_path: Path, model: str, marker: str
+) -> None:
+    config_path = tmp_path / "entity.toml"
+    config_path.write_text(
+        f'[entity]\nmodel = "{model}"\n[prompt]\norientation = "auto"\n',
+        encoding="utf-8",
+    )
+
+    config = build_spellbook_config(load_entity_file(config_path))
+
+    assert marker in config.system_prompt
+    assert "You are a mind at a fire." not in config.system_prompt
+
+
+@pytest.mark.parametrize(
+    ("configured", "override", "marker"),
+    [
+        ("default", "auto", "Hello. I'm a 4.7 entity"),
+        ("auto", "default", "You are a mind at a fire."),
+    ],
+)
+def test_orientation_cli_override_takes_precedence(
+    tmp_path: Path, configured: str, override: str, marker: str
+) -> None:
+    config_path = tmp_path / "entity.toml"
+    config_path.write_text(
+        '[entity]\nmodel = "claude-opus-4-7"\n'
+        f'[prompt]\norientation = "{configured}"\n',
+        encoding="utf-8",
+    )
+
+    config = build_spellbook_config(
+        load_entity_file(config_path), ServeOverrides(orientation=override)
+    )
+
+    assert marker in config.system_prompt
 
 
 def test_full_entity_file_maps_to_runtime_config_and_composes_prompt(
@@ -183,19 +265,21 @@ detect_interval = 150
     assert "Discovered via CLI override." in config.system_prompt
 
 
-def test_auto_orientation_falls_back_to_default_for_explicit_local_provider(
-    tmp_path: Path,
+@pytest.mark.parametrize("orientation", ["default", "auto"])
+def test_unknown_model_uses_minimal_orientation(
+    tmp_path: Path, orientation: str
 ) -> None:
     config_path = tmp_path / "entity.toml"
     config_path.write_text(
-        '[entity]\nmodel = "local-mind"\nprovider = "local"\n',
+        '[entity]\nmodel = "local-mind"\nprovider = "local"\n'
+        f'[prompt]\norientation = "{orientation}"\n',
         encoding="utf-8",
     )
 
     config = build_spellbook_config(load_entity_file(config_path))
 
     assert "You are a local-mind entity" in config.system_prompt
-    assert "This is a safe place. Be yourself." in config.system_prompt
+    assert config.system_prompt.startswith("You are a mind at a fire.")
 
 
 def test_chorus_environment_is_fallback_and_cli_can_clear_it(

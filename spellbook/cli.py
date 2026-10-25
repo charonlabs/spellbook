@@ -70,7 +70,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--session-type",
         choices=("main", "custom", "block_detector", "block_summarizer", "quantum"),
     )
-    serve.add_argument("--orientation", help="Override prompt.orientation.")
+    serve.add_argument(
+        "--orientation",
+        help=(
+            "Override prompt.orientation: 'default' uses minimal.md, 'auto' selects "
+            "a model-specific template, or provide an orientation file path."
+        ),
+    )
     role_source = serve.add_mutually_exclusive_group()
     role_source.add_argument("--role", help="Override prompt.role with inline text.")
     role_source.add_argument(

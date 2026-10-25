@@ -67,7 +67,7 @@ class EntitySection(_Section):
 
 
 class PromptSection(_Section):
-    orientation: str = "auto"
+    orientation: str = "default"
     role: str | None = None
     role_file: Path | None = None
     frame: str | None = None

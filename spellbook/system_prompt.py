@@ -7,7 +7,7 @@ from pathlib import Path
 
 from spellbook.config import DEFAULT_USER_NAME
 from spellbook.frame_lite import build_system_prompt_with_addenda
-from spellbook.orientation import build_core_orientation
+from spellbook.orientation import build_default_orientation
 
 
 def build_runtime_orientation(
@@ -16,9 +16,9 @@ def build_runtime_orientation(
     cwd: Path,
     user_name: str = DEFAULT_USER_NAME,
 ) -> str:
-    """Render the model-specific core orientation."""
+    """Render the default harness orientation with the model's identity line."""
 
-    return build_core_orientation(
+    return build_default_orientation(
         model,
         cwd=cwd.expanduser().resolve(),
         user_name=user_name,

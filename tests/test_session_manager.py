@@ -68,6 +68,7 @@ from spellbook.round_lifecycle import (
     RoundLifecycle,
 )
 from spellbook.loop import run_loop
+from spellbook.serve import build_spellbook_config, load_entity_file
 from spellbook.session_lifecycle import (
     CompositeSessionLifecycle,
     DreamingOutcome,
@@ -1599,6 +1600,46 @@ class TestCompositeRoundLifecycle:
 
 
 class TestBuildResumeBehavior:
+    @pytest.mark.asyncio
+    async def test_resume_keeps_recorded_orientation_when_new_config_uses_minimal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transcript = tmp_path / "existing.jsonl"
+        config_path = tmp_path / "entity.toml"
+        entity_text = (
+            '[entity]\nmodel = "claude-sonnet-4-6"\ncwd = "."\n'
+            "[discovery]\nskill_discovery_dirs = []\n"
+        )
+        config_path.write_text(
+            entity_text + '[prompt]\norientation = "auto"\n', encoding="utf-8"
+        )
+        recorded_config = build_spellbook_config(load_entity_file(config_path))
+        recorder = Recorder(
+            recorded_config, transcript, "session_existing", DEFAULT_TOOL_REGISTRY
+        )
+        recorder.write_session_record(skill_catalog=IRSkillCatalog())
+
+        config_path.write_text(entity_text, encoding="utf-8")
+        new_config = build_spellbook_config(load_entity_file(config_path))
+        assert new_config.system_prompt.startswith("You are a mind at a fire.")
+        monkeypatch.setattr(
+            "spellbook.session_manager.build_backend",
+            lambda config: _ScriptedBackend([]),
+        )
+
+        manager = await SessionManager.build(
+            transcript_path=transcript, config=new_config
+        )
+
+        assert "This is a safe place. Be yourself." in manager.config.system_prompt
+        assert manager.config.system_prompt == recorded_config.system_prompt
+        assert (
+            manager.generator.builder.build([]).system == recorded_config.system_prompt
+        )
+        assert Rehydrator(transcript).run().config.system_prompt == (
+            recorded_config.system_prompt
+        )
+
     @pytest.mark.asyncio
     async def test_build_new_session_creates_transcript_and_initializes_manager(
         self, tmp_path: Path

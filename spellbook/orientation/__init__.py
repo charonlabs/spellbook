@@ -1,4 +1,11 @@
-"""Core orientation prompt rendering."""
+"""Core orientation prompt rendering.
+
+The default template is model-independent; explicit ``auto`` selection uses
+the existing model-specific templates. Templates accept literal, case-sensitive
+placeholders: ``{model_orientation_line}`` is a complete identity line, while
+``{model}`` and ``{model_name}`` remain display names for existing templates.
+Unknown placeholders are preserved.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +13,15 @@ import platform
 from pathlib import Path
 
 ORIENTATION_DIR = Path(__file__).resolve().parent
-DEFAULT_ORIENTATION_FILENAME = "claude-4-6.md"
+DEFAULT_ORIENTATION_FILENAME = "minimal.md"
 ORIENTATION_BY_MODEL_SLUG = {
     "claude-opus-4-7": "claude-4-7.md",
     "claude-opus-4-6": "claude-4-6.md",
     "claude-sonnet-4-6": "claude-4-6.md",
     "gpt-5.5": "gpt-5.5.md",
+}
+MODEL_ORIENTATION_LINES: dict[str, str] = {
+    "claude-fable-5-1": "You are a Claude Mythos 5.1 entity.",
 }
 
 
@@ -39,6 +49,14 @@ def model_slug_to_name(slug: str) -> str:
             return slug
 
 
+def model_slug_to_orientation_line(slug: str) -> str:
+    """Return a complete identity line without changing the provider model slug."""
+
+    return MODEL_ORIENTATION_LINES.get(
+        slug, f"You are a {model_slug_to_name(slug)} entity."
+    )
+
+
 def orientation_filename_for_model(model: str) -> str:
     exact_match = ORIENTATION_DIR / f"{model}.md"
     if exact_match.is_file():
@@ -64,7 +82,7 @@ def build_core_orientation(model: str, *, cwd: Path, user_name: str) -> str:
 
 
 def build_default_orientation(model: str, *, cwd: Path, user_name: str) -> str:
-    """Render the general harness orientation for an unrecognized model slug."""
+    """Render the general harness orientation for any model slug."""
 
     return build_orientation_from_file(
         ORIENTATION_DIR / DEFAULT_ORIENTATION_FILENAME,
@@ -86,6 +104,7 @@ def build_orientation_from_file(
     template = orientation_path.read_text(encoding="utf-8")
     model_name = model_slug_to_name(model)
     replacements = {
+        "{model_orientation_line}": model_slug_to_orientation_line(model),
         "{model_name}": model_name,
         "{model}": model_name,
         "{cwd}": str(cwd),

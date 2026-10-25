@@ -98,6 +98,7 @@ class SpellbookConfig(BaseModel, frozen=True):
     chorus_entity_name: str | None = None
     body_url: str | None = None
     minecraft_url: str | None = None
+    base_url: str | None = None  # Custom API base URL (e.g., local vLLM server)
     sleep_enabled: bool = False
     session_type: SessionType = "main"
     profile: SessionProfile = Field(
