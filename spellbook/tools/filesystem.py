@@ -429,6 +429,12 @@ async def _stop_process_group(
 async def exec_bash(meta: ToolMetadata, input: BashInput) -> ToolExecutionResult:
     timeout_ms = input.timeout or BASH_TOOL_DEFAULT_TIMEOUT_MS
     timeout_ms = min(timeout_ms, BASH_TOOL_MAX_TIMEOUT_MS)
+    if meta.provider_bash is not None:
+        # Provider mode: the command runs in a sandbox behind safety review,
+        # never as a host subprocess.
+        return await meta.provider_bash.run(
+            input.command, timeout_ms=timeout_ms, context=meta.last_human_message
+        )
     timeout_s = timeout_ms / 1000
 
     start = perf_counter()

@@ -124,6 +124,12 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--minecraft-url")
     serve.add_argument("--chorus-url")
     serve.add_argument("--chorus-entity-name")
+    serve.add_argument(
+        "--provider-url",
+        help="Override tools.provider_url: run Bash in a Chorus Provider sandbox.",
+    )
+    serve.add_argument("--provider-auth-url", help="Override tools.provider_auth_url.")
+    serve.add_argument("--provider-entity", help="Override tools.provider_entity.")
     serve.add_argument("--host", default=DEFAULT_HOST)
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve.add_argument("--env", type=Path, default=DEFAULT_ENV_PATH)
@@ -199,6 +205,9 @@ def _overrides_from_args(args: argparse.Namespace) -> ServeOverrides:
         minecraft_url=args.minecraft_url,
         chorus_url=args.chorus_url,
         chorus_entity_name=args.chorus_entity_name,
+        provider_url=args.provider_url,
+        provider_auth_url=args.provider_auth_url,
+        provider_entity=args.provider_entity,
     )
 
 

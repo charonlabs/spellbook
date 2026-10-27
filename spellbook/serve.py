@@ -44,6 +44,19 @@ CHORUS_URL_ENV = "CHORUS_URL"
 MINICHORUS_SERVER_URL_ENV = "MINICHORUS_SERVER_URL"
 
 
+PROVIDER_EXECUTION_NOTE = """## Where your commands run
+
+Your Bash commands run in an isolated sandbox, not on this host. Each command \
+starts in `/workspace`, a private scratch filesystem that persists between your \
+commands for the session but is separate from your working directory here: \
+Read, Write and Edit act on the host files, Bash acts on the sandbox. The \
+sandbox has no network access, and it is reset if it sits idle for a long \
+time or a command is interrupted; you will be told when that happens.
+
+Your commands pass through safety review. If something is flagged, you'll get \
+a clear reason and a path forward. This is a safety net, not a cage."""
+
+
 class ServeConfigError(ValueError):
     """A user-facing error in an entity TOML file or serve override."""
 
@@ -111,6 +124,11 @@ class ToolsSection(_Section):
     minecraft_url: str = ""
     chorus_url: str = ""
     chorus_entity_name: str = ""
+    # Route Bash through the Chorus Provider sandbox (empty = local subprocess).
+    provider_url: str = ""
+    provider_auth_url: str = ""
+    provider_entity: str = ""
+    provider_admin_token_file: Path | None = None
 
 
 class EntityFile(_Section):
@@ -169,6 +187,9 @@ class ServeOverrides:
     minecraft_url: str | None = None
     chorus_url: str | None = None
     chorus_entity_name: str | None = None
+    provider_url: str | None = None
+    provider_auth_url: str | None = None
+    provider_entity: str | None = None
 
 
 def load_entity_file(path: Path | None) -> LoadedEntityFile:
@@ -225,12 +246,15 @@ def build_spellbook_config(
         default=Path.cwd(),
     )
     user_name = overrides.user_name or entity.user_name
+    tools = source.tools
+    provider_url = _override_optional_url(overrides.provider_url, tools.provider_url)
     system_prompt = compose_system_prompt(
         loaded,
         model=model,
         cwd=cwd,
         user_name=user_name,
         overrides=overrides,
+        provider_execution=provider_url is not None,
     )
     ttl = source.homunculus.ttl
     hom_config = HomunculusConfig(
@@ -253,12 +277,19 @@ def build_spellbook_config(
             overrides.ttl_char_threshold, ttl.char_threshold
         ),
     )
-    tools = source.tools
     tool_categories = _prefer(overrides.tool_categories, tools.categories)
     body_url = _override_optional_url(overrides.body_url, tools.body_url)
     minecraft_url = _override_optional_url(overrides.minecraft_url, tools.minecraft_url)
     chorus_url = _chorus_url(overrides, tools)
     chorus_entity_name = _chorus_entity_name(overrides, tools)
+    provider_entity = _override_optional_url(
+        overrides.provider_entity, tools.provider_entity
+    )
+    if provider_url is not None and (provider_entity or chorus_entity_name) is None:
+        raise ServeConfigError(
+            "tools.provider_url requires tools.provider_entity (or a Chorus entity "
+            "name) to identify this entity to the Provider."
+        )
     _validate_tool_dependencies(
         categories=tool_categories,
         body_url=body_url,
@@ -291,6 +322,16 @@ def build_spellbook_config(
         "chorus_entity_name": chorus_entity_name,
         "body_url": body_url,
         "minecraft_url": minecraft_url,
+        "provider_url": provider_url,
+        "provider_auth_url": _override_optional_url(
+            overrides.provider_auth_url, tools.provider_auth_url
+        ),
+        "provider_entity": provider_entity,
+        "provider_admin_token_file": (
+            _resolve_path(tools.provider_admin_token_file, base_dir=loaded.base_dir)
+            if tools.provider_admin_token_file is not None
+            else None
+        ),
         "session_type": _prefer(overrides.session_type, entity.session_type),
         "cwd": cwd,
         "system_prompt": system_prompt,
@@ -314,6 +355,7 @@ def compose_system_prompt(
     cwd: Path,
     user_name: str,
     overrides: ServeOverrides = ServeOverrides(),
+    provider_execution: bool = False,
 ) -> str:
     """Compose orientation, role, frame, and optional discovered local frame."""
 
@@ -358,7 +400,15 @@ def compose_system_prompt(
     return build_system_prompt_with_addenda(
         orientation,
         cwd=cwd,
-        addenda=(value for value in (role, frame) if value is not None),
+        addenda=(
+            value
+            for value in (
+                PROVIDER_EXECUTION_NOTE if provider_execution else None,
+                role,
+                frame,
+            )
+            if value is not None
+        ),
         discover_claude_md=discover_local,
     )
 

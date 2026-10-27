@@ -164,6 +164,31 @@ Spellbook ships with a complete tool surface:
 
 Tools are registered in a typed `ToolRegistry` with Pydantic input models and structured results. Adding a tool is: define an input model, write an async handler, register it.
 
+### Bash through the Chorus Provider
+
+By default Bash runs host subprocesses. Setting `tools.provider_url` routes it
+through the [Chorus Provider](../provider) instead: each command runs in a
+gVisor sandbox (`/workspace`, no network), behind optional Sentry safety review.
+
+```toml
+[tools]
+provider_url = "http://127.0.0.1:8787"
+provider_entity = "wanderer"          # defaults to chorus_entity_name
+# provider_auth_url = "http://127.0.0.1:8788"
+# provider_admin_token_file = "admin.token"  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
+```
+
+Install the client with `uv sync --extra provider`. CLI overrides:
+`--provider-url`, `--provider-auth-url`, `--provider-entity`.
+
+- One sandbox per session, created on the first command, replaced (with a note
+  to the entity) if Provider reaps it, destroyed at session shutdown.
+- Each exec carries the latest **human** message as review `context` (≤16 KiB);
+  model output, conduit messages and footers are never used.
+- A command stopped by review becomes a `ToolError` with Provider's reason.
+- The system prompt tells the entity where its commands run and that review
+  exists. Read/Write/Edit still act on the host filesystem.
+
 ## App Server API
 
 | Endpoint | What it does |

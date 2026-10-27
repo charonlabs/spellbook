@@ -44,6 +44,7 @@ from spellbook.timekeeper import (
     TimekeeperSessionLifecycle,
 )
 from spellbook.tools.common import ToolMetadata
+from spellbook.tools.provider_bash import HumanContextRoundLifecycle
 from spellbook.tools.registry import ToolRegistry
 
 from .cancel_token import CancelToken
@@ -138,9 +139,19 @@ class SessionManager:
             if not self._shutdown_requested:
                 await self._running_phase()
         self.state = "suspended"
+        await self._close_provider_bash()
         await self.homunculus.shutdown()
         await self.debug_emitter.close()
         await self.session_lifecycle.on_shutdown(self._ctx)
+
+    async def _close_provider_bash(self) -> None:
+        meta = getattr(self.executor, "meta", None)
+        provider_bash = getattr(meta, "provider_bash", None)
+        if provider_bash is not None:
+            try:
+                await provider_bash.aclose()
+            except Exception:
+                logger.exception("Provider sandbox cleanup failed")
 
     async def _shutdown_from_idle(self) -> None:
         await self.session_lifecycle.on_exit_idle(self._ctx, reason="shutdown")
@@ -522,6 +533,9 @@ class SessionManager:
             registry=tool_registry,
             fork_config=fork_config,
         )
+        if executor.meta.provider_bash is not None:
+            # Provider safety-review context: the latest human message only.
+            comp_round_lifecycle.add_post(HumanContextRoundLifecycle(executor.meta))
         return cls(
             session_id=session_id,
             inbound_queue=inbound_queue,
