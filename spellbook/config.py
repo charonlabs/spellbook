@@ -106,6 +106,10 @@ class SpellbookConfig(BaseModel, frozen=True):
     provider_auth_url: str | None = None  # default DEFAULT_PROVIDER_AUTH_URL
     provider_entity: str | None = None  # default chorus_entity_name
     provider_admin_token_file: Path | None = None  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
+    # Role at summon time. Familiars create/destroy their own sandboxes; every
+    # other role works in the sandbox the orchestrator assigned (sandbox id).
+    provider_role: str = "builder"
+    provider_sandbox_id: str | None = None
     sleep_enabled: bool = False
     session_type: SessionType = "main"
     profile: SessionProfile = Field(
