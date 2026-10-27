@@ -20,6 +20,11 @@ spellbook = "spellbook.cli:main"
 
 [project.optional-dependencies]
 sandbox = ["pyyaml>=6.0"]
+# Bash through the Chorus Provider sandbox (tools.provider_url).
+provider = ["chorus-provider"]
+
+[tool.uv.sources]
+chorus-provider = { path = "../provider/client", editable = true }
 
 [dependency-groups]
 dev = [
