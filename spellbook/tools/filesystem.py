@@ -5,6 +5,12 @@ and an ``exec_*`` async function implementing behavior. They're
 assembled into a ``Tool`` constant at module bottom that the registry
 picks up.
 
+When the session has a Provider (``meta.provider_bash``), all four tools act
+on the Provider sandbox instead of the host: Bash sends the command, and
+Read/Write/Edit translate their file I/O into sandbox commands through the
+same exec channel (see ``provider_bash.py``). Everything above the I/O seam —
+line numbering, diffs, edit matching, error wording — is shared.
+
 ``Bash`` runs a shell command under the entity's cwd with a configurable
 timeout. Stderr merges into stdout for single-stream output. Commands run in
 their own process group so timeout and cancellation can stop descendants. A
@@ -18,7 +24,7 @@ import difflib
 import os
 import signal
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from time import perf_counter
 from uuid import uuid4
 
@@ -33,24 +39,80 @@ from spellbook.ir_types import (
 )
 
 from .common import Tool, ToolError, ToolExecutionResult, ToolMetadata
+from .provider_bash import SANDBOX_WORKDIR
 
 TOOL_DISPLAY_MAX_CHARS = 6000
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
-def _resolve_path(meta: ToolMetadata, raw_path: str) -> Path:
+def _resolve_path(meta: ToolMetadata, raw_path: str) -> PurePath:
+    if meta.provider_bash is not None:
+        sandbox_path = PurePosixPath(raw_path)
+        if not sandbox_path.is_absolute():
+            sandbox_path = SANDBOX_WORKDIR / sandbox_path
+        return sandbox_path
     path = Path(raw_path)
     if not path.is_absolute():
         path = meta.cwd / path
     return path
 
 
+# --- File I/O seam: host filesystem, or the Provider sandbox ---
+
+
+async def _read_bytes(
+    meta: ToolMetadata, path: PurePath, *, missing_ok: bool = False
+) -> tuple[bytes | None, list[str]]:
+    """File bytes plus any notes for the entity (sandbox replaced, ...).
+
+    Missing files raise unless ``missing_ok``; directories always raise."""
+    if meta.provider_bash is not None:
+        return await meta.provider_bash.read_file(
+            PurePosixPath(path), context=meta.last_human_message, missing_ok=missing_ok
+        )
+    local = Path(path)
+    if not local.exists():
+        if missing_ok:
+            return None, []
+        raise ToolError(f"File not found: {local}")
+    if local.is_dir():
+        raise ToolError(f"Path is a directory, not a file: {local}")
+    try:
+        return local.read_bytes(), []
+    except PermissionError as e:
+        raise ToolError(f"Permission denied: {local}") from e
+    except OSError as e:
+        raise ToolError(f"Could not read {local}: {e}") from e
+
+
+async def _write_text(meta: ToolMetadata, path: PurePath, text: str) -> list[str]:
+    if meta.provider_bash is not None:
+        return await meta.provider_bash.write_text(
+            PurePosixPath(path), text, context=meta.last_human_message
+        )
+    _write_text_file(Path(path), text)
+    return []
+
+
+def _decode_text(data: bytes, path: PurePath) -> str:
+    """UTF-8 decode with universal newlines, matching ``Path.read_text``."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ToolError(f"File is not valid UTF-8 text: {path}") from e
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _with_notes(notes: list[str], text: str) -> str:
+    return "\n\n".join([*notes, text])
+
+
 def _tool_text(text: str) -> list[IRToolResultContentBlock]:
     return [IRToolTextBlock(text=text)]
 
 
-def _guess_language(path: Path) -> str | None:
+def _guess_language(path: PurePath) -> str | None:
     suffix = path.suffix.lstrip(".").lower()
     return suffix or None
 
@@ -65,7 +127,7 @@ def _truncate_display_text(
 
 
 def _build_unified_diff(
-    old_text: str, new_text: str, *, path: Path, change_type: str
+    old_text: str, new_text: str, *, path: PurePath, change_type: str
 ) -> tuple[str, bool]:
     fromfile = "/dev/null" if change_type == "create" else str(path)
     diff_text = "".join(
@@ -93,17 +155,6 @@ def _diff_stats(diff_text: str) -> dict[str, int]:
     return {"added": added, "removed": removed}
 
 
-def _read_text_file(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except PermissionError as e:
-        raise ToolError(f"Permission denied: {path}") from e
-    except UnicodeDecodeError as e:
-        raise ToolError(f"File is not valid UTF-8 text: {path}") from e
-    except OSError as e:
-        raise ToolError(f"Could not read {path}: {e}") from e
-
-
 def read_image_file(path: Path, transcript_path: Path) -> ToolExecutionResult:
     try:
         image_bytes = path.read_bytes()
@@ -111,7 +162,16 @@ def read_image_file(path: Path, transcript_path: Path) -> ToolExecutionResult:
         raise ToolError(f"Permission denied: {path}") from e
     except OSError as e:
         raise ToolError(f"Could not read {path}: {e}") from e
+    return image_result(path, image_bytes, transcript_path)
 
+
+def image_result(
+    path: PurePath,
+    image_bytes: bytes,
+    transcript_path: Path,
+    notes: list[str] | None = None,
+) -> ToolExecutionResult:
+    """Persist an image blob beside the transcript and return it as content."""
     size_bytes = len(image_bytes)
     media_type = IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "image/png")
 
@@ -137,7 +197,9 @@ def read_image_file(path: Path, transcript_path: Path) -> ToolExecutionResult:
     size_label = (
         f"{size_bytes / 1024:.1f}KB" if size_bytes >= 1024 else f"{size_bytes}B"
     )
-    output = f"[image: {path} -> {relative_blob_path}, {size_label}]"
+    output = _with_notes(
+        notes or [], f"[image: {path} -> {relative_blob_path}, {size_label}]"
+    )
 
     return ToolExecutionResult(
         content=content, display={"kind": "text", "title": "Read Image", "body": output}
@@ -177,16 +239,14 @@ class ReadInput(BaseModel):
 
 async def exec_read(meta: ToolMetadata, input: ReadInput) -> ToolExecutionResult:
     path = _resolve_path(meta, input.file_path)
-    if not path.exists():
-        raise ToolError(f"File not found: {path}")
-    if path.is_dir():
-        raise ToolError(f"Path is a directory, not a file: {path}")
+    data, notes = await _read_bytes(meta, path)
+    assert data is not None
 
     # Image files: base64-encode, store blob, return as image content block
     if path.suffix.lower() in _IMAGE_EXTENSIONS:
-        return read_image_file(path, meta.transcript_path)
+        return image_result(path, data, meta.transcript_path, notes)
 
-    text = _read_text_file(path)
+    text = _decode_text(data, path)
     lines = text.splitlines()
     total_lines = len(lines)
     start_index = input.offset - 1 if input.offset is not None else 0
@@ -208,7 +268,7 @@ async def exec_read(meta: ToolMetadata, input: ReadInput) -> ToolExecutionResult
         for line_number, line in enumerate(selected, start=start_index + 1)
     ]
     indicator = f"Lines {start_line}-{end_line} of {total_lines} ({line_count} lines)"
-    output = indicator
+    output = _with_notes(notes, indicator)
     if numbered:
         output = output + "\n" + "\n".join(numbered)
     if len(output) > 256_000:
@@ -245,19 +305,17 @@ class WriteInput(BaseModel):
 
 async def exec_write(meta: ToolMetadata, input: WriteInput) -> ToolExecutionResult:
     path = _resolve_path(meta, input.file_path)
-    if path.exists() and path.is_dir():
-        raise ToolError(f"Path is a directory, not a file: {path}")
-
-    existed = path.exists()
-    old_text = _read_text_file(path) if existed else ""
-    _write_text_file(path, input.content)
+    old_data, notes = await _read_bytes(meta, path, missing_ok=True)
+    existed = old_data is not None
+    old_text = _decode_text(old_data, path) if old_data is not None else ""
+    notes += await _write_text(meta, path, input.content)
 
     change_type = "overwrite" if existed else "create"
     diff_text, truncated = _build_unified_diff(
         old_text, input.content, path=path, change_type=change_type
     )
     summary = "Overwrote file" if existed else "Created file"
-    output = f"Successfully wrote to {path}"
+    output = _with_notes(notes, f"Successfully wrote to {path}")
     return ToolExecutionResult(
         content=_tool_text(output),
         display={
@@ -296,14 +354,12 @@ class EditInput(BaseModel):
 
 async def exec_edit(meta: ToolMetadata, input: EditInput) -> ToolExecutionResult:
     path = _resolve_path(meta, input.file_path)
-    if not path.exists():
-        raise ToolError(f"File not found: {path}")
-    if path.is_dir():
-        raise ToolError(f"Path is a directory, not a file: {path}")
+    data, notes = await _read_bytes(meta, path)
+    assert data is not None
     if input.old_string == "":
         raise ToolError("old_string must not be empty.")
 
-    old_text = _read_text_file(path)
+    old_text = _decode_text(data, path)
     count = old_text.count(input.old_string)
     if count == 0:
         raise ToolError(
@@ -324,12 +380,12 @@ async def exec_edit(meta: ToolMetadata, input: EditInput) -> ToolExecutionResult
         new_text = old_text.replace(input.old_string, input.new_string, 1)
         replaced_count = 1
 
-    _write_text_file(path, new_text)
+    notes += await _write_text(meta, path, new_text)
     diff_text, truncated = _build_unified_diff(
         old_text, new_text, path=path, change_type="edit"
     )
     replacement_label = "occurrence" if replaced_count == 1 else "occurrences"
-    output = f"Successfully edited {path}"
+    output = _with_notes(notes, f"Successfully edited {path}")
     return ToolExecutionResult(
         content=_tool_text(output),
         display={

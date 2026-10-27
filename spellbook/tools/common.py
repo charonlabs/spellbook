@@ -249,6 +249,8 @@ def build_provider_bash(config: SpellbookConfig) -> ProviderBash | None:
         provider_url=config.provider_url,
         auth_url=config.provider_auth_url or DEFAULT_PROVIDER_AUTH_URL,
         entity=entity,
+        role=config.provider_role,
+        sandbox_id=config.provider_sandbox_id,
         admin_token_file=config.provider_admin_token_file,
     )
 

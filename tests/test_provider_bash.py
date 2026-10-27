@@ -4,6 +4,8 @@ denials, human-only review context, config plumbing and session wiring."""
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,7 @@ from spellbook.config import SpellbookConfig  # noqa: E402
 from spellbook.ir_types import (  # noqa: E402
     IRAssistantTextBlock,
     IRGeneration,
+    IRImageBlock,
     IRToolCallBlock,
     IRToolResultBlock,
     IRToolTextBlock,
@@ -51,7 +54,16 @@ from spellbook.tools.common import (  # noqa: E402
     ToolMetadata,
     build_provider_bash,
 )
-from spellbook.tools.filesystem import BashInput, exec_bash  # noqa: E402
+from spellbook.tools.filesystem import (  # noqa: E402
+    BashInput,
+    EditInput,
+    ReadInput,
+    WriteInput,
+    exec_bash,
+    exec_edit,
+    exec_read,
+    exec_write,
+)
 from spellbook.tools.provider_bash import (  # noqa: E402
     PROVIDER_CONTEXT_MAX_BYTES,
     HumanContextRoundLifecycle,
@@ -71,10 +83,14 @@ def ok(stdout: str = "hello\n", **kwargs: Any) -> ExecResult:
 
 
 class FakeProvider:
-    """Stands in for chorus_provider.ProviderClient."""
+    """Stands in for chorus_provider.ProviderClient.
 
-    def __init__(self, results: list[Any] | None = None):
+    With ``root`` set, unscripted commands run in real bash with ``/workspace``
+    mapped to ``root`` — so file-tool translations are checked byte for byte."""
+
+    def __init__(self, results: list[Any] | None = None, root: Path | None = None):
         self.results = list(results or [])
+        self.root = root
         self.connects = 0
         self.closed = False
         self.created: list[str] = []
@@ -115,10 +131,29 @@ class FakeProvider:
                 "context": context,
             }
         )
+        if not self.results and self.root is not None:
+            return await self._run(command)
         result = self.results.pop(0) if self.results else ok()
         if isinstance(result, Exception):
             raise result
         return result
+
+    async def _run(self, command: str) -> ExecResult:
+        assert self.root is not None
+        proc = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            command.replace("/workspace", str(self.root)),
+            cwd=self.root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        return ExecResult(
+            out.decode(errors="replace"),
+            err.decode(errors="replace").replace(str(self.root), "/workspace"),
+            proc.returncode or 0,
+        )
 
     async def destroy(self, sandbox_id: str) -> None:
         if self.destroy_error is not None:
@@ -126,11 +161,19 @@ class FakeProvider:
         self.destroyed.append(sandbox_id)
 
 
-def provider_meta(tmp_path: Path, fake: FakeProvider) -> ToolMetadata:
+def provider_meta(
+    tmp_path: Path,
+    fake: FakeProvider,
+    *,
+    role: str = "familiar",
+    sandbox_id: str | None = None,
+) -> ToolMetadata:
     bash = ProviderBash(
         provider_url="http://127.0.0.1:8787",
         auth_url="http://127.0.0.1:8788",
         entity="wanderer",
+        role=role,
+        sandbox_id=sandbox_id,
         client_factory=lambda: fake,
     )
     return ToolMetadata(
@@ -391,32 +434,34 @@ def test_truncate_utf8_is_valid_and_bounded() -> None:
 def test_build_provider_bash_from_config(tmp_path: Path) -> None:
     base = SpellbookConfig(model="claude-sonnet-4-6", cwd=tmp_path)
     assert build_provider_bash(base) is None
-    bash = build_provider_bash(
+    url = {"provider_url": "http://127.0.0.1:8787"}
+    familiar = build_provider_bash(
         base.model_copy(
-            update={
-                "provider_url": "http://127.0.0.1:8787",
-                "chorus_entity_name": "fable",
-            }
+            update={**url, "chorus_entity_name": "fable", "provider_role": "familiar"}
         )
     )
-    assert bash is not None and bash.entity == "fable"
-    assert bash.auth_url == "http://127.0.0.1:8788"
-    explicit = build_provider_bash(
+    assert familiar is not None and familiar.entity == "fable"
+    assert familiar.auth_url == "http://127.0.0.1:8788"
+    assert familiar.manages_sandboxes and familiar.sandbox_id is None
+    builder = build_provider_bash(
         base.model_copy(
             update={
-                "provider_url": "http://127.0.0.1:8787",
+                **url,
                 "provider_entity": "wanderer-7",
                 "chorus_entity_name": "fable",
                 "provider_auth_url": "http://127.0.0.1:9999",
+                "provider_sandbox_id": SB1,
             }
         )
     )
-    assert explicit is not None and explicit.entity == "wanderer-7"
-    assert explicit.auth_url == "http://127.0.0.1:9999"
+    assert builder is not None and builder.entity == "wanderer-7"
+    assert builder.auth_url == "http://127.0.0.1:9999"
+    assert builder.role == "builder" and not builder.manages_sandboxes
+    assert builder.sandbox_id == SB1
     with pytest.raises(ValueError, match="provider_entity"):
-        build_provider_bash(
-            base.model_copy(update={"provider_url": "http://127.0.0.1:8787"})
-        )
+        build_provider_bash(base.model_copy(update=url))
+    with pytest.raises(ValueError, match="provider_sandbox_id"):
+        build_provider_bash(base.model_copy(update={**url, "provider_entity": "w"}))
 
 
 def _entity_toml(tmp_path: Path, tools: str) -> Path:
@@ -433,13 +478,15 @@ def test_serve_config_routes_bash_and_discloses_review(tmp_path: Path) -> None:
     path = _entity_toml(
         tmp_path,
         'provider_url = "http://127.0.0.1:8787"\nprovider_entity = "wanderer"\n'
-        'provider_admin_token_file = "admin.token"',
+        'provider_admin_token_file = "admin.token"\n'
+        f'provider_sandbox_id = "{SB1}"',
     )
     config = build_spellbook_config(load_entity_file(path))
     assert config.provider_url == "http://127.0.0.1:8787"
     assert config.provider_entity == "wanderer"
     assert config.provider_admin_token_file == (tmp_path / "admin.token").resolve()
     assert config.provider_auth_url is None
+    assert config.provider_role == "builder" and config.provider_sandbox_id == SB1
     assert PROVIDER_EXECUTION_NOTE in config.system_prompt
     assert "safety net, not a cage" in config.system_prompt
 
@@ -450,10 +497,37 @@ def test_serve_config_routes_bash_and_discloses_review(tmp_path: Path) -> None:
     overridden = build_spellbook_config(
         load_entity_file(_entity_toml(tmp_path, "")),
         ServeOverrides(
-            provider_url="http://127.0.0.1:8787", provider_entity="cli-entity"
+            provider_url="http://127.0.0.1:8787",
+            provider_entity="cli-entity",
+            provider_role="familiar",
         ),
     )
     assert overridden.provider_url and overridden.provider_entity == "cli-entity"
+    assert overridden.provider_role == "familiar"
+    assert overridden.provider_sandbox_id is None
+
+
+@pytest.mark.parametrize(
+    ("tools", "message"),
+    [
+        ('provider_role = "builder"', "provider_sandbox_id"),
+        ('provider_role = "reader"', "Only familiars create"),
+        (
+            'provider_role = "root"\nprovider_sandbox_id = "' + SB1 + '"',
+            "provider_role",
+        ),
+        ('provider_role = "builder"\nprovider_sandbox_id = "sb_nope"', "sb_<32 hex>"),
+    ],
+)
+def test_serve_config_enforces_permission_tiers(
+    tmp_path: Path, tools: str, message: str
+) -> None:
+    path = _entity_toml(
+        tmp_path,
+        f'provider_url = "http://127.0.0.1:8787"\nprovider_entity = "w"\n{tools}',
+    )
+    with pytest.raises(ServeConfigError, match=message):
+        build_spellbook_config(load_entity_file(path))
 
 
 def test_serve_config_requires_an_identity_for_provider(
@@ -474,6 +548,7 @@ def _provider_config(tmp_path: Path) -> SpellbookConfig:
         cwd=tmp_path,
         provider_url="http://127.0.0.1:8787",
         provider_entity="wanderer",
+        provider_role="familiar",
     )
 
 
@@ -546,3 +621,291 @@ async def test_full_turn_sends_human_context_and_shutdown_destroys_sandbox(
     ]
     assert results and not results[0].is_error
     assert fake.destroyed == [SB1] and fake.closed
+
+
+# ---- Permission tiers ---------------------------------------------------------
+
+
+def test_assigned_role_requires_sandbox_and_valid_identity() -> None:
+    common = {"provider_url": "http://127.0.0.1:8787", "auth_url": "x", "entity": "w"}
+    with pytest.raises(ValueError, match="provider_sandbox_id"):
+        ProviderBash(**common, role="builder")
+    with pytest.raises(ValueError, match="Unknown provider role"):
+        ProviderBash(**common, role="root", sandbox_id=SB1)
+    with pytest.raises(ValueError, match="Invalid provider sandbox id"):
+        ProviderBash(**common, role="familiar", sandbox_id="sb_bad")
+
+
+def test_bootstrap_claims_follow_the_tier(tmp_path: Path) -> None:
+    token = tmp_path / "admin.token"
+    token.write_text("secret")
+    common = {
+        "provider_url": "http://127.0.0.1:8787",
+        "auth_url": "http://127.0.0.1:8788",
+        "entity": "w",
+        "admin_token_file": token,
+    }
+    builder = ProviderBash(**common, role="builder", sandbox_id=SB1)._default_client()
+    claims = builder._claims
+    assert claims.role == "builder" and claims.sandbox == SB1
+    perms = claims.provider_perms
+    assert (perms.exec, perms.put, perms.get) == (True, True, True)
+    assert not perms.create and not perms.destroy
+    familiar = ProviderBash(**common, role="familiar")._default_client()._claims
+    assert familiar.role == "familiar" and familiar.sandbox is None
+    assert familiar.provider_perms.create and familiar.provider_perms.destroy
+
+
+@pytest.mark.asyncio
+async def test_builder_uses_assigned_sandbox_and_never_creates_or_destroys(
+    tmp_path: Path,
+) -> None:
+    fake = FakeProvider([ok("one\n"), ok("two\n")])
+    meta = provider_meta(tmp_path, fake, role="builder", sandbox_id=SB2)
+    await exec_bash(meta, BashInput(command="ls"))
+    await exec_bash(meta, BashInput(command="ls"))
+    assert [e["sandbox"] for e in fake.execs] == [SB2, SB2]
+    assert meta.provider_bash is not None
+    await meta.provider_bash.aclose()
+    assert fake.created == [] and fake.destroyed == [] and fake.closed
+
+
+@pytest.mark.asyncio
+async def test_builder_cannot_recover_a_vanished_sandbox(tmp_path: Path) -> None:
+    fake = FakeProvider([SandboxNotFoundError("gone")])
+    meta = provider_meta(tmp_path, fake, role="builder", sandbox_id=SB2)
+    with pytest.raises(ToolError, match="your role does not create sandboxes"):
+        await exec_bash(meta, BashInput(command="ls"))
+    with pytest.raises(ToolError, match="no longer available"):
+        await exec_bash(meta, BashInput(command="ls"))
+    assert len(fake.execs) == 1, "later calls fail fast without touching Provider"
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_builder_timeout_reset_is_reported_as_lost(tmp_path: Path) -> None:
+    fake = FakeProvider([ok("", exit_code=124, timed_out=True, sandbox_destroyed=True)])
+    meta = provider_meta(tmp_path, fake, role="builder", sandbox_id=SB2)
+    with pytest.raises(ToolError) as caught:
+        await exec_bash(meta, BashInput(command="sleep 99", timeout=1000))
+    assert "Let your human partner know" in caught.value.message
+    with pytest.raises(ToolError, match="no longer available"):
+        await exec_bash(meta, BashInput(command="ls"))
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_familiar_keeps_assigned_sandbox_but_destroys_only_its_own(
+    tmp_path: Path,
+) -> None:
+    fake = FakeProvider([ok(), SandboxNotFoundError("gone"), ok()])
+    meta = provider_meta(tmp_path, fake, role="familiar", sandbox_id=SB2)
+    bash = meta.provider_bash
+    assert bash is not None
+    await exec_bash(meta, BashInput(command="ls"))
+    assert fake.created == [] and bash.sandbox_id == SB2
+    await exec_bash(meta, BashInput(command="ls"))  # assigned one vanished
+    assert fake.created == [SB1] and bash.sandbox_id == SB1
+    await bash.aclose()
+    assert fake.destroyed == [SB1]
+
+
+@pytest.mark.asyncio
+async def test_familiar_does_not_destroy_an_assigned_sandbox(tmp_path: Path) -> None:
+    fake = FakeProvider()
+    meta = provider_meta(tmp_path, fake, role="familiar", sandbox_id=SB2)
+    await exec_bash(meta, BashInput(command="ls"))
+    assert meta.provider_bash is not None
+    await meta.provider_bash.aclose()
+    assert fake.destroyed == []
+
+
+# ---- File tools through the sandbox ----------------------------------------------
+
+
+def sandbox_meta(tmp_path: Path) -> tuple[ToolMetadata, FakeProvider, Path]:
+    root = tmp_path / "sandbox-workspace"
+    root.mkdir()
+    host = tmp_path / "host"
+    host.mkdir()
+    fake = FakeProvider(root=root)
+    meta = provider_meta(host, fake)
+    meta.last_human_message = "please update the notes"
+    return meta, fake, root
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "no trailing newline",
+        "one line\n",
+        "blank lines\n\n\n",
+        "\n",
+        "shell bait: $HOME `id` $(whoami) \\ 'single' \"double\" * ? [x] ~ !\n",
+        "EOF\nSPELLBOOK_EOF\n'EOF'\nend",
+        "unicode: héllo — 世界 🜂\n",
+        "tabs\tand\x01control\x1b[0m chars",
+    ],
+)
+@pytest.mark.asyncio
+async def test_write_then_read_round_trips_exact_bytes(
+    tmp_path: Path, content: str
+) -> None:
+    meta, fake, root = sandbox_meta(tmp_path)
+    await exec_write(meta, WriteInput(file_path="notes/n.txt", content=content))
+    assert (root / "notes" / "n.txt").read_bytes() == content.encode("utf-8")
+    assert not (tmp_path / "host" / "notes").exists(), "host filesystem untouched"
+    result = await exec_read(meta, ReadInput(file_path="/workspace/notes/n.txt"))
+    lines = content.splitlines()
+    text = text_of(result)
+    assert text.startswith(f"Lines {1 if lines else 0}-{len(lines)} of {len(lines)}")
+    for line in lines:
+        assert line in text
+    assert all(e["context"] == "please update the notes" for e in fake.execs)
+    assert all(e["sandbox"] == SB1 for e in fake.execs)
+
+
+@pytest.mark.asyncio
+async def test_write_reports_create_then_overwrite_with_diff(tmp_path: Path) -> None:
+    meta, _, root = sandbox_meta(tmp_path)
+    created = await exec_write(meta, WriteInput(file_path="a.py", content="x = 1\n"))
+    assert text_of(created) == "Successfully wrote to /workspace/a.py"
+    assert created.display["change_type"] == "create"
+    overwritten = await exec_write(
+        meta, WriteInput(file_path="a.py", content="x = 2\n")
+    )
+    assert overwritten.display["change_type"] == "overwrite"
+    assert (
+        "-x = 1" in overwritten.display["diff"]
+        and "+x = 2" in overwritten.display["diff"]
+    )
+    assert (root / "a.py").read_text() == "x = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_through_sandbox(tmp_path: Path) -> None:
+    meta, _, root = sandbox_meta(tmp_path)
+    (root / "app.py").write_text("def f():\n    return 1\n\nprint(f())\n")
+    result = await exec_edit(
+        meta,
+        EditInput(file_path="app.py", old_string="return 1", new_string="return 42"),
+    )
+    assert text_of(result) == "Successfully edited /workspace/app.py"
+    assert (root / "app.py").read_text() == "def f():\n    return 42\n\nprint(f())\n"
+    with pytest.raises(ToolError, match="old_string not found in /workspace/app.py"):
+        await exec_edit(
+            meta, EditInput(file_path="app.py", old_string="nope", new_string="x")
+        )
+
+
+@pytest.mark.asyncio
+async def test_file_errors_match_local_wording(tmp_path: Path) -> None:
+    meta, _, root = sandbox_meta(tmp_path)
+    (root / "dir").mkdir()
+    (root / "latin1.txt").write_bytes(b"caf\xe9")
+    with pytest.raises(ToolError, match="^File not found: /workspace/missing.txt$"):
+        await exec_read(meta, ReadInput(file_path="missing.txt"))
+    with pytest.raises(
+        ToolError, match="^Path is a directory, not a file: /workspace/dir$"
+    ):
+        await exec_read(meta, ReadInput(file_path="dir"))
+    with pytest.raises(
+        ToolError, match="^Path is a directory, not a file: /workspace/dir$"
+    ):
+        await exec_write(meta, WriteInput(file_path="dir", content="x"))
+    with pytest.raises(ToolError, match="File not found"):
+        await exec_edit(
+            meta, EditInput(file_path="missing", old_string="a", new_string="b")
+        )
+    with pytest.raises(ToolError, match="not valid UTF-8"):
+        await exec_read(meta, ReadInput(file_path="latin1.txt"))
+    with pytest.raises(ToolError, match="NUL"):
+        await exec_write(meta, WriteInput(file_path="z.txt", content="a\x00b"))
+
+
+@pytest.mark.asyncio
+async def test_crlf_files_read_like_local(tmp_path: Path) -> None:
+    meta, _, root = sandbox_meta(tmp_path)
+    (root / "win.txt").write_bytes(b"one\r\ntwo\r\n")
+    remote = text_of(await exec_read(meta, ReadInput(file_path="win.txt")))
+    local_meta = ToolMetadata(cwd=root, transcript_path=tmp_path / "t.jsonl")
+    local = text_of(await exec_read(local_meta, ReadInput(file_path="win.txt")))
+    assert remote.replace("/workspace", "") == local.replace(str(root), "")
+
+
+@pytest.mark.asyncio
+async def test_large_write_is_chunked_staged_and_preserves_mode(tmp_path: Path) -> None:
+    meta, fake, root = sandbox_meta(tmp_path)
+    script = root / "big.sh"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    content = "".join(f'echo line {i} — ünïcode "quoted" $x\n' for i in range(9000))
+    assert len(content.encode()) > 200_000
+    await exec_write(meta, WriteInput(file_path="big.sh", content=content))
+    assert script.read_bytes() == content.encode("utf-8")
+    assert script.stat().st_mode & 0o777 == 0o755, "in-place copy keeps the mode"
+    assert not list(root.glob(".big.sh.spellbook-*")), "temp file removed"
+    writes = [e for e in fake.execs if "<<'SPELLBOOK_EOF_" in e["command"]]
+    assert len(writes) > 3
+    assert all(
+        len(json.dumps(e, ensure_ascii=False).encode()) < 64 * 1024 for e in fake.execs
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_cleans_up_and_leaves_target_intact(tmp_path: Path) -> None:
+    meta, fake, root = sandbox_meta(tmp_path)
+    (root / "keep.txt").write_text("original\n")
+    reason = "Safety review: flagged. (review id r)"
+    content = "x" * 150_000
+    # read old file (real), chunk 1 (real), chunk 2 denied, cleanup (real)
+    original_run = fake._run
+    calls = {"n": 0}
+
+    async def flaky(command: str) -> ExecResult:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            return ok("", stderr=reason, exit_code=77, denied=True, deny_reason=reason)
+        return await original_run(command)
+
+    fake._run = flaky  # type: ignore[method-assign]
+    with pytest.raises(ToolError, match="Safety review: flagged"):
+        await exec_write(meta, WriteInput(file_path="keep.txt", content=content))
+    assert (root / "keep.txt").read_text() == "original\n"
+    assert not list(root.glob(".keep.txt.spellbook-*"))
+
+
+@pytest.mark.asyncio
+async def test_image_read_through_sandbox(tmp_path: Path) -> None:
+    meta, _, root = sandbox_meta(tmp_path)
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
+    (root / "pic.png").write_bytes(png)
+    result = await exec_read(meta, ReadInput(file_path="pic.png"))
+    block = result.content[0]
+    assert isinstance(block, IRImageBlock)
+    assert base64.b64decode(block.source.data) == png
+    assert (tmp_path / "host" / block.blob_path).read_bytes() == png
+
+
+@pytest.mark.asyncio
+async def test_oversized_read_and_denied_read(tmp_path: Path) -> None:
+    fake = FakeProvider([ok("FILE\nAAAA", output_truncated=True)])
+    meta = provider_meta(tmp_path, fake)
+    with pytest.raises(ToolError, match="too large to read through the sandbox"):
+        await exec_read(meta, ReadInput(file_path="huge.log"))
+    reason = "Safety review: Shell text requires review."
+    fake.results = [
+        ok("", stderr=reason, exit_code=77, denied=True, deny_reason=reason)
+    ]
+    with pytest.raises(ToolError, match="Shell text requires review"):
+        await exec_read(meta, ReadInput(file_path="secret.txt"))
+
+
+@pytest.mark.asyncio
+async def test_overlong_bash_command_is_rejected_before_sending(tmp_path: Path) -> None:
+    fake = FakeProvider()
+    meta = provider_meta(tmp_path, fake)
+    with pytest.raises(ToolError, match="too long for the sandbox"):
+        await exec_bash(meta, BashInput(command="echo " + "x" * 70_000))
+    assert fake.execs == []

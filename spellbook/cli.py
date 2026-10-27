@@ -130,6 +130,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--provider-auth-url", help="Override tools.provider_auth_url.")
     serve.add_argument("--provider-entity", help="Override tools.provider_entity.")
+    serve.add_argument(
+        "--provider-role",
+        help="Override tools.provider_role (familiar manages its own sandboxes).",
+    )
+    serve.add_argument(
+        "--provider-sandbox-id",
+        help="Override tools.provider_sandbox_id: the sandbox assigned at summon time.",
+    )
     serve.add_argument("--host", default=DEFAULT_HOST)
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve.add_argument("--env", type=Path, default=DEFAULT_ENV_PATH)
@@ -208,6 +216,8 @@ def _overrides_from_args(args: argparse.Namespace) -> ServeOverrides:
         provider_url=args.provider_url,
         provider_auth_url=args.provider_auth_url,
         provider_entity=args.provider_entity,
+        provider_role=args.provider_role,
+        provider_sandbox_id=args.provider_sandbox_id,
     )
 
 

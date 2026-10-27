@@ -164,30 +164,48 @@ Spellbook ships with a complete tool surface:
 
 Tools are registered in a typed `ToolRegistry` with Pydantic input models and structured results. Adding a tool is: define an input model, write an async handler, register it.
 
-### Bash through the Chorus Provider
+### Tools through the Chorus Provider
 
-By default Bash runs host subprocesses. Setting `tools.provider_url` routes it
-through the [Chorus Provider](../provider) instead: each command runs in a
-gVisor sandbox (`/workspace`, no network), behind optional Sentry safety review.
+By default Bash runs host subprocesses and Read/Write/Edit touch host files.
+Setting `tools.provider_url` routes **all four** through the
+[Chorus Provider](../provider): one gVisor sandbox, one filesystem
+(`/workspace`, where relative paths resolve), one exec wire, behind optional
+Sentry safety review.
 
 ```toml
 [tools]
 provider_url = "http://127.0.0.1:8787"
 provider_entity = "wanderer"          # defaults to chorus_entity_name
+provider_role = "builder"             # "familiar" manages its own sandboxes
+provider_sandbox_id = "sb_…"          # assigned at summon; required unless familiar
 # provider_auth_url = "http://127.0.0.1:8788"
 # provider_admin_token_file = "admin.token"  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
 ```
 
 Install the client with `uv sync --extra provider`. CLI overrides:
-`--provider-url`, `--provider-auth-url`, `--provider-entity`.
+`--provider-url`, `--provider-auth-url`, `--provider-entity`,
+`--provider-role`, `--provider-sandbox-id`.
 
-- One sandbox per session, created on the first command, replaced (with a note
-  to the entity) if Provider reaps it, destroyed at session shutdown.
+**Permission tiers.** A *familiar* (coordinator) holds create/destroy/exec/
+put/get: it creates its sandbox on first use, replaces it if Provider reaps it,
+and destroys the sandboxes it created at shutdown. **Every other role** holds
+exec/put/get only, scoped to the sandbox the orchestrator created at summon
+time; it never creates or destroys, and if that sandbox disappears its tools
+say so instead of recovering. Bootstrap claims follow the tier (stored claims
+always win, so the orchestrator registers the scoped identity at summon).
+
+**How file tools travel.** Read runs `base64` on the file (exact bytes, images
+included, up to ~768 KiB). Write sends a quoted heredoc with a random delimiter
+(never shell-expanded, readable by safety review); content beyond one 64 KiB
+exec is staged in a sibling temp file and copied over the target in place,
+preserving its mode. Edit is Read → replace → Write. Line numbering, diffs,
+matching and error wording are shared with the local tools.
+
 - Each exec carries the latest **human** message as review `context` (≤16 KiB);
   model output, conduit messages and footers are never used.
-- A command stopped by review becomes a `ToolError` with Provider's reason.
-- The system prompt tells the entity where its commands run and that review
-  exists. Read/Write/Edit still act on the host filesystem.
+- A denied operation becomes a `ToolError` with Provider's reason.
+- The system prompt tells the entity where its work happens and that review
+  exists.
 
 ## App Server API
 

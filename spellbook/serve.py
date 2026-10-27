@@ -44,14 +44,13 @@ CHORUS_URL_ENV = "CHORUS_URL"
 MINICHORUS_SERVER_URL_ENV = "MINICHORUS_SERVER_URL"
 
 
-PROVIDER_EXECUTION_NOTE = """## Where your commands run
+PROVIDER_EXECUTION_NOTE = """## Where your work happens
 
-Your Bash commands run in an isolated sandbox, not on this host. Each command \
-starts in `/workspace`, a private scratch filesystem that persists between your \
-commands for the session but is separate from your working directory here: \
-Read, Write and Edit act on the host files, Bash acts on the sandbox. The \
-sandbox has no network access, and it is reset if it sits idle for a long \
-time or a command is interrupted; you will be told when that happens.
+Bash, Read, Write and Edit all act on an isolated sandbox, not on this host. \
+They share one filesystem: `/workspace`, where each command starts and where \
+relative paths resolve. It persists between your commands for the session. \
+The sandbox has no network access. If a command times out or is interrupted, \
+the sandbox is reset; you will be told when that happens.
 
 Your commands pass through safety review. If something is flagged, you'll get \
 a clear reason and a path forward. This is a safety net, not a cage."""
@@ -129,6 +128,9 @@ class ToolsSection(_Section):
     provider_auth_url: str = ""
     provider_entity: str = ""
     provider_admin_token_file: Path | None = None
+    # "familiar" manages its own sandboxes; other roles need provider_sandbox_id.
+    provider_role: str = "builder"
+    provider_sandbox_id: str = ""
 
 
 class EntityFile(_Section):
@@ -190,6 +192,8 @@ class ServeOverrides:
     provider_url: str | None = None
     provider_auth_url: str | None = None
     provider_entity: str | None = None
+    provider_role: str | None = None
+    provider_sandbox_id: str | None = None
 
 
 def load_entity_file(path: Path | None) -> LoadedEntityFile:
@@ -285,10 +289,15 @@ def build_spellbook_config(
     provider_entity = _override_optional_url(
         overrides.provider_entity, tools.provider_entity
     )
-    if provider_url is not None and (provider_entity or chorus_entity_name) is None:
-        raise ServeConfigError(
-            "tools.provider_url requires tools.provider_entity (or a Chorus entity "
-            "name) to identify this entity to the Provider."
+    provider_role = _prefer(overrides.provider_role, tools.provider_role).strip()
+    provider_sandbox_id = _override_optional_url(
+        overrides.provider_sandbox_id, tools.provider_sandbox_id
+    )
+    if provider_url is not None:
+        _validate_provider_identity(
+            entity=provider_entity or chorus_entity_name,
+            role=provider_role,
+            sandbox_id=provider_sandbox_id,
         )
     _validate_tool_dependencies(
         categories=tool_categories,
@@ -327,6 +336,8 @@ def build_spellbook_config(
             overrides.provider_auth_url, tools.provider_auth_url
         ),
         "provider_entity": provider_entity,
+        "provider_role": provider_role,
+        "provider_sandbox_id": provider_sandbox_id,
         "provider_admin_token_file": (
             _resolve_path(tools.provider_admin_token_file, base_dir=loaded.base_dir)
             if tools.provider_admin_token_file is not None
@@ -505,6 +516,36 @@ def _validate_tool_dependencies(
         raise ServeConfigError(
             "The 'chorus' tool category requires tools.chorus_url or a Chorus URL "
             "environment variable."
+        )
+
+
+def _validate_provider_identity(
+    *, entity: str | None, role: str, sandbox_id: str | None
+) -> None:
+    from spellbook.tools.provider_bash import (
+        PROVIDER_ROLES,
+        SANDBOX_ID_PATTERN,
+        SANDBOX_MANAGER_ROLES,
+    )
+
+    if entity is None:
+        raise ServeConfigError(
+            "tools.provider_url requires tools.provider_entity (or a Chorus entity "
+            "name) to identify this entity to the Provider."
+        )
+    if role not in PROVIDER_ROLES:
+        raise ServeConfigError(
+            f"tools.provider_role must be one of {', '.join(PROVIDER_ROLES)}; got {role!r}."
+        )
+    if sandbox_id is not None and not SANDBOX_ID_PATTERN.match(sandbox_id):
+        raise ServeConfigError(
+            f"tools.provider_sandbox_id must look like sb_<32 hex>; got {sandbox_id!r}."
+        )
+    if role not in SANDBOX_MANAGER_ROLES and sandbox_id is None:
+        raise ServeConfigError(
+            f"Provider role {role!r} works in a sandbox the orchestrator creates at "
+            "summon time: set tools.provider_sandbox_id (or --provider-sandbox-id). "
+            "Only familiars create their own sandboxes."
         )
 
 
