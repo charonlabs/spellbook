@@ -52,9 +52,11 @@ class _FakeBackend:
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
+        cache_breakpoint_before: int | None = None,
     ) -> RequestSurface:
         self.request_surface_calls.append(
             {
+                "cache_breakpoint_before": cache_breakpoint_before,
                 "model": model,
                 "system": system,
                 "blocks": list(blocks),

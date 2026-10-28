@@ -20,7 +20,9 @@ from spellbook.config import SpellbookConfig
 from spellbook.dreaming import pipeline as dream_pipeline
 from spellbook.dreaming.pipeline import (
     DEFAULT_DREAM_CHAPTER_DIR,
+    DREAM_CALLABLE_TOOLS_LINE,
     DREAM_CHAPTER_GUIDANCE,
+    DREAM_FORK_FRAMING,
     ChapterExtractionError,
     DreamMergeOptions,
     DreamTask,
@@ -273,6 +275,22 @@ def test_dream_message_is_stable_first_variable_last(tmp_path: Path) -> None:
         assert variable in message_a[assignment:]
 
 
+def test_dream_prompt_states_callable_tools_up_front(tmp_path: Path) -> None:
+    message = _dream_user_message(
+        _pair_run_for_test(tmp_path, render_path=tmp_path / "r.md")
+    )
+    # Orientation beats backstop: right after the framing, before any guidance.
+    after_framing = message[len(DREAM_FORK_FRAMING) :].lstrip()
+    assert after_framing.startswith(DREAM_CALLABLE_TOOLS_LINE)
+    assert message.index(DREAM_CALLABLE_TOOLS_LINE) < message.index(
+        "## The Chapter's Shape"
+    )
+    from spellbook.tools.registry import QUANTUM_CALLABLE_TOOL_NAMES
+
+    for name in QUANTUM_CALLABLE_TOOL_NAMES:
+        assert name in DREAM_CALLABLE_TOOLS_LINE
+
+
 # ---- 3A. Forks call only read-only tools -----------------------------------------
 
 
@@ -335,7 +353,8 @@ async def test_executor_refuses_visible_but_disallowed_tools(tmp_path: Path) -> 
 def _marks(messages: list[Any]) -> list[tuple[int, int, str]]:
     found = []
     for mi, message in enumerate(messages):
-        for bi, block in enumerate(message["content"]):
+        content = cast(list[dict[str, Any]], message["content"])
+        for bi, block in enumerate(content):
             if "cache_control" in block:
                 assert block["cache_control"] == SHARED_PREFIX_CACHE_CONTROL
                 found.append((mi, bi, block["type"]))
@@ -365,7 +384,8 @@ class TestSharedPrefixBreakpoint:
         # user / assistant(thinking, tool_use) / user(tool_result) /
         # assistant(thinking, text) / user(dream): the parent's final answer.
         assert _marks(messages) == [(3, 1, "text")]
-        assert "cache_control" not in messages[-1]["content"][-1]  # the dream
+        dream_message = cast(list[dict[str, Any]], messages[-1]["content"])
+        assert "cache_control" not in dream_message[-1]  # the dream
 
     def test_walks_back_past_thinking_and_empty_text(self) -> None:
         blocks = [

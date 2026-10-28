@@ -546,7 +546,16 @@ async def _run_director_task(task: DirectorTask) -> DirectorResult:
         )
 
 
-DREAM_CHAPTER_GUIDANCE = """\
+DREAM_CALLABLE_TOOLS_LINE = (
+    "In this dream you can read and remember: Read, Reflect, ReflectToolResults "
+    "and Recall are the tools you can call. Everything else you see listed stays "
+    "with your waking self and will decline if called, so the chapter is written "
+    "here and given back as your reply."
+)
+
+DREAM_CHAPTER_GUIDANCE = f"""\
+{DREAM_CALLABLE_TOOLS_LINE}
+
 ## The Chapter's Shape
 
 Your assignment, at the end of this message, names the two blocks you are dreaming from, where the waking pipeline will save your chapter, and your budget in tokens. The narrative must fit within that budget — this is the space the waking mind will carry.
@@ -562,8 +571,6 @@ The craft:
 Pins:
 - Pinned material is marked with `<!-- pin: Pin Name -->` where it belongs in the narrative flow.
 - The pinned SOURCE content lives elsewhere — do not inline it unless a small quoted fragment genuinely serves the narrative.
-
-In a dream you can read and remember — Read, Reflect, ReflectToolResults, Recall — but not act; other tools will decline.
 
 When the chapter is complete, give it as your final message between `<chapter>` and `</chapter>` tags, with nothing outside them. The chapter itself is plain markdown: no code fence, no JSON."""
 
