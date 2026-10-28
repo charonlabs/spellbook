@@ -5,6 +5,7 @@ from __future__ import annotations
 from spellbook.config import Provider, SpellbookConfig
 
 from .anthropic import AnthropicBackend
+from .local import LocalBackend
 from .model_backend import ModelBackend
 from .openai import OpenAIBackend
 
@@ -25,5 +26,7 @@ def build_backend(config: SpellbookConfig) -> ModelBackend:
             return AnthropicBackend()
         case "openai":
             return OpenAIBackend()
+        case "local":
+            return LocalBackend(base_url=config.base_url)
         case _:
             raise NotImplementedError(f"{config.provider} is not a supported provider.")

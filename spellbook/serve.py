@@ -55,6 +55,7 @@ class _Section(BaseModel):
 class EntitySection(_Section):
     model: str | None = None
     provider: Provider | None = None
+    base_url: str | None = None
     effort: str = DEFAULT_EFFORT
     cwd: Path | None = None
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, gt=0)
@@ -140,6 +141,7 @@ class ServeOverrides:
 
     model: str | None = None
     provider: Provider | None = None
+    base_url: str | None = None
     effort: str | None = None
     cwd: Path | None = None
     max_output_tokens: int | None = None
@@ -269,6 +271,7 @@ def build_spellbook_config(
     config_values: dict[str, object] = {
         "provider": provider,
         "model": model,
+        "base_url": _prefer(overrides.base_url, entity.base_url),
         "effort": _prefer(overrides.effort, entity.effort),
         "max_output_tokens": _prefer(
             overrides.max_output_tokens, entity.max_output_tokens

@@ -60,6 +60,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("anthropic", "openai", "local"),
         help="Override entity.provider.",
     )
+    serve.add_argument(
+        "--base-url",
+        help="Override entity.base_url (OpenAI-compatible server for provider=local).",
+    )
     serve.add_argument("--effort", help="Override entity.effort.")
     serve.add_argument("--cwd", type=Path, help="Override entity.cwd.")
     serve.add_argument("--max-output-tokens", type=int)
@@ -170,6 +174,7 @@ def _overrides_from_args(args: argparse.Namespace) -> ServeOverrides:
     return ServeOverrides(
         model=args.model,
         provider=provider,
+        base_url=args.base_url,
         effort=args.effort,
         cwd=args.cwd,
         max_output_tokens=args.max_output_tokens,

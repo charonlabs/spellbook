@@ -22,7 +22,7 @@ Spellbook gives an AI entity a persistent session with real memory management:
 
 - **An app server.** FastAPI endpoints for health, awareness, message submission, conduit messaging, interrupts, and WebSocket event streaming. Entities are reachable over HTTP — observable, controllable, composable.
 
-- **Model-agnostic design.** The `ModelBackend` protocol abstracts provider differences. Ship with Anthropic (Claude) and OpenAI (GPT) backends. The same entity code runs on any model. Orientation profiles let each model family receive a system prompt shaped for how it thinks.
+- **Model-agnostic design.** The `ModelBackend` protocol abstracts provider differences. Ship with Anthropic (Claude), OpenAI (GPT), and local (any OpenAI-compatible Chat Completions server, e.g. llama.cpp or vLLM) backends. The same entity code runs on any model. Orientation profiles let each model family receive a system prompt shaped for how it thinks.
 
 ## Architecture
 
@@ -101,6 +101,34 @@ Spellbook ships with orientation profiles written **by each model for its own ki
 - `orientation/gpt-5.5.md` — "Read it as one mind leaving a hand on the doorframe for another."
 
 Each profile is a living document. The entity that inhabits the system contributes back to the orientation that shaped it.
+
+## Local Models
+
+`provider = "local"` talks to an OpenAI-compatible **Chat Completions** server
+(llama.cpp's `llama-server`, vLLM, ...) on your own hardware:
+
+```toml
+[entity]
+provider = "local"
+model = "/raid/weights/gguf/generation-models/Qwen3.8-27B-Q8_0.gguf"  # the server's model id
+base_url = "http://192.168.1.193:8080"   # "/v1" is appended if missing
+effort = "high"
+```
+
+`--base-url` on `spellbook serve` overrides `entity.base_url`; it defaults to
+`http://localhost:8080/v1`. No API key is needed.
+
+- **Thinking.** The server's `reasoning_content` (or vLLM's `reasoning`) streams in as
+  thinking and is stored as unsigned `IRThinkingBlock`s. It's replayed on later
+  requests, so templates that keep reasoning (Qwen's does by default) see it.
+- **Effort** is sent as `reasoning_effort`. If the server rejects the value, the
+  backend retries with aliases and remembers what worked. Qwen's template accepts
+  only `xhigh`/`medium`/`low`, so `high` becomes `xhigh`. If every alias is rejected,
+  the field is omitted.
+- **Token counting** uses the server's own tokenizer: llama.cpp's `/apply-template`
+  + `/tokenize`, or vLLM's `/tokenize`. If neither is available, counts are `None`.
+- Servers need a reasoning parser to split out reasoning (llama.cpp does this by default;
+  vLLM needs `--reasoning-parser`). Otherwise `<think>` tags show up as plain text.
 
 ## The Memory Lifecycle
 
