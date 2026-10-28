@@ -89,11 +89,20 @@ class BlockSummarizerConfig(BaseModel, frozen=True):
 
 
 class QuantumForkConfig(BaseModel, frozen=True):
+    """A fork that continues the parent's own context with one instruction.
+
+    The fork's request must share the parent's prefix byte-for-byte so every
+    fork reads the parent's prompt cache: same system prompt, model, thinking
+    and effort, and the same tool list (``ToolRegistry.build`` mirrors the
+    parent's surface; non-read-only tools are refused at call time). The
+    instruction is the only new content and comes after the cached prefix, so
+    keep fork-specific details (ids, paths, timestamps) inside it. Results
+    come back as the fork's final assistant text."""
+
     model_config = ConfigDict(extra="forbid")
     type: Literal["quantum"] = "quantum"
     instruction: IRUserTextBlock
     profile: SessionProfile = QUANTUM
-    submit_tool: bool = True
     fork_label: str | None = None
 
 
@@ -287,11 +296,11 @@ class ForkRunner:
             fork_id=fork_id,
             fork_config=fork_config,
         )
+        # tool_categories stays the parent's: the fork mirrors its tool list.
         child_config = self._parent_config.model_copy(
             update={
                 "session_type": fork_config.profile.name,
                 "profile": fork_config.profile,
-                "tool_categories": None,
             }
         )
         lifecycle = ForkSessionLifecycle()
@@ -556,15 +565,14 @@ class ForkRunner:
                     update={
                         "session_type": fork_config.profile.name,
                         "profile": fork_config.profile,
-                        "tool_categories": None,
                     }
                 )
                 tool_registry = ToolRegistry.build(
-                    None,
+                    config.tool_categories,
                     surface=fork_config.profile.tool_surface,
-                    include_quantum_submit=fork_config.submit_tool,
                     body_url=config.body_url,
                     minecraft_url=config.minecraft_url,
+                    sleep_enabled=config.sleep_enabled,
                 )
                 update.update({"config": config, "tools": tool_registry.records})
             records.append(record.model_copy(update=update))

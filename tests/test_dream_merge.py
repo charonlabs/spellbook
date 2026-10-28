@@ -137,9 +137,10 @@ def test_dream_user_message_includes_contract_stats_pins_and_render_path(
 
     assert message.startswith("A dream has found you.")
     assert DREAM_FORK_FRAMING in message
-    assert "The waking pipeline will save your submitted chapter to:" in message
+    assert "The waking pipeline will save your chapter to:" in message
     assert str(pair_run.chapter_path) in message
-    assert "SubmitResult exactly once" in message
+    assert "between `<chapter>` and `</chapter>` tags" in message
+    assert "SubmitResult" not in message
     assert "Full fidelity (both): 48,200 tokens" in message
     assert "Three-Body Architecture Decision" in message
     assert "## Rendered Markdown Path" in message

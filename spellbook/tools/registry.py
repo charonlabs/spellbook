@@ -11,6 +11,12 @@ the binary for execution and transcript validation, but they are not
 available to the main entity unless its surface explicitly exposes them.
 The registry is immutable — there's no ``registry.add``; to change the
 tool surface, construct a new registry.
+
+A registry separates what the model *sees* from what it may *call*. Quantum
+forks see the parent's exact tool list (so the request prefix, which starts
+with ``tools``, is byte-identical and the parent's prompt cache is reusable),
+but ``call_allowlist`` restricts execution to read-only tools; the executor
+refuses anything else at call time.
 """
 
 from collections.abc import Set as AbstractSet
@@ -71,6 +77,12 @@ class ToolRegistry(BaseModel, frozen=True):
     """Global, immutable tool registry."""
 
     tools: list[Tool[Any]]
+    # None: every listed tool is callable. Otherwise only these names are;
+    # the rest stay on the request surface but are refused at call time.
+    call_allowlist: frozenset[str] | None = None
+
+    def is_callable(self, name: str) -> bool:
+        return self.call_allowlist is None or name in self.call_allowlist
 
     @property
     def tool_names(self) -> set[str]:
@@ -94,7 +106,6 @@ class ToolRegistry(BaseModel, frozen=True):
         *,
         surface: ToolSurface = "main",
         custom: CustomSurface | None = None,
-        include_quantum_submit: bool = True,
         body_url: str | None = None,
         minecraft_url: str | None = None,
         sleep_enabled: bool = False,
@@ -117,16 +128,26 @@ class ToolRegistry(BaseModel, frozen=True):
             ]
             custom_tools.extend(custom.tools)
             return cls(tools=custom_tools)
+        if surface == "quantum":
+            # Mirror the parent's main surface exactly — same tools, same
+            # order, same category filter — and restrict calls instead.
+            mirror = cls.build(
+                categories,
+                surface="main",
+                body_url=body_url,
+                minecraft_url=minecraft_url,
+                sleep_enabled=sleep_enabled,
+            )
+            return cls(
+                tools=mirror.tools,
+                call_allowlist=QUANTUM_CALLABLE_TOOL_NAMES & mirror.tool_names,
+            )
         surface_tools = _tools_for_surface(
             surface,
             body_enabled=body_url is not None,
             minecraft_enabled=minecraft_url is not None,
             sleep_enabled=sleep_enabled,
         )
-        if surface == "quantum" and not include_quantum_submit:
-            surface_tools = [
-                tool for tool in surface_tools if tool.name != SUBMIT_RESULT_TOOL.name
-            ]
         if categories is None and surface != "main":
             return cls(tools=surface_tools)
         resolved_categories = resolve_tool_categories(categories)
@@ -180,19 +201,22 @@ BLOCK_DETECTOR_TOOLS: list[Tool[Any]] = [
 
 BLOCK_SUMMARIZER_TOOLS: list[Tool[Any]] = [SUMMARIZE_TOOL]
 
-QUANTUM_TOOLS: list[Tool[Any]] = [
+# What a quantum fork may *call*. Its visible surface is the parent's full
+# tool list (see ``ToolRegistry.build``): adding or removing any tool would
+# change the cached request prefix for every fork. Results come back as the
+# fork's final text, so no fork-only tool (e.g. SubmitResult) is exposed.
+QUANTUM_CALLABLE_TOOLS: list[Tool[Any]] = [
     READ_TOOL,
     REFLECT_TOOL,
     REFLECT_TOOL_RESULTS_TOOL,
     RECALL_TOOL,
-    SUBMIT_RESULT_TOOL,
 ]
+QUANTUM_CALLABLE_TOOL_NAMES = frozenset(tool.name for tool in QUANTUM_CALLABLE_TOOLS)
 
 TOOLS_BY_SURFACE: dict[ToolSurface, list[Tool[Any]]] = {
     "main": MAIN_TOOLS,
     "block_detector": BLOCK_DETECTOR_TOOLS,
     "block_summarizer": BLOCK_SUMMARIZER_TOOLS,
-    "quantum": QUANTUM_TOOLS,
 }
 
 

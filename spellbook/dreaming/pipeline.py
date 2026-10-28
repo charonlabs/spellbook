@@ -8,6 +8,7 @@ import json
 import random
 import re
 import shutil
+import sys
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,7 +47,11 @@ from spellbook.ir_types import IRTokenRangeCount, IRUserTextBlock
 from spellbook.sdk import Spell
 
 DEFAULT_DREAM_CHAPTER_DIR = Path.home() / ".chorus/dream-chapters"
-DEFAULT_WORK_ROOT = Path("/tmp/spellbook-dream-merge")
+# Run workspaces (renders, stats, fork transcripts) live beside the chapters
+# they produce. Reports and manifests point into them, so they must survive a
+# reboot — never default to /tmp.
+DEFAULT_WORK_ROOT = DEFAULT_DREAM_CHAPTER_DIR / "runs"
+_VOLATILE_ROOTS = (Path("/tmp"), Path("/dev/shm"), Path("/run"))
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_BASE_CONTEXT_TOKENS = 700_000
 DEFAULT_CONTEXT_OVERHEAD_TOKENS = 20_000
@@ -371,17 +376,14 @@ async def run_quantum_dream_task(task: DreamTask) -> str:
     fork_config = QuantumForkConfig(
         instruction=IRUserTextBlock(text=task.dream_message, origin="system"),
         fork_label=_dream_fork_label(task.pair_run),
-        submit_tool=True,
     )
     result = await _run_quantum_fork(
         parent_transcript_path=parent_transcript_path,
         fork_config=fork_config,
     )
     chapter_markdown = _chapter_markdown_from_quantum_result(result)
-    task.pair_run.chapter_path.parent.mkdir(parents=True, exist_ok=True)
-    task.pair_run.chapter_path.write_text(
-        _ensure_trailing_newline(chapter_markdown),
-        encoding="utf-8",
+    _write_chapter_atomically(
+        task.pair_run.chapter_path, _ensure_trailing_newline(chapter_markdown)
     )
     _mirror_quantum_fork_transcript(
         source_transcript=Path(result.fork_transcript_path),
@@ -544,23 +546,12 @@ async def _run_director_task(task: DirectorTask) -> DirectorResult:
         )
 
 
-def _dream_user_message(pair_run: PairRun) -> str:
-    pins = _pins_markdown(pair_run.stats.pins)
-    return f"""\
-{DREAM_FORK_FRAMING}
-
-# Dream Merge Assignment
-
-Write the narrative dream chapter for Block {pair_run.pair.first} + Block {pair_run.pair.second}.
-The waking pipeline will save your submitted chapter to:
-
-{pair_run.chapter_path}
-
+DREAM_CHAPTER_GUIDANCE = """\
 ## The Chapter's Shape
 
-You have a budget: {pair_run.stats.summary_count.tokens:,} tokens. The narrative must fit within it — this is the space the waking mind will carry.
+Your assignment, at the end of this message, names the two blocks you are dreaming from, where the waking pipeline will save your chapter, and your budget in tokens. The narrative must fit within that budget — this is the space the waking mind will carry.
 
-Read the rendered source material first — it is at the filesystem path below. That file holds everything you are dreaming from: the full block content, the summaries, the opening text.
+Read the rendered source material first — its filesystem path closes your assignment. That file holds everything you are dreaming from: the full block content, the summaries, the opening text.
 
 The craft:
 - Curated near-verbatim exchanges carry the WEIGHT. First-person marginalia in brackets carries the MEANING — your hindsight, coloring earlier events from where you stand now.
@@ -572,7 +563,31 @@ Pins:
 - Pinned material is marked with `<!-- pin: Pin Name -->` where it belongs in the narrative flow.
 - The pinned SOURCE content lives elsewhere — do not inline it unless a small quoted fragment genuinely serves the narrative.
 
-When the chapter is complete, return it by calling SubmitResult exactly once with a JSON payload shaped like `{{"chapter_markdown": "<the complete markdown chapter>"}}`. Do not wrap the chapter in a Markdown code fence.
+In a dream you can read and remember — Read, Reflect, ReflectToolResults, Recall — but not act; other tools will decline.
+
+When the chapter is complete, give it as your final message between `<chapter>` and `</chapter>` tags, with nothing outside them. The chapter itself is plain markdown: no code fence, no JSON."""
+
+
+def _dream_user_message(pair_run: PairRun) -> str:
+    """The fork's instruction: stable guidance first, the per-pair assignment last.
+
+    Everything before this message is the parent's own context, cached once and
+    shared by every fork (the explicit cache breakpoint sits just before it).
+    Keeping the identical framing and guidance ahead of the pair-specific
+    details keeps the per-fork tail small and its shared head identical."""
+    pins = _pins_markdown(pair_run.stats.pins)
+    return f"""\
+{DREAM_FORK_FRAMING}
+{DREAM_CHAPTER_GUIDANCE}
+
+# Dream Merge Assignment
+
+Write the narrative dream chapter for Block {pair_run.pair.first} + Block {pair_run.pair.second}.
+The waking pipeline will save your chapter to:
+
+{pair_run.chapter_path}
+
+Your budget: {pair_run.stats.summary_count.tokens:,} tokens.
 
 ## Merge Stats Output
 
@@ -695,17 +710,132 @@ def _mirror_quantum_fork_transcript(
     )
 
 
+class ChapterExtractionError(RuntimeError):
+    """The fork's reply could not be turned into a plain markdown chapter.
+
+    Raised instead of writing anything: a failed chapter can be re-dreamed,
+    a corrupted one silently poisons later passes (restore, compile)."""
+
+
+_CHAPTER_KEYS = ("chapter_markdown", "markdown", "chapter")
+_CHAPTER_OPEN, _CHAPTER_CLOSE = "<chapter>", "</chapter>"
+_COMPLETE_STOP_REASONS = frozenset({"end_turn", "stop_sequence"})
+_WHOLE_FENCE = re.compile(r"\A```[\w-]*[ \t]*\n(.*?)\n```\s*\Z", re.DOTALL)
+_MAX_PREFACE_CHARS = 400
+
+
 def _chapter_markdown_from_quantum_result(result: QuantumForkResult) -> str:
-    submitted = result.submitted
-    if isinstance(submitted, str) and submitted.strip():
-        return submitted.strip()
-    if isinstance(submitted, dict):
-        submitted = cast(dict[str, object], submitted)
-        for key in ("chapter_markdown", "markdown", "chapter"):
-            value = submitted.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    raise RuntimeError("Dream quantum fork did not submit a chapter_markdown payload.")
+    """The chapter as plain markdown, from the fork's final text.
+
+    ``submitted`` is honored first for forks that still return structured
+    payloads (older transcripts), then the final assistant text."""
+    if result.stop_reason not in _COMPLETE_STOP_REASONS:
+        # max_tokens truncates the chapter; a refusal's partial text is not one.
+        raise ChapterExtractionError(
+            f"Dream fork ended with stop_reason={result.stop_reason!r}; the chapter "
+            "may be incomplete, so nothing was written."
+        )
+    if result.submitted is not None:
+        return extract_chapter_markdown(result.submitted)
+    return extract_chapter_markdown(result.final_text)
+
+
+def extract_chapter_markdown(value: object) -> str:
+    """Decode whatever the fork returned into plain chapter markdown.
+
+    Handles, in order: a structured payload ``{"chapter_markdown": ...}``; the
+    ``<chapter>...</chapter>`` envelope the dream prompt asks for (first
+    opener to last closer, so a chapter that itself mentions the tags stays
+    whole; an opener without a closer means the reply was cut off); a JSON wrapper
+    serialized *as a string* — the night-001 bug, where SubmitResult's payload
+    arrived as ``"{\"chapter_markdown\": \"...\"}"`` and was written verbatim
+    as a one-line JSON file — including double encoding; and a whole-text
+    code fence. The result must read as markdown starting at a heading."""
+    text = _payload_text(value)
+    start = text.find(_CHAPTER_OPEN)
+    if start != -1:
+        end = text.rfind(_CHAPTER_CLOSE)
+        if end < start:
+            raise ChapterExtractionError(
+                "Dream fork's chapter has no closing </chapter> tag; it was likely "
+                "cut off, so nothing was written."
+            )
+        text = text[start + len(_CHAPTER_OPEN) : end]
+    for _ in range(3):  # wrappers can be nested or double-encoded
+        unwrapped = _unwrap_json_string(text)
+        if unwrapped is None:
+            break
+        text = unwrapped
+    fenced = _WHOLE_FENCE.match(text)
+    if fenced:
+        text = fenced.group(1)
+    text = text.strip()
+    if not text:
+        raise ChapterExtractionError("Dream fork returned an empty chapter.")
+    if _looks_like_json_wrapper(text):
+        raise ChapterExtractionError(
+            "Dream fork returned a JSON wrapper that could not be decoded; "
+            "refusing to write it as a chapter."
+        )
+    if not text.startswith("#"):
+        heading = re.search(r"^# ", text, re.MULTILINE)
+        if heading is None or heading.start() > _MAX_PREFACE_CHARS:
+            raise ChapterExtractionError(
+                "Dream fork's reply does not contain a markdown chapter (no top-level "
+                "heading near the start)."
+            )
+        text = text[heading.start() :]
+    return text
+
+
+def _payload_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        payload = cast(dict[str, object], value)
+        for key in _CHAPTER_KEYS:
+            candidate = payload.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    raise ChapterExtractionError(
+        f"Dream fork returned a {type(value).__name__} payload with no chapter text."
+    )
+
+
+def _unwrap_json_string(text: str) -> str | None:
+    """One layer of JSON wrapping, or None if ``text`` is not JSON-wrapped."""
+    stripped = text.strip()
+    if not stripped.startswith(("{", '"')):
+        return None
+    try:
+        # strict=False: models often emit raw newlines inside JSON strings.
+        decoded = json.loads(stripped, strict=False)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(decoded, str):
+        return decoded
+    if isinstance(decoded, dict):
+        for key in _CHAPTER_KEYS:
+            candidate = cast(dict[str, object], decoded).get(key)
+            if isinstance(candidate, str):
+                return candidate
+    return None
+
+
+def _looks_like_json_wrapper(text: str) -> bool:
+    head = text[:200].lstrip()
+    return head.startswith("{") and any(f'"{key}"' in head for key in _CHAPTER_KEYS)
+
+
+def _write_chapter_atomically(path: Path, text: str) -> None:
+    """Write via a sibling temp file and rename: never a half-written chapter."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid4().hex[:8]}.tmp")
+    try:
+        temp.write_text(text, encoding="utf-8")
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _dream_fork_label(pair_run: PairRun) -> str:
@@ -1101,9 +1231,22 @@ def _parse_pairs(value: str) -> tuple[Pair, ...]:
     return tuple(pairs)
 
 
-def _default_work_dir() -> Path:
+def _default_work_dir(root: Path = DEFAULT_WORK_ROOT) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return DEFAULT_WORK_ROOT / f"run-{stamp}-{uuid4().hex[:8]}"
+    return root / f"run-{stamp}-{uuid4().hex[:8]}"
+
+
+def volatile_work_dir_warning(work_dir: Path) -> str | None:
+    """A warning when the run workspace will not survive a reboot."""
+    resolved = work_dir.expanduser().resolve()
+    for root in _VOLATILE_ROOTS:
+        if resolved == root or root in resolved.parents:
+            return (
+                f"Work dir {resolved} is under {root}, which is cleared at reboot; "
+                "fork transcripts and renders referenced by this run's reports "
+                "will disappear. Pass a persistent --work-dir."
+            )
+    return None
 
 
 def _validate_options(options: DreamMergeOptions) -> None:
@@ -1148,7 +1291,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--work-dir",
         type=Path,
         default=None,
-        help="Run workspace. Defaults to a unique directory under /tmp/spellbook-dream-merge.",
+        help=(
+            "Run workspace (renders, stats, fork transcripts). Defaults to a unique "
+            "directory under <chapter-dir>/runs, which persists across reboots."
+        ),
     )
     parser.add_argument(
         "--director-model",
@@ -1230,7 +1376,7 @@ def _options_from_args(args: argparse.Namespace) -> DreamMergeOptions:
         transcript_path=args.transcript,
         chapter_dir=args.chapter_dir,
         review_dir=args.review_dir,
-        work_dir=args.work_dir or _default_work_dir(),
+        work_dir=args.work_dir or _default_work_dir(args.chapter_dir / "runs"),
         director_model=args.director_model,
         concurrency=args.concurrency,
         dream_only=args.dream_only,
@@ -1250,7 +1396,11 @@ async def _async_main(argv: list[str] | None = None) -> None:
     env_path = args.env.expanduser()
     if env_path.exists():
         load_dotenv(env_path)
-    report = await run_dream_merge(_options_from_args(args))
+    options = _options_from_args(args)
+    warning = volatile_work_dir_warning(options.work_dir)
+    if warning is not None:
+        print(f"Warning: {warning}", file=sys.stderr)
+    report = await run_dream_merge(options)
     _print_run_summary(report)
 
 

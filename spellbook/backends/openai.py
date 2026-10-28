@@ -301,7 +301,10 @@ class OpenAIBackend(ModelBackend):
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
+        cache_breakpoint_before: int | None = None,
     ) -> RequestSurface:
+        # OpenAI caches prefixes automatically; no explicit breakpoints.
+        del cache_breakpoint_before
         return RequestSurface(
             model=model,
             system=_translate_system_to_instructions(system),

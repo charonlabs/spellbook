@@ -334,13 +334,11 @@ class TestQuantumForkRun:
             "IRUserTextBlock",
             "IRAssistantTextBlock",
         ]
-        assert {tool.name for tool in rehydrated.tools} == {
-            "Read",
-            "Reflect",
-            "ReflectToolResults",
-            "Recall",
-            "SubmitResult",
-        }
+        # The fork's tool records are the parent's, byte for byte: the
+        # request prefix (tools → system → messages) must match for caching.
+        parent = Rehydrator(parent_path).run()
+        assert rehydrated.tools == parent.tools
+        assert "SubmitResult" not in {tool.name for tool in rehydrated.tools}
         assert built["config"].session_type == "quantum"
         assert built["fork_config"] == fork_config
         assert built["session_id"] == prepared.fork_id
@@ -510,11 +508,13 @@ class TestQuantumForkRun:
         assert not (parent_path.parent / "forks").exists()
 
     @pytest.mark.asyncio
-    async def test_run_quantum_can_omit_submit_result_tool(
+    async def test_run_quantum_mirrors_parent_tool_surface_settings(
         self, tmp_path: Path
     ) -> None:
         parent_path = _write_parent_transcript(tmp_path)
-        fork_config = _quantum_config().model_copy(update={"submit_tool": False})
+        parent_config = _parent_config(tmp_path).model_copy(
+            update={"tool_categories": {"coding", "memory"}, "sleep_enabled": True}
+        )
         built: dict[str, Any] = {}
 
         async def _build_session(**kwargs):
@@ -527,21 +527,28 @@ class TestQuantumForkRun:
             )
 
         runner = ForkRunner(
-            parent_config=_parent_config(tmp_path),
+            parent_config=parent_config,
             parent_transcript_path=parent_path,
             recorder=cast(Recorder, _FakeRecorder()),
             session_builder=cast(Any, _build_session),
         )
 
-        prepared = await runner._run_quantum(fork_config)  # noqa: SLF001
-        rehydrated = Rehydrator(built["transcript_path"]).run()
+        prepared = await runner._run_quantum(_quantum_config())  # noqa: SLF001
 
-        assert {tool.name for tool in rehydrated.tools} == {
-            "Read",
-            "Reflect",
-            "ReflectToolResults",
-            "Recall",
-        }
+        # The child keeps the parent's category filter, so the session it
+        # builds lists exactly the parent's tools.
+        child_config = built["config"]
+        assert child_config.tool_categories == {"coding", "memory"}
+        child_registry = ToolRegistry.build(
+            child_config.tool_categories,
+            surface=child_config.profile.tool_surface,
+            sleep_enabled=child_config.sleep_enabled,
+        )
+        parent_registry = ToolRegistry.build(
+            parent_config.tool_categories, surface="main", sleep_enabled=True
+        )
+        assert child_registry.records == parent_registry.records
+        assert child_registry.call_allowlist is not None
         prepared.coro.close()
 
 

@@ -371,6 +371,7 @@ class AnthropicBackend(ModelBackend):
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
+        cache_breakpoint_before: int | None = None,
     ) -> RequestSurface:
         if model == "claude-opus-4-7" and effort == "high":
             effort = "xhigh"
@@ -378,7 +379,9 @@ class AnthropicBackend(ModelBackend):
             model=model,
             system=system,
             tools=tools,
-            messages=_ir_blocks_to_message_params(blocks),
+            messages=_ir_blocks_to_message_params(
+                blocks, cache_breakpoint_before=cache_breakpoint_before
+            ),
             thinking={"type": "adaptive", "display": "summarized"},
             output_config={"effort": effort},
             cache_control={"type": "ephemeral", "ttl": "1h"},
@@ -551,8 +554,47 @@ def _parse_image_block(block: IRImageBlock) -> ImageBlockParam:
     return ImageBlockParam(source=source, type="image")
 
 
-def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam]:
+# Explicit breakpoint on the end of a prefix shared across requests (e.g. the
+# parent context every quantum fork continues). Cache entries are written only
+# at breakpoints, and the automatic top-level breakpoint sits on the last block
+# — which differs per fork — so without this each fork writes the whole prefix.
+# 1h: a fan-out batch can outlast 5 minutes between request starts. 1h entries
+# must precede 5m ones; the automatic breakpoint is also 1h.
+SHARED_PREFIX_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral", "ttl": "1h"}
+
+
+def _shared_prefix_marker(
+    blocks: Sequence[IRBlock], cache_breakpoint_before: int | None
+) -> IRBlock | None:
+    """The last block before the boundary that can carry ``cache_control``.
+
+    Thinking blocks cannot, unsigned thinking is never sent, and empty text is
+    rejected by the API, so walk back to the nearest text/tool/image block."""
+    if cache_breakpoint_before is None:
+        return None
+    for block in reversed(blocks[: max(0, cache_breakpoint_before)]):
+        match block:
+            case IRUserTextBlock() | IRAssistantTextBlock() if block.text:
+                return block
+            case IRToolCallBlock() | IRToolResultBlock() | IRImageBlock():
+                return block
+    return None
+
+
+def _ir_blocks_to_message_params(
+    blocks: Sequence[IRBlock], *, cache_breakpoint_before: int | None = None
+) -> list[MessageParam]:
     messages: list[MessageParam] = []
+    marker = _shared_prefix_marker(blocks, cache_breakpoint_before)
+    marked = False
+
+    def _mark(block: IRBlock, param: Any) -> Any:  # noqa: ANN401 - TypedDict params
+        nonlocal marked
+        if not marked and block is marker:
+            param["cache_control"] = dict(SHARED_PREFIX_CACHE_CONTROL)
+            marked = True
+        return param
+
     buffer: list[IRBlock] = []
     last_role: Literal["assistant", "user"] | None = None
 
@@ -566,9 +608,11 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
             for b in buffer:
                 match b:
                     case IRUserTextBlock():
-                        msg_content.append(TextBlockParam(text=b.text, type="text"))
+                        msg_content.append(
+                            _mark(b, TextBlockParam(text=b.text, type="text"))
+                        )
                     case IRImageBlock():
-                        msg_content.append(_parse_image_block(b))
+                        msg_content.append(_mark(b, _parse_image_block(b)))
                     case IRToolResultBlock():
                         content_blocks = []
                         for cb in b.content:
@@ -580,11 +624,14 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
                                 case IRImageBlock():
                                     content_blocks.append(_parse_image_block(cb))
                         msg_content.append(
-                            ToolResultBlockParam(
-                                tool_use_id=b.call_id,
-                                type="tool_result",
-                                content=content_blocks,
-                                is_error=b.is_error,
+                            _mark(
+                                b,
+                                ToolResultBlockParam(
+                                    tool_use_id=b.call_id,
+                                    type="tool_result",
+                                    content=content_blocks,
+                                    is_error=b.is_error,
+                                ),
                             )
                         )
                     case _:
@@ -595,7 +642,9 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
             for b in buffer:
                 match b:
                     case IRAssistantTextBlock():
-                        msg_content.append(TextBlockParam(text=b.text, type="text"))
+                        msg_content.append(
+                            _mark(b, TextBlockParam(text=b.text, type="text"))
+                        )
                     case IRThinkingBlock():
                         msg_content.append(
                             ThinkingBlockParam(
@@ -604,11 +653,14 @@ def _ir_blocks_to_message_params(blocks: Sequence[IRBlock]) -> list[MessageParam
                         )
                     case IRToolCallBlock():
                         msg_content.append(
-                            ToolUseBlockParam(
-                                id=b.call_id,
-                                input=b.input,
-                                name=b.tool,
-                                type="tool_use",
+                            _mark(
+                                b,
+                                ToolUseBlockParam(
+                                    id=b.call_id,
+                                    input=b.input,
+                                    name=b.tool,
+                                    type="tool_use",
+                                ),
                             )
                         )
                     case _:
