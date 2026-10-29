@@ -104,6 +104,7 @@ class QuantumForkConfig(BaseModel, frozen=True):
     instruction: IRUserTextBlock
     profile: SessionProfile = QUANTUM
     fork_label: str | None = None
+    read_budget_chars: int | None = Field(default=None, ge=1)
 
 
 ForkConfig = Annotated[

@@ -121,6 +121,12 @@ class TestChapterExtraction:
     def test_short_preface_before_the_heading_is_dropped(self) -> None:
         assert extract_chapter_markdown(f"Here it is:\n\n{CHAPTER}") == CHAPTER.strip()
 
+    def test_explicit_read_refusal_is_not_a_chapter(self) -> None:
+        with pytest.raises(ChapterExtractionError, match="refused the chapter"):
+            extract_chapter_markdown(
+                "DREAM CHAPTER REFUSAL: the complete source could not be read."
+            )
+
     @pytest.mark.parametrize(
         ("value", "message"),
         [
@@ -193,16 +199,36 @@ async def test_dream_task_writes_plain_markdown_from_final_text(
 
 
 @pytest.mark.asyncio
-async def test_failed_extraction_leaves_existing_chapter_untouched(
+async def test_read_refusal_is_failed_extraction_and_leaves_chapter_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pair_run = _dream_setup(tmp_path)
     pair_run.chapter_path.write_text("# Previous good chapter\n", encoding="utf-8")
     monkeypatch.setattr(
-        dream_pipeline, "_run_quantum_fork", _fake_fork("I could not finish.", {})
+        dream_pipeline,
+        "_run_quantum_fork",
+        _fake_fork(
+            "DREAM CHAPTER REFUSAL: the complete rendered source could not be read.",
+            {},
+        ),
     )
-    with pytest.raises(ChapterExtractionError):
-        await run_quantum_dream_task(DreamTask(pair_run, _dream_user_message(pair_run)))
+
+    async def count_should_not_run(*_: object, **__: object):  # noqa: ANN202
+        raise AssertionError("a refused chapter must not be token-counted")
+
+    result = await dream_pipeline._run_one_dream(  # noqa: SLF001
+        pair_run,
+        DreamMergeOptions(
+            pairs=(pair_run.pair,),
+            transcript_path=pair_run.stats.transcript_path,
+            overwrite_chapters=True,
+        ),
+        count_markdown_fn=count_should_not_run,
+        dream_task_runner=run_quantum_dream_task,
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None and "refused the chapter" in result.error
     assert pair_run.chapter_path.read_text() == "# Previous good chapter\n"
     assert not list(pair_run.chapter_path.parent.glob(".chapter.md.*.tmp"))
 

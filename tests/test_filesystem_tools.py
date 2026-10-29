@@ -18,6 +18,7 @@ import pytest
 from spellbook.cancel_token import CancelToken
 from spellbook.config import SpellbookConfig
 from spellbook.executor import Executor
+from spellbook.fork import QuantumForkConfig
 from spellbook.generator import Generator
 from spellbook.ir_types import (
     IRAssistantTextBlock,
@@ -32,6 +33,7 @@ from spellbook.ir_types import (
     IRToolResultBlock,
     IRToolTextBlock,
     IRUsage,
+    IRUserTextBlock,
 )
 from spellbook.loop import run_loop
 from spellbook.recorder import Recorder, RecordingRoundLifecycle
@@ -39,6 +41,7 @@ from spellbook.round_lifecycle import RoundLifecycle
 from spellbook.tools.common import ToolError, ToolMetadata
 from spellbook.tools.filesystem import (
     BASH_TOOL,
+    READ_TOOL,
     BashInput,
     EditInput,
     ReadInput,
@@ -161,6 +164,47 @@ async def test_read_respects_offset_and_limit(tmp_path: Path) -> None:
     assert result.display["start_line"] == 2
     assert result.display["end_line"] == 2
     assert result.display["line_count"] == 1
+
+
+async def test_default_read_budget_keeps_large_file_guard_message_unchanged(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "large.txt").write_text("x" * 430_000, encoding="utf-8")
+
+    with pytest.raises(ToolError) as excinfo:
+        await exec_read(_meta(tmp_path), ReadInput(file_path="large.txt"))
+
+    assert excinfo.value.message == (
+        "Read too large. 1 lines, 430032 chars. Try again in smaller slices."
+    )
+
+
+async def test_quantum_read_budget_reads_large_file_in_one_call(tmp_path: Path) -> None:
+    (tmp_path / "large.txt").write_text("x" * 430_000, encoding="utf-8")
+    executor = Executor(
+        SpellbookConfig(cwd=tmp_path, session_type="quantum"),
+        tmp_path / "transcript.jsonl",
+        ToolRegistry(tools=[READ_TOOL]),
+        fork_config=QuantumForkConfig(
+            instruction=IRUserTextBlock(text="Read the whole file.", origin="system"),
+            read_budget_chars=500_000,
+        ),
+    )
+
+    result = await executor.run(
+        [
+            IRToolCallBlock(
+                origin="model",
+                call_id="toolu_read_large",
+                tool="Read",
+                input={"file_path": "large.txt"},
+            )
+        ],
+        CancelToken(),
+    )
+
+    assert result.blocks[0].is_error is False
+    assert len(_result_text(result.blocks[0].content[0])) == 430_032
 
 
 async def test_read_missing_file_errors(tmp_path: Path) -> None:

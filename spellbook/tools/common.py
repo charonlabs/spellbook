@@ -74,6 +74,7 @@ ToolCategory = Literal[
 ]
 
 TOOL_DESCS_DIR = Path(__file__).parent / "descs"
+DEFAULT_MAX_READ_CHARS = 256_000
 
 
 class ToolExecutionResult(BaseModel, frozen=True):
@@ -90,6 +91,7 @@ class ToolExecutionResult(BaseModel, frozen=True):
 class ToolMetadata:
     cwd: Path
     transcript_path: Path
+    max_read_chars: int = DEFAULT_MAX_READ_CHARS
     skill_manager: SkillManager | None = None
     homunculus: Homunculus | None = None
     cancel_token: CancelToken | None = None
@@ -199,6 +201,12 @@ def build_tool_metadata(
             return QuantumForkToolMetadata(
                 cwd=config.cwd,
                 transcript_path=transcript_path,
+                max_read_chars=(
+                    fork_config.read_budget_chars
+                    if fork_config is not None
+                    and fork_config.read_budget_chars is not None
+                    else DEFAULT_MAX_READ_CHARS
+                ),
                 homunculus=homunculus,
                 skill_manager=skill_manager,
                 chorus_url=config.chorus_url,

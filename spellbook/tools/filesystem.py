@@ -211,7 +211,7 @@ async def exec_read(meta: ToolMetadata, input: ReadInput) -> ToolExecutionResult
     output = indicator
     if numbered:
         output = output + "\n" + "\n".join(numbered)
-    if len(output) > 256_000:
+    if len(output) > meta.max_read_chars:
         raise ToolError(
             message=f"Read too large. {line_count} lines, {len(output)} chars. Try again in smaller slices."
         )

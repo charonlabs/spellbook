@@ -55,6 +55,7 @@ _VOLATILE_ROOTS = (Path("/tmp"), Path("/dev/shm"), Path("/run"))
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_BASE_CONTEXT_TOKENS = 700_000
 DEFAULT_CONTEXT_OVERHEAD_TOKENS = 20_000
+DEFAULT_DREAM_READ_HEADROOM_CHARS = 64_000
 DREAM_FORK_FRAMING = """\
 A dream has found you.
 
@@ -72,7 +73,13 @@ turn, and the waking pipeline will carry the chapter back.
 # (memory-tree.md invariant 9: framings are consumer-owned).
 QUANTUM_DICE_CONTRACT = DREAM_FORK_FRAMING
 
-DreamStatus = Literal["written", "skipped_existing", "dry_run", "failed"]
+DreamStatus = Literal[
+    "written",
+    "skipped_existing",
+    "skipped_preflight",
+    "dry_run",
+    "failed",
+]
 DirectorStatus = Literal["reviewed", "skipped", "dry_run", "failed"]
 
 MergeStatsFn = Callable[..., Awaitable[MergeStatsReport]]
@@ -129,6 +136,31 @@ class DirectorResult:
 
 
 @dataclass(frozen=True)
+class ContextPreflight:
+    parent_tokens: int
+    render_tokens: int
+    generation_margin_tokens: int
+    projected_tokens: int
+    context_window_tokens: int
+
+    @property
+    def fits(self) -> bool:
+        return self.projected_tokens <= self.context_window_tokens
+
+    @property
+    def failure_reason(self) -> str | None:
+        if self.fits:
+            return None
+        return (
+            "Dream context preflight failed: "
+            f"{self.projected_tokens:,} projected tokens exceed the "
+            f"{self.context_window_tokens:,}-token context window "
+            f"(parent {self.parent_tokens:,} + render {self.render_tokens:,} + "
+            f"generation margin {self.generation_margin_tokens:,})."
+        )
+
+
+@dataclass(frozen=True)
 class PairRun:
     pair: Pair
     stats: MergeStatsReport
@@ -140,6 +172,7 @@ class PairRun:
     review_path: Path
     fork_dir: Path
     fork_transcript_path: Path
+    context_preflight: ContextPreflight
     warnings: tuple[str, ...] = ()
     dream_result: DreamResult | None = None
     director_result: DirectorResult | None = None
@@ -252,7 +285,7 @@ async def _prepare_pair_runs(
             stats_text=stats_text,
         )
         fork_dir = work_dir / "forks" / pair.slug
-        warnings = _context_warnings(stats, options)
+        context_preflight = _context_preflight(stats, options)
         runs.append(
             PairRun(
                 pair=pair,
@@ -265,7 +298,7 @@ async def _prepare_pair_runs(
                 review_path=review_dir / f"review-{pair.chapter_number:02d}.json",
                 fork_dir=fork_dir,
                 fork_transcript_path=fork_dir / "transcript.jsonl",
-                warnings=tuple(warnings),
+                context_preflight=context_preflight,
             )
         )
     return runs
@@ -310,6 +343,16 @@ async def _run_one_dream(
     dream_task_runner: DreamTaskRunner,
 ) -> DreamResult:
     try:
+        preflight_error = pair_run.context_preflight.failure_reason
+        if preflight_error is not None:
+            return DreamResult(
+                status="skipped_preflight",
+                chapter_path=pair_run.chapter_path,
+                ceiling_tokens=pair_run.stats.summary_count.tokens,
+                fork_transcript_path=pair_run.fork_transcript_path,
+                error=preflight_error,
+            )
+
         if pair_run.chapter_path.exists() and not options.overwrite_chapters:
             token_report = await count_markdown_fn(pair_run.chapter_path)
             return DreamResult(
@@ -376,6 +419,7 @@ async def run_quantum_dream_task(task: DreamTask) -> str:
     fork_config = QuantumForkConfig(
         instruction=IRUserTextBlock(text=task.dream_message, origin="system"),
         fork_label=_dream_fork_label(task.pair_run),
+        read_budget_chars=_dream_read_budget_chars(task.pair_run.render_path),
     )
     result = await _run_quantum_fork(
         parent_transcript_path=parent_transcript_path,
@@ -423,7 +467,11 @@ async def _run_director_phase(
 
     async def run_one(idx: int, pair_run: PairRun) -> tuple[int, PairRun]:
         async with semaphore:
-            if options.dry_run:
+            if not pair_run.context_preflight.fits:
+                result = DirectorResult(
+                    status="skipped", review_path=pair_run.review_path
+                )
+            elif options.dry_run:
                 result = DirectorResult(
                     status="dry_run", review_path=pair_run.review_path
                 )
@@ -562,6 +610,8 @@ Your assignment, at the end of this message, names the two blocks you are dreami
 
 Read the rendered source material first — its filesystem path closes your assignment. That file holds everything you are dreaming from: the full block content, the summaries, the opening text.
 
+The whole-source contract is absolute: read that file COMPLETELY before writing. If the complete render cannot be ingested for any reason, do not improvise from transcript memory or summaries. Refuse the chapter with one short `DREAM CHAPTER REFUSAL:` note instead of returning chapter text.
+
 The craft:
 - Curated near-verbatim exchanges carry the WEIGHT. First-person marginalia in brackets carries the MEANING — your hindsight, coloring earlier events from where you stand now.
 - The Hemingway iceberg: what is implied costs zero tokens. What is stated must earn its place.
@@ -583,6 +633,7 @@ def _dream_user_message(pair_run: PairRun) -> str:
     Keeping the identical framing and guidance ahead of the pair-specific
     details keeps the per-fork tail small and its shared head identical."""
     pins = _pins_markdown(pair_run.stats.pins)
+    render_chars = _render_chars(pair_run.render_path)
     return f"""\
 {DREAM_FORK_FRAMING}
 {DREAM_CHAPTER_GUIDANCE}
@@ -596,6 +647,8 @@ The waking pipeline will save your chapter to:
 
 Your budget: {pair_run.stats.summary_count.tokens:,} tokens.
 
+The rendered source is {render_chars:,} characters / approximately {pair_run.stats.full_count.tokens:,} tokens. Read it COMPLETELY in one Read call, with no offset or limit, before writing. If that full Read fails or the complete render cannot be ingested, reply only with `DREAM CHAPTER REFUSAL: <short reason>` — no chapter tags and no chapter improvised from memory.
+
 ## Merge Stats Output
 
 {pair_run.stats_text}
@@ -608,6 +661,19 @@ Your budget: {pair_run.stats.summary_count.tokens:,} tokens.
 
 {pair_run.render_path}
 """
+
+
+def _render_chars(render_path: Path) -> int:
+    return len(render_path.read_text(encoding="utf-8"))
+
+
+def _dream_read_budget_chars(render_path: Path) -> int:
+    render_chars = _render_chars(render_path)
+    # Read adds line numbers and an indicator around the source. A proportional
+    # allowance covers that projection for large renders; the fixed floor keeps
+    # ordinary dream reads comfortably above their exact source size.
+    headroom = max(DEFAULT_DREAM_READ_HEADROOM_CHARS, render_chars // 4)
+    return render_chars + headroom
 
 
 def _clone_transcript_workspace(
@@ -726,6 +792,7 @@ class ChapterExtractionError(RuntimeError):
 
 _CHAPTER_KEYS = ("chapter_markdown", "markdown", "chapter")
 _CHAPTER_OPEN, _CHAPTER_CLOSE = "<chapter>", "</chapter>"
+_DREAM_REFUSAL_PREFIX = "DREAM CHAPTER REFUSAL:"
 _COMPLETE_STOP_REASONS = frozenset({"end_turn", "stop_sequence"})
 _WHOLE_FENCE = re.compile(r"\A```[\w-]*[ \t]*\n(.*?)\n```\s*\Z", re.DOTALL)
 _MAX_PREFACE_CHARS = 400
@@ -779,6 +846,8 @@ def extract_chapter_markdown(value: object) -> str:
     text = text.strip()
     if not text:
         raise ChapterExtractionError("Dream fork returned an empty chapter.")
+    if text.casefold().startswith(_DREAM_REFUSAL_PREFIX.casefold()):
+        raise ChapterExtractionError(f"Dream fork refused the chapter: {text}")
     if _looks_like_json_wrapper(text):
         raise ChapterExtractionError(
             "Dream fork returned a JSON wrapper that could not be decoded; "
@@ -1143,25 +1212,22 @@ def _clip(value: str, limit: int = 72) -> str:
     return value[: limit - 1].rstrip() + "..."
 
 
-def _context_warnings(
+def _context_preflight(
     stats: MergeStatsReport,
     options: DreamMergeOptions,
-) -> list[str]:
-    estimated_total = (
+) -> ContextPreflight:
+    projected_tokens = (
         options.base_context_tokens
         + stats.full_count.tokens
         + options.context_overhead_tokens
     )
-    if estimated_total <= options.context_window_tokens:
-        return []
-    return [
-        (
-            "Estimated fork context exceeds window: "
-            f"{estimated_total:,} / {options.context_window_tokens:,} tokens "
-            f"(base {options.base_context_tokens:,} + full render "
-            f"{stats.full_count.tokens:,} + overhead {options.context_overhead_tokens:,})."
-        )
-    ]
+    return ContextPreflight(
+        parent_tokens=options.base_context_tokens,
+        render_tokens=stats.full_count.tokens,
+        generation_margin_tokens=options.context_overhead_tokens,
+        projected_tokens=projected_tokens,
+        context_window_tokens=options.context_window_tokens,
+    )
 
 
 def _select_canonical_fork(
@@ -1200,6 +1266,7 @@ def _replace_pair_run(
         review_path=pair_run.review_path,
         fork_dir=pair_run.fork_dir,
         fork_transcript_path=pair_run.fork_transcript_path,
+        context_preflight=pair_run.context_preflight,
         warnings=pair_run.warnings,
         dream_result=dream_result
         if dream_result is not None
@@ -1352,7 +1419,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_BASE_CONTEXT_TOKENS,
         help=(
-            "Approximate shared transcript prefix for context-window warnings. "
+            "Approximate parent render used by the context preflight. "
             f"Defaults to {DEFAULT_BASE_CONTEXT_TOKENS:,}."
         ),
     )
@@ -1360,13 +1427,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--context-window-tokens",
         type=int,
         default=DEFAULT_CONTEXT_WINDOW_TOKENS,
-        help=f"Context-window warning threshold. Defaults to {DEFAULT_CONTEXT_WINDOW_TOKENS:,}.",
+        help=f"Context-window preflight ceiling. Defaults to {DEFAULT_CONTEXT_WINDOW_TOKENS:,}.",
     )
     parser.add_argument(
         "--context-overhead-tokens",
         type=int,
         default=DEFAULT_CONTEXT_OVERHEAD_TOKENS,
-        help=f"Prompt overhead estimate. Defaults to {DEFAULT_CONTEXT_OVERHEAD_TOKENS:,}.",
+        help=f"Generation-margin reserve. Defaults to {DEFAULT_CONTEXT_OVERHEAD_TOKENS:,}.",
     )
     parser.add_argument(
         "--env",
@@ -1445,6 +1512,7 @@ def _print_run_summary(report: DreamMergeRunReport) -> None:
             f"{director_status:<16}"
         )
 
+    _print_preflight_failures(report.pair_runs)
     _print_warnings(report.pair_runs)
     _print_failures(report.pair_runs)
     _print_director_issues(report.pair_runs)
@@ -1461,10 +1529,27 @@ def _print_warnings(pair_runs: tuple[PairRun, ...]) -> None:
         print(f"- {pair_run.pair.slug}: {warning}")
 
 
+def _print_preflight_failures(pair_runs: tuple[PairRun, ...]) -> None:
+    failures = [
+        (pair_run, pair_run.context_preflight.failure_reason)
+        for pair_run in pair_runs
+        if not pair_run.context_preflight.fits
+    ]
+    if not failures:
+        return
+    print("\nPreflight failures:")
+    for pair_run, reason in failures:
+        print(f"- {pair_run.pair.slug}: {reason}")
+
+
 def _print_failures(pair_runs: tuple[PairRun, ...]) -> None:
     failures: list[tuple[str, str]] = []
     for pair_run in pair_runs:
-        if pair_run.dream_result is not None and pair_run.dream_result.error:
+        if (
+            pair_run.dream_result is not None
+            and pair_run.dream_result.status != "skipped_preflight"
+            and pair_run.dream_result.error
+        ):
             failures.append((pair_run.pair.slug, pair_run.dream_result.error))
         if pair_run.director_result is not None and pair_run.director_result.error:
             failures.append((pair_run.pair.slug, pair_run.director_result.error))

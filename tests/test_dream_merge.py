@@ -7,6 +7,7 @@ import pytest
 from scripts.dreaming.dream_director import Pair
 from scripts.dreaming.dream_merge import (
     DREAM_FORK_FRAMING,
+    ContextPreflight,
     DirectorResult,
     DirectorTask,
     DreamMergeOptions,
@@ -15,6 +16,7 @@ from scripts.dreaming.dream_merge import (
     _clone_transcript_workspace,
     _dream_user_message,
     _parse_pairs,
+    _print_run_summary,
     _write_stats_files,
     run_quantum_dream_task,
     run_dream_merge,
@@ -146,6 +148,11 @@ def test_dream_user_message_includes_contract_stats_pins_and_render_path(
     assert "## Rendered Markdown Path" in message
     assert str(render_path) in message
     assert "Full dream message from render." not in message
+    assert f"{len(render_path.read_text(encoding='utf-8')):,} characters" in message
+    assert "approximately 48,200 tokens" in message
+    assert "Read it COMPLETELY in one Read call" in message
+    assert "DREAM CHAPTER REFUSAL:" in message
+    assert "no chapter improvised from memory" in message
 
 
 @pytest.mark.asyncio
@@ -222,6 +229,103 @@ async def test_run_dream_merge_with_fake_runners(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_preflight_skips_oversized_pair_and_continues_batch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text('{"ir":"session"}\n', encoding="utf-8")
+    dream_calls: list[str] = []
+
+    async def fake_merge_stats(**kwargs: object) -> MergeStatsReport:
+        first = int(str(kwargs["first_idx"]))
+        second = int(str(kwargs["second_idx"]))
+        render_path = Path(str(kwargs["render_path"]))
+        render_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path.write_text("# Render\n\nwhole source\n", encoding="utf-8")
+        render_tokens = 400 if first == 0 else 100
+        return MergeStatsReport(
+            transcript_path=transcript,
+            model="claude-opus-4-6",
+            block_lines=[
+                BlockLine(
+                    idx=first,
+                    title=f"Block {first}",
+                    start_block=first,
+                    end_block=first,
+                ),
+                BlockLine(
+                    idx=second,
+                    title=f"Block {second}",
+                    start_block=second,
+                    end_block=second,
+                ),
+            ],
+            full_count=_count(render_tokens),
+            summary_count=_count(40),
+            render_path=render_path.resolve(),
+        )
+
+    async def fake_dream(task: DreamTask) -> str:
+        dream_calls.append(task.pair_run.pair.slug)
+        task.pair_run.chapter_path.parent.mkdir(parents=True, exist_ok=True)
+        task.pair_run.chapter_path.write_text("# Dream\n", encoding="utf-8")
+        return "dreamed"
+
+    async def fake_count(path: Path, **_: object) -> MarkdownTokenReport:
+        return MarkdownTokenReport(
+            path=path,
+            model="claude-opus-4-6",
+            tokens=10,
+            characters=len(path.read_text(encoding="utf-8")),
+        )
+
+    report = await run_dream_merge(
+        DreamMergeOptions(
+            pairs=(Pair(first=0, second=1), Pair(first=2, second=3)),
+            transcript_path=transcript,
+            chapter_dir=tmp_path / "chapters",
+            review_dir=tmp_path / "reviews",
+            work_dir=tmp_path / "work",
+            dream_only=True,
+            show_progress=False,
+            base_context_tokens=700,
+            context_window_tokens=1_000,
+            context_overhead_tokens=50,
+        ),
+        merge_stats_fn=fake_merge_stats,
+        count_markdown_fn=fake_count,
+        dream_task_runner=fake_dream,
+    )
+
+    oversized, fitting = report.pair_runs
+    assert oversized.context_preflight == ContextPreflight(
+        parent_tokens=700,
+        render_tokens=400,
+        generation_margin_tokens=50,
+        projected_tokens=1_150,
+        context_window_tokens=1_000,
+    )
+    assert oversized.dream_result is not None
+    assert oversized.dream_result.status == "skipped_preflight"
+    assert oversized.dream_result.error == (
+        "Dream context preflight failed: 1,150 projected tokens exceed the "
+        "1,000-token context window (parent 700 + render 400 + generation "
+        "margin 50)."
+    )
+    assert not oversized.chapter_path.exists()
+    assert fitting.dream_result is not None
+    assert fitting.dream_result.status == "written"
+    assert dream_calls == ["2-3"]
+
+    _print_run_summary(report)
+    output = capsys.readouterr().out
+    assert "Preflight failures:" in output
+    assert "1,150 projected tokens" in output
+    assert "parent 700 + render 400 + generation margin 50" in output
+
+
+@pytest.mark.asyncio
 async def test_run_dream_merge_can_reuse_preflight_stats(tmp_path: Path) -> None:
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text('{"ir":"session"}\n', encoding="utf-8")
@@ -280,6 +384,10 @@ async def test_run_quantum_dream_task_writes_submission_and_mirrors_transcript(
         assert parent_transcript_path.exists()
         assert fork_config.instruction.text.startswith("A dream has found you.")
         assert fork_config.fork_label == "dream_chapter_01_blocks_0_1"
+        assert fork_config.read_budget_chars is not None
+        assert fork_config.read_budget_chars > len(
+            pair_run.render_path.read_text(encoding="utf-8")
+        )
         child_transcript = (
             parent_transcript_path.parent
             / "forks"
@@ -326,6 +434,9 @@ def test_chapter_markdown_from_quantum_result_accepts_expected_payloads(
 def _pair_run_for_test(tmp_path: Path, *, render_path: Path):
     from scripts.dreaming.dream_merge import PairRun
 
+    render_path.parent.mkdir(parents=True, exist_ok=True)
+    if not render_path.exists():
+        render_path.write_text("# Render\n", encoding="utf-8")
     pair = Pair(first=0, second=1)
     stats = _stats(tmp_path / "transcript.jsonl", render_path=render_path)
     return PairRun(
@@ -343,6 +454,13 @@ def _pair_run_for_test(tmp_path: Path, *, render_path: Path):
         review_path=tmp_path / "review.json",
         fork_dir=tmp_path / "fork",
         fork_transcript_path=tmp_path / "fork" / "transcript.jsonl",
+        context_preflight=ContextPreflight(
+            parent_tokens=700_000,
+            render_tokens=48_200,
+            generation_margin_tokens=20_000,
+            projected_tokens=768_200,
+            context_window_tokens=1_000_000,
+        ),
     )
 
 
@@ -369,6 +487,7 @@ def _replace_pair_run_transcript(pair_run, transcript: Path):
         review_path=pair_run.review_path,
         fork_dir=pair_run.fork_dir,
         fork_transcript_path=pair_run.fork_transcript_path,
+        context_preflight=pair_run.context_preflight,
         warnings=pair_run.warnings,
         dream_result=pair_run.dream_result,
         director_result=pair_run.director_result,
