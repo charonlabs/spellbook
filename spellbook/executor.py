@@ -83,6 +83,18 @@ class Executor:
                 tool = self._registry.get(call.tool)
                 if tool is None:
                     raise ToolError(f"'{call.tool}' is not a valid tool name.")
+                if not self._registry.is_callable(call.tool):
+                    # Visible (to keep the request prefix identical to the
+                    # parent's) but not callable in this session.
+                    allowed = ", ".join(
+                        t.name
+                        for t in self._registry.tools
+                        if self._registry.is_callable(t.name)
+                    )
+                    raise ToolError(
+                        f"{call.tool} is not available inside this fork. "
+                        f"Tools you can use here: {allowed or 'none'}."
+                    )
                 try:
                     validated_input = tool.input_model.model_validate(call.input)
                 except ValidationError as e:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import BaseModel, Field
 
@@ -362,49 +364,58 @@ class TestToolSurfaces:
 
         assert registry.tool_names == set()
 
-    def test_quantum_surface_exposes_read_only_tools_and_submit(self) -> None:
-        registry = ToolRegistry.build(categories=None, surface="quantum")
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"sleep_enabled": True},
+            {
+                "body_url": "http://127.0.0.1:8765",
+                "minecraft_url": "http://127.0.0.1:3000",
+                "sleep_enabled": True,
+            },
+            {"categories": {"coding", "memory"}},
+        ],
+    )
+    def test_quantum_surface_mirrors_parent_tools_byte_for_byte(
+        self, kwargs: dict[str, Any]
+    ) -> None:
+        categories = kwargs.pop("categories", None)
+        parent = ToolRegistry.build(categories, surface="main", **kwargs)
+        fork = ToolRegistry.build(categories, surface="quantum", **kwargs)
 
-        assert registry.tool_names == {
-            "Read",
-            "Reflect",
-            "ReflectToolResults",
-            "Recall",
-            "SubmitResult",
-        }
-        assert "Sleep" not in registry.tool_names
+        # Same tools, same order, same schemas: the cached prefix starts here.
+        assert fork.records == parent.records
+        assert "SubmitResult" not in fork.tool_names
+        assert parent.call_allowlist is None
 
-    def test_quantum_surface_never_exposes_body(self) -> None:
-        registry = ToolRegistry.build(
-            categories=None,
+    def test_quantum_surface_calls_only_read_only_tools(self) -> None:
+        fork = ToolRegistry.build(
+            None,
             surface="quantum",
             body_url="http://127.0.0.1:8765",
             minecraft_url="http://127.0.0.1:3000",
+            sleep_enabled=True,
         )
 
-        assert "Body" not in registry.tool_names
-        assert "Minecraft" not in registry.tool_names
-        assert registry.tool_names == {
-            "Read",
-            "Reflect",
-            "ReflectToolResults",
-            "Recall",
-            "SubmitResult",
-        }
-
-    def test_quantum_surface_can_omit_submit_result(self) -> None:
-        registry = ToolRegistry.build(
-            categories=None,
-            surface="quantum",
-            include_quantum_submit=False,
-        )
-
-        assert registry.tool_names == {
+        assert fork.call_allowlist == {
             "Read",
             "Reflect",
             "ReflectToolResults",
             "Recall",
         }
+        for visible_only in (
+            "Write",
+            "Edit",
+            "Bash",
+            "Body",
+            "Minecraft",
+            "Sleep",
+            "Forget",
+        ):
+            assert visible_only in fork.tool_names
+            assert not fork.is_callable(visible_only)
+        assert fork.is_callable("Read")
 
     def test_custom_surface_includes_selected_main_categories_and_custom_tools(
         self,

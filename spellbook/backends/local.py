@@ -488,7 +488,9 @@ class LocalBackend(ModelBackend):
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
+        cache_breakpoint_before: int | None = None,
     ) -> RequestSurface:
+        del cache_breakpoint_before  # no provider prompt cache to steer
         return RequestSurface(
             model=model,
             system=_translate_system_to_instructions(system),

@@ -102,8 +102,14 @@ class ModelBackend(Protocol):
         tools: list[dict[str, Any]],
         max_output_tokens: int,
         effort: str,
+        cache_breakpoint_before: int | None = None,
     ) -> RequestSurface:
-        """Build a provider-specific request surface."""
+        """Build a provider-specific request surface.
+
+        ``cache_breakpoint_before`` is the index (into ``blocks``) where content
+        stops being shared with other requests — e.g. a quantum fork's
+        instruction. Backends with explicit prompt caching place a breakpoint on
+        the last cacheable block before it; others ignore it."""
         ...
 
     def stream(

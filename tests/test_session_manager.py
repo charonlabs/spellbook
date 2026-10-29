@@ -87,7 +87,7 @@ from spellbook.tools.common import (
     ToolExecutionResult,
     ToolMetadata,
 )
-from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY
+from spellbook.tools.registry import DEFAULT_TOOL_REGISTRY, ToolRegistry
 from spellbook.tools.skills import SkillInput, exec_skill
 
 
@@ -720,12 +720,17 @@ class TestSessionProfileBuild:
         manager = await SessionManager.build(transcript_path=transcript, config=config)
 
         assert manager.session_id.startswith("quantum_session_")
-        assert manager.tool_registry.tool_names == {
+        # The fork sees the parent's exact tool list (cache-prefix match) and
+        # may call only the read-only subset.
+        main = ToolRegistry.build(config.tool_categories, surface="main")
+        assert [t.name for t in manager.tool_registry.tools] == [
+            t.name for t in main.tools
+        ]
+        assert manager.tool_registry.call_allowlist == {
             "Read",
             "Reflect",
             "ReflectToolResults",
             "Recall",
-            "SubmitResult",
         }
         assert isinstance(manager.executor.meta, QuantumForkToolMetadata)
         assert _round_lifecycle_names(manager) == [

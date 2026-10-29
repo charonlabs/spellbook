@@ -13,7 +13,7 @@ from spellbook.footer import (
     FooterController,
     FooterControllerRoundLifecycle,
 )
-from spellbook.fork import ForkConfig, ForkRunner, QuantumForkConfig
+from spellbook.fork import ForkConfig, ForkRunner
 from spellbook.hearth import HearthSettings
 from spellbook.ir_types import IRInboundMessage, IRSkillCatalog
 from spellbook.loop import run_loop
@@ -317,7 +317,6 @@ class SessionManager:
                 config.tool_categories,
                 surface=profile.tool_surface,
                 custom=custom_surface,
-                include_quantum_submit=_include_quantum_submit(fork_config),
                 body_url=config.body_url,
                 minecraft_url=config.minecraft_url,
                 sleep_enabled=config.sleep_enabled,
@@ -352,7 +351,6 @@ class SessionManager:
             config.tool_categories,
             surface=profile.tool_surface,
             custom=custom_surface,
-            include_quantum_submit=_include_quantum_submit(fork_config),
             body_url=config.body_url,
             minecraft_url=config.minecraft_url,
             sleep_enabled=config.sleep_enabled,
@@ -384,6 +382,7 @@ class SessionManager:
             backend=backend,
             config=config,
             tool_registry=tool_registry,
+            fork_config=fork_config,
             block_projector=refusal_renderer.project_surface,
         )
         token_counter = backend.build_token_counter(
@@ -539,7 +538,3 @@ class SessionManager:
             debug_emitter=debug_emitter,
             fork_config=fork_config,
         )
-
-
-def _include_quantum_submit(fork_config: ForkConfig | None) -> bool:
-    return not isinstance(fork_config, QuantumForkConfig) or fork_config.submit_tool

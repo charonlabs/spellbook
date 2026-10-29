@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .config import SpellbookConfig
-from .ir_types import IRBlock
+from .ir_types import IRBlock, IRUserTextBlock
 
 if TYPE_CHECKING:
     from spellbook.fork import ForkConfig
@@ -57,8 +57,12 @@ class RequestSurfaceBuilder:
         max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS,
         effort: str = _DEFAULT_EFFORT,
         block_projector: Callable[[Sequence[IRBlock]], list[IRBlock]] | None = None,
+        shared_prefix_end: Callable[[Sequence[IRBlock]], int | None] | None = None,
     ):
         self._model = model
+        # Where (in projected blocks) content stops being shared with sibling
+        # requests; the backend puts an explicit cache breakpoint before it.
+        self._shared_prefix_end = shared_prefix_end
         self._system_provider = system_provider
         self._tool_schemas = list(tool_schemas)
         self._backend = backend
@@ -70,6 +74,11 @@ class RequestSurfaceBuilder:
         """Build a ``RequestSurface`` from this builder's config + the given messages."""
         system = self._system_provider()
         projected = self.project_blocks(blocks)
+        extra: dict[str, Any] = {}
+        if self._shared_prefix_end is not None:
+            boundary = self._shared_prefix_end(projected)
+            if boundary is not None:
+                extra["cache_breakpoint_before"] = boundary
         return self._backend.build_request_surface(
             model=self._model,
             system=system,
@@ -77,6 +86,7 @@ class RequestSurfaceBuilder:
             tools=self._tool_schemas,
             max_output_tokens=self._max_output_tokens,
             effort=self._effort,
+            **extra,
         )
 
     def project_blocks(self, blocks: Sequence[IRBlock]) -> list[IRBlock]:
@@ -112,6 +122,11 @@ class RequestSurfaceBuilder:
         ``system_provider`` is a callable because the system prompt is
         regenerated on every call (it reflects the current frame snapshot).
         """
+        from spellbook.fork import QuantumForkConfig
+
+        shared_prefix_end = None
+        if isinstance(fork_config, QuantumForkConfig):
+            shared_prefix_end = instruction_boundary(fork_config.instruction)
         return cls(
             model=config.model,
             system_provider=lambda: config.system_prompt,
@@ -120,6 +135,7 @@ class RequestSurfaceBuilder:
             max_output_tokens=config.max_output_tokens,
             effort=config.effort,
             block_projector=block_projector,
+            shared_prefix_end=shared_prefix_end,
         )
 
     # TODO: implement with NullBackend shape to appease new backend req
@@ -212,3 +228,27 @@ def _extract_tools_from_frame(frame: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(content, list):
             return [t for t in content if isinstance(t, dict)]
     return []
+
+
+def instruction_boundary(
+    instruction: IRUserTextBlock,
+) -> Callable[[Sequence[IRBlock]], int | None]:
+    """Locate a quantum fork's instruction: everything before it is the
+    parent's context, identical across sibling forks and cacheable once.
+
+    Matches the newest block with the instruction's origin and exact text
+    (blocks are re-stamped with turn/event ids when recorded, so identity and
+    equality are not usable). None until the instruction is in context."""
+
+    def find(blocks: Sequence[IRBlock]) -> int | None:
+        for index in range(len(blocks) - 1, 0, -1):
+            block = blocks[index]
+            if (
+                isinstance(block, IRUserTextBlock)
+                and block.origin == instruction.origin
+                and block.text == instruction.text
+            ):
+                return index
+        return None
+
+    return find
