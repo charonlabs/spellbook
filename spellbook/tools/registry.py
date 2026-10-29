@@ -255,6 +255,7 @@ def _tools_for_surface(
 # Every tool this binary knows how to validate and execute.
 ALL_TOOLS: list[Tool[Any]] = (
     BODY_ENABLED_MAIN_TOOLS
+    + [SLEEP_TOOL]  # gated out of default MAIN_TOOLS, but always a KNOWN tool
     + [MINECRAFT_TOOL]
     + BLOCK_DETECTOR_TOOLS
     + BLOCK_SUMMARIZER_TOOLS

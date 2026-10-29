@@ -221,6 +221,7 @@ class TestToolSurfaces:
             "AmendBlock",
             "CompleteBlock",
             "Summarize",
+            "Sleep",
             "SubmitResult",
         }
 
@@ -463,3 +464,36 @@ class TestSleepGating:
             sleep_enabled=True,
         )
         assert {"Sleep", "Body"} <= registry.tool_names
+
+
+class TestKnownUniverseCompleteness:
+    """Night-002 regression: every tool any buildable registry can mount must
+    exist in KNOWN_TOOL_REGISTRY, or rehydrating a frame recorded with it
+    fails with 'present in frame but not registry.' Gating belongs at
+    surface-build time, never in the known universe."""
+
+    def test_every_buildable_tool_is_known(self) -> None:
+        from spellbook.tools.registry import KNOWN_TOOL_REGISTRY
+
+        surfaces: list[dict] = [
+            {"surface": "main"},
+            {"surface": "main", "sleep_enabled": True},
+            {"surface": "main", "body_url": "http://x"},
+            {"surface": "main", "minecraft_url": "http://x"},
+            {
+                "surface": "main",
+                "sleep_enabled": True,
+                "body_url": "http://x",
+                "minecraft_url": "http://x",
+            },
+            {"surface": "quantum", "sleep_enabled": True},
+            {"surface": "block_detector"},
+            {"surface": "block_summarizer"},
+        ]
+        for kwargs in surfaces:
+            registry = ToolRegistry.build(categories=None, **kwargs)
+            for tool in registry.tools:
+                assert KNOWN_TOOL_REGISTRY.get(tool.name) is not None, (
+                    f"{tool.name} (from {kwargs}) is buildable but unknown - "
+                    "rehydration of its frame would fail"
+                )
