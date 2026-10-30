@@ -182,7 +182,9 @@ class SessionManager:
                 initial_blocks=initial_blocks,
                 cancel_token=self.cancel_token,
             )
-            self.recorder.end_turn(loop_result.stop_reason)
+            self.recorder.end_turn(
+                loop_result.stop_reason, usage=loop_result.total_usage
+            )
             self.cancel_token = None
             await self.session_lifecycle.on_turn_ended(self._ctx, loop_result, turn_id)
             await self._run_forced_sleep_if_needed()

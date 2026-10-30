@@ -530,3 +530,68 @@ def test_builder_passes_no_boundary_before_instruction_or_outside_forks() -> Non
         tool_registry=registry,
     )
     builder.build([*_history(), instruction])
+
+
+class TestForkUsageReceipts:
+    """Night-003 pre-flight: the receipts get kept and reported."""
+
+    def test_turn_end_usage_sums_across_generations(self) -> None:
+        from spellbook.ir_types import IRGeneration, IRLoopResult, IRUsage
+
+        gens = [
+            IRGeneration(
+                model="m",
+                blocks=[],
+                stop_reason="tool_use",
+                usage=IRUsage(
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_tokens=100,
+                    cache_create_tokens=7,
+                ),
+            ),
+            IRGeneration(model="m", blocks=[], stop_reason="end_turn", usage=None),
+            IRGeneration(
+                model="m",
+                blocks=[],
+                stop_reason="end_turn",
+                usage=IRUsage(input_tokens=1, output_tokens=2, cache_read_tokens=50),
+            ),
+        ]
+        result = IRLoopResult(
+            blocks=[], generations=gens, executions=[], stop_reason="end_turn", rounds=3
+        )
+        total = result.total_usage
+        assert total is not None
+        assert (total.input_tokens, total.output_tokens) == (11, 7)
+        assert (total.cache_read_tokens, total.cache_create_tokens) == (150, 7)
+
+    def test_fork_usage_scan_sums_only_usage_bearing_turn_ends(
+        self, tmp_path: Path
+    ) -> None:
+        from spellbook.dreaming.pipeline import _fork_usage_from_transcript
+
+        t = tmp_path / "transcript.jsonl"
+        t.write_text(
+            '{"ir":"turn_end","session_id":"s","turn":1,"turn_id":"a"}\n'
+            '{"ir":"turn_end","session_id":"s","turn":2,"turn_id":"b",'
+            '"usage":{"input_tokens":3,"output_tokens":4,'
+            '"cache_read_tokens":1000,"cache_create_tokens":20}}\n'
+            '{"ir":"event","usage":{"input_tokens":999}}\n'
+            '{"ir":"turn_end","session_id":"s","turn":3,"turn_id":"c",'
+            '"usage":{"input_tokens":2,"output_tokens":1,'
+            '"cache_read_tokens":500,"cache_create_tokens":0}}\n'
+        )
+        usage = _fork_usage_from_transcript(t)
+        assert usage is not None
+        assert usage.input_tokens == 5
+        assert usage.cache_read_tokens == 1500
+        assert usage.cache_create_tokens == 20
+
+    def test_old_transcripts_rehydrate_without_usage(self, tmp_path: Path) -> None:
+        from spellbook.ir_types import IRTurnEndRecord
+
+        record = IRTurnEndRecord.model_validate(
+            {"session_id": "s", "ir": "turn_end", "turn": 1, "turn_id": "t"}
+        )
+        assert record.usage is None

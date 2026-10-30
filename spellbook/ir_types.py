@@ -336,6 +336,19 @@ class IRLoopResult(BaseModel, frozen=True):
     stop_reason: StopReason
     rounds: int  # how many rounds ran
 
+    @property
+    def total_usage(self) -> IRUsage | None:
+        """Sum of provider usage across this turn's generations."""
+        usages = [g.usage for g in self.generations if g.usage is not None]
+        if not usages:
+            return None
+        return IRUsage(
+            input_tokens=sum(u.input_tokens for u in usages),
+            output_tokens=sum(u.output_tokens for u in usages),
+            cache_read_tokens=sum(u.cache_read_tokens for u in usages),
+            cache_create_tokens=sum(u.cache_create_tokens for u in usages),
+        )
+
 
 class IRToolRecord(BaseModel, frozen=True):
     model_config = ConfigDict(extra="forbid")
@@ -683,6 +696,10 @@ class IRTurnEndRecord(BaseModel, frozen=True):
     stop_reason: StopReason | None = None
     turn: int
     turn_id: str
+    usage: IRUsage | None = None
+    """Provider usage summed across this turn's generations. None on
+    records written before this field existed (and on turns with no
+    generations). The receipts the harness reads now get kept."""
 
 
 class IRBlockRecord(BaseModel, frozen=True):

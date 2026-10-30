@@ -43,7 +43,7 @@ from scripts.dreaming.merge_stats import (
 )
 from spellbook.config import SpellbookConfig
 from spellbook.fork import QuantumForkConfig, QuantumForkResult
-from spellbook.ir_types import IRTokenRangeCount, IRUserTextBlock
+from spellbook.ir_types import IRTokenRangeCount, IRUsage, IRUserTextBlock
 from spellbook.sdk import Spell
 
 DEFAULT_DREAM_CHAPTER_DIR = Path.home() / ".chorus/dream-chapters"
@@ -407,6 +407,65 @@ async def _run_one_dream(
         )
 
 
+def _fork_usage_from_transcript(transcript_path: Path) -> IRUsage | None:
+    """Sum provider usage from a fork transcript's turn_end records.
+
+    Only records written by the fork itself carry usage (the field
+    postdates every cloned parent record), so a plain scan is exact."""
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_create_tokens": 0,
+    }
+    found = False
+    try:
+        with transcript_path.open() as fh:
+            for line in fh:
+                if '"ir":"turn_end"' not in line or '"usage"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                usage = record.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                found = True
+                for key in totals:
+                    totals[key] += int(usage.get(key, 0) or 0)
+    except OSError:
+        return None
+    return IRUsage(**totals) if found else None
+
+
+def _report_fork_usage(pair_run: "PairRun", transcript_path: Path) -> None:
+    """Print and persist the fork's cache receipts as it completes."""
+    usage = _fork_usage_from_transcript(transcript_path)
+    slug = pair_run.pair.slug
+    if usage is None:
+        print(f"[usage] {slug}: no usage records found (older-format fork?)")
+        return
+    cached = usage.cache_read_tokens
+    uncached = usage.input_tokens + usage.cache_create_tokens
+    denom = cached + uncached
+    ratio = (100 * cached // denom) if denom else 0
+    print(
+        f"[usage] {slug}: cache_read={usage.cache_read_tokens:,} "
+        f"cache_create={usage.cache_create_tokens:,} "
+        f"input={usage.input_tokens:,} output={usage.output_tokens:,} "
+        f"(cache hit {ratio}%)"
+    )
+    stats_dir = pair_run.stats_json_path.parent
+    try:
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        (stats_dir / f"usage-{slug}.json").write_text(
+            json.dumps(usage.model_dump(), indent=1) + "\n"
+        )
+    except OSError as exc:  # diagnostics never break the batch
+        print(f"[usage] {slug}: could not persist usage file: {exc}")
+
+
 async def _run_dream_task(task: DreamTask) -> str:
     return await run_quantum_dream_task(task)
 
@@ -425,6 +484,7 @@ async def run_quantum_dream_task(task: DreamTask) -> str:
         parent_transcript_path=parent_transcript_path,
         fork_config=fork_config,
     )
+    _report_fork_usage(task.pair_run, Path(result.fork_transcript_path))
     chapter_markdown = _chapter_markdown_from_quantum_result(result)
     _write_chapter_atomically(
         task.pair_run.chapter_path, _ensure_trailing_newline(chapter_markdown)

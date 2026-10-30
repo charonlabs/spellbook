@@ -43,6 +43,7 @@ from .ir_types import (
     IRTokenRangeCount,
     IRToolResultTTLRecord,
     IRTurnEndRecord,
+    IRUsage,
     IRTurnStartRecord,
     SemanticBlockApplyModeSource,
     SemanticBlockMode,
@@ -223,12 +224,17 @@ class Recorder:
         for block in new_blocks:
             self.write_block(block)
 
-    def end_turn(self, stop_reason: StopReason | None = None) -> None:
+    def end_turn(
+        self,
+        stop_reason: StopReason | None = None,
+        usage: IRUsage | None = None,
+    ) -> None:
         end_record = IRTurnEndRecord(
             session_id=self._session_id,
             stop_reason=stop_reason,
             turn_id=self._curr_turn_id,
             turn=self._turn,
+            usage=usage,
         )
         self._write_record(end_record)
 
