@@ -47,6 +47,7 @@ DEFAULT_HEARTH_INTERVAL_MINUTES = 55
 DEFAULT_HEARTH_QUIET_HOURS = ""
 
 DEFAULT_USER_NAME = "Ryan"
+DEFAULT_PROVIDER_AUTH_URL = "http://127.0.0.1:8788"
 
 _QUIET_HOURS_RE = re.compile(
     r"^(?P<start_hour>\d{2}):(?P<start_minute>\d{2})-"
@@ -99,6 +100,24 @@ class SpellbookConfig(BaseModel, frozen=True):
     body_url: str | None = None
     minecraft_url: str | None = None
     base_url: str | None = None  # Custom API base URL (e.g., local vLLM server)
+    # Chorus Provider: when set, the Bash tool runs commands in a Provider
+    # sandbox instead of host subprocesses. Unset keeps local behavior.
+    provider_url: str | None = None
+    provider_auth_url: str | None = None  # default DEFAULT_PROVIDER_AUTH_URL
+    provider_entity: str | None = None  # default chorus_entity_name
+    provider_admin_token_file: Path | None = None  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
+    # Token mode: a JWT file the orchestrator issues and renews. When set, the
+    # admin credential is never used and Chorus auth is never contacted.
+    provider_token_file: Path | None = None
+    # Remote Provider deployments (e.g. reached by LAN address).
+    provider_host_header: str | None = None  # Provider only accepts local Host
+    provider_allow_insecure_http: bool = False  # plain HTTP to a non-loopback host
+    provider_tls_verify: bool = True
+    provider_ca_file: Path | None = None  # trust this CA / self-signed cert
+    # Role at summon time. Familiars create/destroy their own sandboxes; every
+    # other role works in the sandbox the orchestrator assigned (sandbox id).
+    provider_role: str = "builder"
+    provider_sandbox_id: str | None = None
     sleep_enabled: bool = False
     session_type: SessionType = "main"
     profile: SessionProfile = Field(

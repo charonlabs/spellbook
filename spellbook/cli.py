@@ -128,6 +128,36 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--minecraft-url")
     serve.add_argument("--chorus-url")
     serve.add_argument("--chorus-entity-name")
+    serve.add_argument(
+        "--provider-url",
+        help="Override tools.provider_url: run Bash in a Chorus Provider sandbox.",
+    )
+    serve.add_argument("--provider-auth-url", help="Override tools.provider_auth_url.")
+    serve.add_argument("--provider-entity", help="Override tools.provider_entity.")
+    serve.add_argument(
+        "--provider-role",
+        help="Override tools.provider_role (familiar manages its own sandboxes).",
+    )
+    serve.add_argument(
+        "--provider-sandbox-id",
+        help="Override tools.provider_sandbox_id: the sandbox assigned at summon time.",
+    )
+    serve.add_argument(
+        "--provider-token-file",
+        type=Path,
+        help="Override tools.provider_token_file: a Provider JWT issued by the "
+        "orchestrator (token mode; no admin credential).",
+    )
+    serve.add_argument(
+        "--provider-host-header",
+        help="Override tools.provider_host_header (e.g. localhost for a LAN Provider).",
+    )
+    serve.add_argument(
+        "--provider-allow-insecure-http",
+        action="store_true",
+        default=None,
+        help="Allow plain HTTP to a non-loopback Provider (trusted networks only).",
+    )
     serve.add_argument("--host", default=DEFAULT_HOST)
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve.add_argument("--env", type=Path, default=DEFAULT_ENV_PATH)
@@ -204,6 +234,14 @@ def _overrides_from_args(args: argparse.Namespace) -> ServeOverrides:
         minecraft_url=args.minecraft_url,
         chorus_url=args.chorus_url,
         chorus_entity_name=args.chorus_entity_name,
+        provider_url=args.provider_url,
+        provider_auth_url=args.provider_auth_url,
+        provider_entity=args.provider_entity,
+        provider_role=args.provider_role,
+        provider_sandbox_id=args.provider_sandbox_id,
+        provider_token_file=args.provider_token_file,
+        provider_host_header=args.provider_host_header,
+        provider_allow_insecure_http=args.provider_allow_insecure_http,
     )
 
 

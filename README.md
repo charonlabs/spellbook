@@ -192,6 +192,78 @@ Spellbook ships with a complete tool surface:
 
 Tools are registered in a typed `ToolRegistry` with Pydantic input models and structured results. Adding a tool is: define an input model, write an async handler, register it.
 
+### Tools through the Chorus Provider
+
+By default Bash runs host subprocesses and Read/Write/Edit touch host files.
+Setting `tools.provider_url` routes **all four** through the
+[Chorus Provider](../provider): one gVisor sandbox, one filesystem
+(`/workspace`, where relative paths resolve), one exec wire, behind optional
+Sentry safety review.
+
+```toml
+[tools]
+provider_url = "http://127.0.0.1:8787"
+provider_entity = "wanderer"          # defaults to chorus_entity_name
+provider_role = "builder"             # "familiar" manages its own sandboxes
+provider_sandbox_id = "sb_…"          # assigned at summon; required unless familiar
+# provider_auth_url = "http://127.0.0.1:8788"
+# provider_admin_token_file = "admin.token"  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
+```
+
+**Token mode (preferred).** Instead of the admin credential, give Spellbook a
+JWT the orchestrator issued; Chorus auth is never contacted and this process
+never holds a credential that can mint tokens. The file is re-read near the
+token's expiry and after a 401, so the orchestrator renews by rewriting it.
+The token's subject is the identity (`provider_entity`, if set, must match).
+A remote Provider (e.g. reached by LAN address) also needs the Host override
+and, over plain HTTP, an explicit opt-in:
+
+```toml
+[tools]
+provider_url = "http://192.168.1.210:8787"
+provider_token_file = "/run/chorus/fable.jwt"   # mode 0600, written by the orchestrator
+provider_role = "familiar"
+provider_host_header = "localhost"            # Provider only accepts local Host
+provider_allow_insecure_http = true           # trusted LAN only: token in clear text
+# provider_tls_verify = false                 # self-signed HTTPS
+# provider_ca_file = "provider.pem"           # or trust that certificate
+```
+
+Install the client with `uv sync --extra provider`. CLI overrides:
+`--provider-url`, `--provider-auth-url`, `--provider-entity`,
+`--provider-role`, `--provider-sandbox-id`, `--provider-token-file`,
+`--provider-host-header`, `--provider-allow-insecure-http`.
+
+**Permission tiers.** A *familiar* (coordinator) holds create/destroy/exec/
+put/get: it creates its sandbox on first use, replaces it if Provider reaps it,
+and destroys the sandboxes it created at shutdown. **Every other role** holds
+exec/put/get only, scoped to the sandbox the orchestrator created at summon
+time; it never creates or destroys, and if that sandbox disappears its tools
+say so instead of recovering. Bootstrap claims follow the tier (stored claims
+always win, so the orchestrator registers the scoped identity at summon).
+
+**How file tools travel.** Read runs `base64` on the file (exact bytes, images
+included, up to ~768 KiB). Write sends a quoted heredoc with a random delimiter
+(never shell-expanded, readable by safety review); content beyond one 64 KiB
+exec is staged in a sibling temp file and copied over the target in place,
+preserving its mode. Edit is Read → replace → Write. Line numbering, diffs,
+matching and error wording are shared with the local tools.
+
+- Each exec carries the latest **human** message as review `context` (≤16 KiB);
+  model output, conduit messages and footers are never used.
+- A denied operation becomes a `ToolError` with Provider's reason and the
+  operation id a keeper can authorize.
+- With Sentry's output gate, a sandbox waiting on an earlier output review is
+  retried once after `Retry-After` (≤10 s); a *paused* sandbox is reported as
+  needing a keeper's release.
+- Out-of-memory deaths and persistent-sandbox restarts are explained (reset vs.
+  restored from a snapshot).
+- `tests/test_provider_live.py` runs a real session turn against a live
+  Provider (opt-in via `SPELLBOOK_PROVIDER_LIVE_URL` /
+  `SPELLBOOK_PROVIDER_LIVE_TOKEN_FILE` / `SPELLBOOK_PROVIDER_LIVE_HOST_HEADER`).
+- The system prompt tells the entity where its work happens and that review
+  exists.
+
 ## App Server API
 
 | Endpoint | What it does |

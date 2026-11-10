@@ -36,7 +36,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from spellbook.config import SpellbookConfig
+from spellbook.config import DEFAULT_PROVIDER_AUTH_URL, SpellbookConfig
 from spellbook.fork import (
     BlockDetectorConfig,
     BlockSummarizerConfig,
@@ -57,6 +57,7 @@ from ..ir_types import (
 
 if TYPE_CHECKING:
     from ..homunculus.homunculus import Homunculus
+    from .provider_bash import ProviderBash
     from ..session_lifecycle import DreamingRuntime
 
 
@@ -101,6 +102,11 @@ class ToolMetadata:
     minecraft_url: str | None = None
     minecraft_surface: object | None = None
     dreaming_runtime: DreamingRuntime | None = None
+    # Set when config.provider_url routes Bash through the Provider sandbox.
+    provider_bash: ProviderBash | None = None
+    # Latest human-authored message; Provider safety-review context. Never
+    # model output (maintained by HumanContextRoundLifecycle).
+    last_human_message: str | None = None
 
 
 # I'm using inheritance here b/c idk how to do the union thingy with dataclasses
@@ -169,6 +175,7 @@ def build_tool_metadata(
                 body_url=config.body_url,
                 minecraft_url=config.minecraft_url,
                 minecraft_surface=_build_minecraft_surface(config.minecraft_url),
+                provider_bash=build_provider_bash(config),
             )
         case "block_detector":
             assert isinstance(fork_config, BlockDetectorConfig)
@@ -214,6 +221,7 @@ def build_tool_metadata(
                 body_url=config.body_url,
                 minecraft_url=config.minecraft_url,
                 minecraft_surface=_build_minecraft_surface(config.minecraft_url),
+                provider_bash=build_provider_bash(config),
             )
 
 
@@ -230,6 +238,38 @@ def tool_to_record(tool: Tool) -> IRToolRecord:
         name=tool.name,
         input_schema=input_schema,
         category=tool.category,
+    )
+
+
+def build_provider_bash(config: SpellbookConfig) -> ProviderBash | None:
+    """The session's Provider adapter, or None for local (host) Bash."""
+    if config.provider_url is None:
+        return None
+    from .provider_bash import ProviderBash
+
+    if config.provider_token_file is not None:
+        # Token mode: the token's subject is the identity. Only an explicit
+        # provider_entity is checked against it (the Chorus name may differ).
+        entity = config.provider_entity
+    else:
+        entity = config.provider_entity or config.chorus_entity_name
+    if entity is None and config.provider_token_file is None:
+        raise ValueError(
+            "provider_url requires provider_entity or chorus_entity_name to name "
+            "the Provider identity (or provider_token_file for token mode)."
+        )
+    return ProviderBash(
+        provider_url=config.provider_url,
+        auth_url=config.provider_auth_url or DEFAULT_PROVIDER_AUTH_URL,
+        entity=entity,
+        role=config.provider_role,
+        sandbox_id=config.provider_sandbox_id,
+        admin_token_file=config.provider_admin_token_file,
+        token_file=config.provider_token_file,
+        host_header=config.provider_host_header,
+        allow_insecure_http=config.provider_allow_insecure_http,
+        tls_verify=config.provider_tls_verify,
+        ca_file=config.provider_ca_file,
     )
 
 
