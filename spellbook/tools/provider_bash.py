@@ -79,6 +79,17 @@ _SANDBOX_LOST_NOTE = (
     "The Provider removed your sandbox, and your role does not create sandboxes, "
     "so further commands will fail until it is restored. Let your human partner know."
 )
+_PAUSED_ERROR = (
+    "The sandbox is paused: safety review flagged the output of an earlier "
+    "command, and nothing more can run here until a keeper (a human with review "
+    "authority) releases it. Let your human partner know{detail}."
+)
+_REVIEW_PENDING_ERROR = (
+    "The sandbox is waiting for safety review to finish checking an earlier "
+    "command's output. Nothing ran; try again in a few seconds."
+)
+# Longest we wait (once) for a pending output review before giving up.
+_REVIEW_PENDING_MAX_WAIT_S = 10.0
 _SANDBOX_GONE_ERROR = (
     "Your sandbox is no longer available, and your role does not create "
     "sandboxes. Ask your human partner (or your coordinator) to restore it."
@@ -109,6 +120,8 @@ class _ExecResult(Protocol):
     def denied(self) -> bool: ...
     @property
     def deny_reason(self) -> str | None: ...
+    @property
+    def operation_id(self) -> str | None: ...
 
 
 class _ProviderClient(Protocol):
@@ -227,10 +240,15 @@ class ProviderBash:
         *,
         provider_url: str,
         auth_url: str,
-        entity: str,
+        entity: str | None,
         role: str = "builder",
         sandbox_id: str | None = None,
         admin_token_file: Path | None = None,
+        token_file: Path | None = None,
+        host_header: str | None = None,
+        allow_insecure_http: bool = False,
+        tls_verify: bool = True,
+        ca_file: Path | None = None,
         client_factory: ClientFactory | None = None,
     ):
         if role not in PROVIDER_ROLES:
@@ -245,11 +263,22 @@ class ProviderBash:
                 f"Role {role!r} works in an orchestrator-assigned sandbox: set "
                 "provider_sandbox_id (only familiars create their own)."
             )
+        if entity is None and token_file is None:
+            raise ValueError(
+                "An entity name is required unless a token_file supplies the identity."
+            )
         self.provider_url = provider_url
         self.auth_url = auth_url
         self.entity = entity
         self.role = role
         self.admin_token_file = admin_token_file
+        # Token mode: the orchestrator issued (and renews) this JWT; this
+        # process never holds the admin credential.
+        self.token_file = token_file
+        self.host_header = host_header
+        self.allow_insecure_http = allow_insecure_http
+        self.tls_verify = tls_verify
+        self.ca_file = ca_file
         self._client_factory = client_factory or self._default_client
         self._client: _ProviderClient | None = None
         self._sandbox_id: str | None = sandbox_id
@@ -264,6 +293,23 @@ class ProviderBash:
 
     def _default_client(self) -> _ProviderClient:
         sdk = _sdk()
+        verify: object = (
+            str(self.ca_file) if self.ca_file is not None else self.tls_verify
+        )
+        transport = {
+            "host_header": self.host_header,
+            "allow_insecure_http": self.allow_insecure_http,
+            "verify": verify,
+        }
+        if self.token_file is not None:
+            # Permissions are whatever the orchestrator put in the token; the
+            # role here only decides whether this session creates sandboxes.
+            return sdk.ProviderClient(
+                self.provider_url,
+                entity=self.entity or "",
+                token_file=self.token_file,
+                **transport,
+            )
         # Bootstrap claims apply only if the entity is not yet registered;
         # stored claims always win. Familiars manage their own sandboxes;
         # everyone else is scoped to the sandbox the orchestrator assigned.
@@ -287,6 +333,7 @@ class ProviderBash:
             self.entity,
             claims=claims,
             admin_token_file=self.admin_token_file,
+            **transport,
         )
 
     async def _ensure_sandbox(self) -> tuple[_ProviderClient, str]:
@@ -347,12 +394,27 @@ class ProviderBash:
                 f"limit is about {EXEC_BODY_BUDGET // 1024} KiB including review "
                 "context). Write long content to a file in smaller pieces instead."
             )
+
+        async def run_once(client: _ProviderClient, sandbox_id: str) -> _ExecResult:
+            try:
+                return await client.exec(
+                    sandbox_id, command, timeout_ms=timeout_ms, context=review_context
+                )
+            except sdk.SandboxPausedError as e:
+                # 423 is answered before anything runs. A pending review of an
+                # earlier command's output usually clears within seconds.
+                if e.reason != "output_review_pending":
+                    raise
+                wait = e.retry_after if e.retry_after is not None else 2.0
+                await asyncio.sleep(min(max(wait, 0.5), _REVIEW_PENDING_MAX_WAIT_S))
+                return await client.exec(
+                    sandbox_id, command, timeout_ms=timeout_ms, context=review_context
+                )
+
         try:
             client, sandbox_id = await self._ensure_sandbox()
             try:
-                result = await client.exec(
-                    sandbox_id, command, timeout_ms=timeout_ms, context=review_context
-                )
+                result = await run_once(client, sandbox_id)
             except sdk.SandboxNotFoundError:
                 # Provider answers 404 before running anything (the sandbox
                 # idled out or was reset by an interrupted command), so one
@@ -362,27 +424,53 @@ class ProviderBash:
                     raise ToolError(_join(notes, _SANDBOX_GONE_ERROR)) from None
                 notes.append(_SANDBOX_REPLACED_NOTE)
                 client, sandbox_id = await self._ensure_sandbox()
-                result = await client.exec(
-                    sandbox_id, command, timeout_ms=timeout_ms, context=review_context
-                )
+                result = await run_once(client, sandbox_id)
         except ToolError:
             raise
+        except sdk.SandboxPausedError as e:
+            if e.reason == "output_review_pending":
+                raise ToolError(_join(notes, _REVIEW_PENDING_ERROR)) from None
+            detail = f" (flagged command: {e.operation_id})" if e.operation_id else ""
+            raise ToolError(_join(notes, _PAUSED_ERROR.format(detail=detail))) from None
         except sdk.ProviderError as e:
             # SDK messages never include credentials or raw response bodies.
             raise ToolError(_join(notes, f"Provider error: {e}")) from None
         if result.denied:
-            raise ToolError(
-                _join(
-                    notes,
-                    result.deny_reason or result.stderr or "Denied by safety review.",
-                )
-            )
+            reason = result.deny_reason or result.stderr or "Denied by safety review."
+            operation = getattr(result, "operation_id", None)
+            if operation:
+                # A keeper can authorize a flagged command by this id.
+                reason = f"{reason}\n(review reference: {operation})"
+            raise ToolError(_join(notes, reason))
         if result.sandbox_destroyed:
             self._sandbox_gone(sandbox_id)
         return ExecOutcome(result, sandbox_id, timeout_ms, notes)
 
     def _reset_note(self) -> str:
         return _SANDBOX_RESET_NOTE if self.manages_sandboxes else _SANDBOX_LOST_NOTE
+
+    def _interruption_note(self, result: _ExecResult) -> str:
+        """What happened to the sandbox when a command was interrupted or the
+        sandbox died: reset (ephemeral) or restarted from a snapshot
+        (persistent). Empty when the sandbox carried on normally."""
+        parts: list[str] = []
+        if getattr(result, "sandbox_died", False):
+            parts.append(
+                "The sandbox ran out of memory and was stopped."
+                if getattr(result, "out_of_memory", False)
+                else "The sandbox stopped unexpectedly."
+            )
+        if result.sandbox_destroyed:
+            parts.append(self._reset_note())
+        elif getattr(result, "sandbox_restarted", False):
+            restart = getattr(result, "restart", None)
+            snapshot = getattr(restart, "restored_snapshot_at", None)
+            parts.append(
+                "The sandbox was restarted from its last snapshot"
+                + (f" ({snapshot})" if snapshot else "")
+                + "; files changed since then were lost and running processes ended."
+            )
+        return " ".join(parts)
 
     # --- Bash -----------------------------------------------------------------
 
@@ -403,16 +491,16 @@ class ProviderBash:
         timeout_s = outcome.timeout_ms / 1000
         if result.timed_out:
             output = f"Command timed out after {timeout_s:.0f}s\n{output}".rstrip()
-            if result.sandbox_destroyed:
-                output = f"{output}\n{self._reset_note()}"
+            if note := self._interruption_note(result):
+                output = f"{output}\n{note}"
         elif result.exit_code != 0:
             output = (
                 f"Exit code {result.exit_code}\n{output}"
                 if output
                 else f"Exit code {result.exit_code}"
             )
-            if result.sandbox_destroyed:
-                output = f"{output}\n{self._reset_note()}"
+            if note := self._interruption_note(result):
+                output = f"{output}\n{note}"
         output = _join(outcome.notes, output)
         if len(output) > OUTPUT_CHAR_LIMIT:
             status = (
@@ -454,7 +542,8 @@ class ProviderBash:
             raise ToolError(
                 _join(
                     outcome.notes,
-                    f"File operation on {path} timed out. {self._reset_note()}",
+                    f"File operation on {path} timed out. "
+                    f"{self._interruption_note(outcome.result) or self._reset_note()}",
                 )
             )
         return outcome

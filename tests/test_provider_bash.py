@@ -656,6 +656,86 @@ def test_bootstrap_claims_follow_the_tier(tmp_path: Path) -> None:
     assert familiar.provider_perms.create and familiar.provider_perms.destroy
 
 
+def _fake_jwt(sub: str = "provider-scout") -> str:
+    import base64
+    import json as _json
+
+    def segment(value: object) -> str:
+        return base64.urlsafe_b64encode(_json.dumps(value).encode()).rstrip(b"=").decode()
+
+    return f"{segment({'alg': 'RS256'})}.{segment({'sub': sub, 'exp': 4102444800})}.sig"
+
+
+def test_token_mode_client_never_holds_admin_credential(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CHORUS_AUTH_ADMIN_TOKEN_FILE", str(tmp_path / "admin.token"))
+    token = tmp_path / "agent.jwt"
+    token.write_text(_fake_jwt())
+    bash = ProviderBash(
+        provider_url="http://192.168.1.210:8787",
+        auth_url="http://127.0.0.1:8788",
+        entity=None,
+        role="familiar",
+        token_file=token,
+        host_header="localhost",
+        allow_insecure_http=True,
+    )
+    client = bash._default_client()
+    assert client._token_mode and client._token_path == token
+    assert client._admin_path is None and client._claims is None
+    assert client._host_header == "localhost"
+    # A LAN URL over plain HTTP needs the explicit opt-in.
+    with pytest.raises(chorus_provider.ConfigurationError, match="allow_insecure_http"):
+        ProviderBash(
+            provider_url="http://192.168.1.210:8787",
+            auth_url="x",
+            entity=None,
+            role="familiar",
+            token_file=token,
+        )._default_client()
+    with pytest.raises(ValueError, match="token_file"):
+        ProviderBash(
+            provider_url="http://127.0.0.1:8787", auth_url="x", entity=None, role="familiar"
+        )
+
+
+def test_token_mode_from_config_ignores_chorus_name(tmp_path: Path) -> None:
+    token = tmp_path / "agent.jwt"
+    token.write_text(_fake_jwt())
+    path = _entity_toml(
+        tmp_path,
+        'provider_url = "http://192.168.1.210:8787"\n'
+        'provider_token_file = "agent.jwt"\n'
+        'provider_host_header = "localhost"\n'
+        "provider_allow_insecure_http = true\n"
+        'provider_role = "familiar"\n'
+        'chorus_entity_name = "wanderer"',
+    )
+    config = build_spellbook_config(load_entity_file(path))
+    assert config.provider_token_file == token.resolve()
+    assert config.provider_host_header == "localhost"
+    assert config.provider_allow_insecure_http and config.provider_tls_verify
+    bash = build_provider_bash(config)
+    # The token's subject is the identity; the Chorus name is not imposed on it.
+    assert bash is not None and bash.entity is None and bash.token_file == token.resolve()
+
+    no_identity = _entity_toml(
+        tmp_path,
+        'provider_url = "http://127.0.0.1:8787"\nprovider_role = "familiar"',
+    )
+    overridden = build_spellbook_config(
+        load_entity_file(no_identity),
+        ServeOverrides(
+            provider_token_file=token,
+            provider_host_header="localhost",
+            provider_allow_insecure_http=True,
+        ),
+    )
+    assert overridden.provider_token_file == token.resolve()
+    assert overridden.provider_allow_insecure_http
+
+
 @pytest.mark.asyncio
 async def test_builder_uses_assigned_sandbox_and_never_creates_or_destroys(
     tmp_path: Path,
@@ -909,3 +989,89 @@ async def test_overlong_bash_command_is_rejected_before_sending(tmp_path: Path) 
     with pytest.raises(ToolError, match="too long for the sandbox"):
         await exec_bash(meta, BashInput(command="echo " + "x" * 70_000))
     assert fake.execs == []
+
+
+# ---- Provider features since the first integration -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_denial_carries_the_review_reference(tmp_path: Path) -> None:
+    op = "exec_" + "a" * 32
+    fake = FakeProvider(
+        [ok("", exit_code=77, denied=True, deny_reason="Flagged.", operation_id=op)]
+    )
+    with pytest.raises(ToolError) as caught:
+        await exec_bash(provider_meta(tmp_path, fake), BashInput(command="curl x"))
+    assert caught.value.message == f"Flagged.\n(review reference: {op})"
+
+
+@pytest.mark.asyncio
+async def test_pending_output_review_is_waited_out_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("spellbook.tools.provider_bash.asyncio.sleep", fake_sleep)
+    pending = chorus_provider.SandboxPausedError(
+        "pending", reason="output_review_pending", status_code=423, retry_after=2.0
+    )
+    fake = FakeProvider([pending, ok("after review\n")])
+    result = await exec_bash(provider_meta(tmp_path, fake), BashInput(command="ls"))
+    assert text_of(result) == "after review" and sleeps == [2.0]
+    assert len(fake.execs) == 2
+
+    fake = FakeProvider([pending, pending])
+    with pytest.raises(ToolError, match="try again in a few seconds"):
+        await exec_bash(provider_meta(tmp_path, fake), BashInput(command="ls"))
+    assert len(fake.execs) == 2
+
+
+@pytest.mark.asyncio
+async def test_paused_sandbox_explains_keeper_release(tmp_path: Path) -> None:
+    op = "exec_" + "b" * 32
+    paused = chorus_provider.SandboxPausedError(
+        "paused", reason="paused", operation_id=op, status_code=423
+    )
+    fake = FakeProvider([paused])
+    with pytest.raises(ToolError) as caught:
+        await exec_bash(provider_meta(tmp_path, fake), BashInput(command="ls"))
+    message = caught.value.message
+    assert "paused" in message and "keeper" in message and op in message
+    assert len(fake.execs) == 1  # never retried
+
+
+@pytest.mark.asyncio
+async def test_out_of_memory_and_persistent_restart_notes(tmp_path: Path) -> None:
+    fake = FakeProvider(
+        [
+            ok(
+                "",
+                stderr="provider: sandbox ran out of memory\n",
+                exit_code=137,
+                sandbox_died=True,
+                out_of_memory=True,
+                sandbox_destroyed=True,
+            ),
+            ok(
+                "",
+                exit_code=124,
+                timed_out=True,
+                sandbox_restarted=True,
+                restart=chorus_provider.BootInfo(812.0, "2026-11-10T15:00:00Z"),
+            ),
+        ]
+    )
+    meta = provider_meta(tmp_path, fake)
+    died = text_of(await exec_bash(meta, BashInput(command="python3 hog.py")))
+    assert died.startswith("Exit code 137")
+    assert "ran out of memory" in died and "sandbox was reset" in died
+    with pytest.raises(ToolError) as caught:
+        await exec_bash(meta, BashInput(command="sleep 99", timeout=1000))
+    restarted = caught.value.message
+    assert "restarted from its last snapshot (2026-11-10T15:00:00Z)" in restarted
+    assert "reset" not in restarted
+    # A restarted (persistent) sandbox is kept; the OOM-destroyed one was replaced.
+    assert fake.created == [SB1, SB2]

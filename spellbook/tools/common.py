@@ -247,11 +247,16 @@ def build_provider_bash(config: SpellbookConfig) -> ProviderBash | None:
         return None
     from .provider_bash import ProviderBash
 
-    entity = config.provider_entity or config.chorus_entity_name
-    if entity is None:
+    if config.provider_token_file is not None:
+        # Token mode: the token's subject is the identity. Only an explicit
+        # provider_entity is checked against it (the Chorus name may differ).
+        entity = config.provider_entity
+    else:
+        entity = config.provider_entity or config.chorus_entity_name
+    if entity is None and config.provider_token_file is None:
         raise ValueError(
             "provider_url requires provider_entity or chorus_entity_name to name "
-            "the Provider identity."
+            "the Provider identity (or provider_token_file for token mode)."
         )
     return ProviderBash(
         provider_url=config.provider_url,
@@ -260,6 +265,11 @@ def build_provider_bash(config: SpellbookConfig) -> ProviderBash | None:
         role=config.provider_role,
         sandbox_id=config.provider_sandbox_id,
         admin_token_file=config.provider_admin_token_file,
+        token_file=config.provider_token_file,
+        host_header=config.provider_host_header,
+        allow_insecure_http=config.provider_allow_insecure_http,
+        tls_verify=config.provider_tls_verify,
+        ca_file=config.provider_ca_file,
     )
 
 

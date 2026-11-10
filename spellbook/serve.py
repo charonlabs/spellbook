@@ -129,6 +129,15 @@ class ToolsSection(_Section):
     provider_auth_url: str = ""
     provider_entity: str = ""
     provider_admin_token_file: Path | None = None
+    # Token mode: a JWT file issued and renewed by the orchestrator (no admin
+    # credential in this process). Preferred for agents.
+    provider_token_file: Path | None = None
+    # Remote deployments: Host header override, plain HTTP to a LAN address,
+    # TLS verification (false, or a CA/self-signed certificate file).
+    provider_host_header: str = ""
+    provider_allow_insecure_http: bool = False
+    provider_tls_verify: bool = True
+    provider_ca_file: Path | None = None
     # "familiar" manages its own sandboxes; other roles need provider_sandbox_id.
     provider_role: str = "builder"
     provider_sandbox_id: str = ""
@@ -196,6 +205,9 @@ class ServeOverrides:
     provider_entity: str | None = None
     provider_role: str | None = None
     provider_sandbox_id: str | None = None
+    provider_token_file: Path | None = None
+    provider_host_header: str | None = None
+    provider_allow_insecure_http: bool | None = None
 
 
 def load_entity_file(path: Path | None) -> LoadedEntityFile:
@@ -295,11 +307,19 @@ def build_spellbook_config(
     provider_sandbox_id = _override_optional_url(
         overrides.provider_sandbox_id, tools.provider_sandbox_id
     )
+    provider_token_file = (
+        _resolve_path(overrides.provider_token_file, base_dir=Path.cwd())
+        if overrides.provider_token_file is not None
+        else _resolve_path(tools.provider_token_file, base_dir=loaded.base_dir)
+        if tools.provider_token_file is not None
+        else None
+    )
     if provider_url is not None:
         _validate_provider_identity(
             entity=provider_entity or chorus_entity_name,
             role=provider_role,
             sandbox_id=provider_sandbox_id,
+            token_mode=provider_token_file is not None,
         )
     _validate_tool_dependencies(
         categories=tool_categories,
@@ -344,6 +364,19 @@ def build_spellbook_config(
         "provider_admin_token_file": (
             _resolve_path(tools.provider_admin_token_file, base_dir=loaded.base_dir)
             if tools.provider_admin_token_file is not None
+            else None
+        ),
+        "provider_token_file": provider_token_file,
+        "provider_host_header": _override_optional_url(
+            overrides.provider_host_header, tools.provider_host_header
+        ),
+        "provider_allow_insecure_http": _prefer(
+            overrides.provider_allow_insecure_http, tools.provider_allow_insecure_http
+        ),
+        "provider_tls_verify": tools.provider_tls_verify,
+        "provider_ca_file": (
+            _resolve_path(tools.provider_ca_file, base_dir=loaded.base_dir)
+            if tools.provider_ca_file is not None
             else None
         ),
         "session_type": _prefer(overrides.session_type, entity.session_type),
@@ -523,7 +556,7 @@ def _validate_tool_dependencies(
 
 
 def _validate_provider_identity(
-    *, entity: str | None, role: str, sandbox_id: str | None
+    *, entity: str | None, role: str, sandbox_id: str | None, token_mode: bool = False
 ) -> None:
     from spellbook.tools.provider_bash import (
         PROVIDER_ROLES,
@@ -531,10 +564,11 @@ def _validate_provider_identity(
         SANDBOX_MANAGER_ROLES,
     )
 
-    if entity is None:
+    if entity is None and not token_mode:
         raise ServeConfigError(
             "tools.provider_url requires tools.provider_entity (or a Chorus entity "
-            "name) to identify this entity to the Provider."
+            "name) to identify this entity to the Provider, or "
+            "tools.provider_token_file (token mode: the identity is the token's)."
         )
     if role not in PROVIDER_ROLES:
         raise ServeConfigError(

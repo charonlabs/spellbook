@@ -106,6 +106,14 @@ class SpellbookConfig(BaseModel, frozen=True):
     provider_auth_url: str | None = None  # default DEFAULT_PROVIDER_AUTH_URL
     provider_entity: str | None = None  # default chorus_entity_name
     provider_admin_token_file: Path | None = None  # else CHORUS_AUTH_ADMIN_TOKEN_FILE
+    # Token mode: a JWT file the orchestrator issues and renews. When set, the
+    # admin credential is never used and Chorus auth is never contacted.
+    provider_token_file: Path | None = None
+    # Remote Provider deployments (e.g. reached by LAN address).
+    provider_host_header: str | None = None  # Provider only accepts local Host
+    provider_allow_insecure_http: bool = False  # plain HTTP to a non-loopback host
+    provider_tls_verify: bool = True
+    provider_ca_file: Path | None = None  # trust this CA / self-signed cert
     # Role at summon time. Familiars create/destroy their own sandboxes; every
     # other role works in the sandbox the orchestrator assigned (sandbox id).
     provider_role: str = "builder"
