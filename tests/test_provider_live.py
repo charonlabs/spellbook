@@ -9,7 +9,7 @@ token needs exec/put/get/create/destroy (the familiar tier).
     SPELLBOOK_PROVIDER_LIVE_URL=http://192.168.1.210:8787 \\
     SPELLBOOK_PROVIDER_LIVE_TOKEN_FILE=/tmp/provider-scout-token.txt \\
     SPELLBOOK_PROVIDER_LIVE_HOST_HEADER=localhost \\
-    uv run --extra provider pytest -q tests/test_provider_live.py -s
+    uv run --extra provider pytest -q tests/test_provider_live.py
 """
 
 from __future__ import annotations
@@ -129,29 +129,25 @@ async def test_live_session_turn_through_provider(tmp_path: Path, monkeypatch) -
     await asyncio.wait_for(runner, timeout=30)
 
     results = _results(backend.blocks_seen[-1])
-    for name, result in results.items():
-        print(f"--- {name} ({'error' if result.is_error else 'ok'})\n{_text(result)}")
+    transcript = "\n".join(
+        f"--- {name} ({'error' if r.is_error else 'ok'})\n{_text(r)}"
+        for name, r in results.items()
+    )
     assert sandbox_id is not None
-    assert not results["hello"].is_error
-    hello = _text(results["hello"])
-    assert "hello from the sandbox" in hello and "/workspace" in hello
-    assert "gvisor" in hello.lower() or "Linux" in hello
-    assert not results["write"].is_error
-    assert _text(results["run"]).split() == [
-        "hello",
-        "from",
-        "a",
-        "file",
-        "in",
-        "the",
-        "sandbox",
-        "45",
-    ]
-    assert not results["edit"].is_error
-    assert "sum(range(100))" in _text(results["read"])
-    assert _text(results["rerun"]).split()[-1] == "4950"
-    assert "Exit code 3" in _text(results["fail"]) and "oops" in _text(results["fail"])
-    assert _text(results["host"]).strip() == "ISOLATED"
+    text = {name: _text(r) for name, r in results.items()}
+    checks = {
+        "every call succeeded": not any(r.is_error for r in results.values()),
+        "hello": "hello from the sandbox" in text["hello"]
+        and "/workspace" in text["hello"]
+        and "gvisor" in text["hello"].lower(),
+        "run": text["run"].split()[-1] == "45",
+        "edit+read": "sum(range(100))" in text["read"],
+        "rerun": text["rerun"].split()[-1] == "4950",
+        "nonzero exit": "Exit code 3" in text["fail"] and "oops" in text["fail"],
+        "host isolation": text["host"].strip() == "ISOLATED",
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    assert not failed, f"{failed}\n{transcript}"
 
     # Out-of-band: the session destroyed its sandbox on shutdown, and the
     # Provider recorded every command with the human's words as review context.

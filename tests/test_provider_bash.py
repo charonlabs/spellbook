@@ -33,6 +33,7 @@ from spellbook.config import SpellbookConfig  # noqa: E402
 from spellbook.ir_types import (  # noqa: E402
     IRAssistantTextBlock,
     IRGeneration,
+    IRImageBase64Source,
     IRImageBlock,
     IRToolCallBlock,
     IRToolResultBlock,
@@ -626,8 +627,18 @@ async def test_full_turn_sends_human_context_and_shutdown_destroys_sandbox(
 # ---- Permission tiers ---------------------------------------------------------
 
 
+def _real_client(bash: ProviderBash) -> chorus_provider.ProviderClient:
+    client = bash._default_client()
+    assert isinstance(client, chorus_provider.ProviderClient)
+    return client
+
+
 def test_assigned_role_requires_sandbox_and_valid_identity() -> None:
-    common = {"provider_url": "http://127.0.0.1:8787", "auth_url": "x", "entity": "w"}
+    common: dict[str, Any] = {
+        "provider_url": "http://127.0.0.1:8787",
+        "auth_url": "x",
+        "entity": "w",
+    }
     with pytest.raises(ValueError, match="provider_sandbox_id"):
         ProviderBash(**common, role="builder")
     with pytest.raises(ValueError, match="Unknown provider role"):
@@ -639,19 +650,21 @@ def test_assigned_role_requires_sandbox_and_valid_identity() -> None:
 def test_bootstrap_claims_follow_the_tier(tmp_path: Path) -> None:
     token = tmp_path / "admin.token"
     token.write_text("secret")
-    common = {
+    common: dict[str, Any] = {
         "provider_url": "http://127.0.0.1:8787",
         "auth_url": "http://127.0.0.1:8788",
         "entity": "w",
         "admin_token_file": token,
     }
-    builder = ProviderBash(**common, role="builder", sandbox_id=SB1)._default_client()
+    builder = _real_client(ProviderBash(**common, role="builder", sandbox_id=SB1))
     claims = builder._claims
+    assert claims is not None
     assert claims.role == "builder" and claims.sandbox == SB1
     perms = claims.provider_perms
     assert (perms.exec, perms.put, perms.get) == (True, True, True)
     assert not perms.create and not perms.destroy
-    familiar = ProviderBash(**common, role="familiar")._default_client()._claims
+    familiar = _real_client(ProviderBash(**common, role="familiar"))._claims
+    assert familiar is not None
     assert familiar.role == "familiar" and familiar.sandbox is None
     assert familiar.provider_perms.create and familiar.provider_perms.destroy
 
@@ -661,7 +674,9 @@ def _fake_jwt(sub: str = "provider-scout") -> str:
     import json as _json
 
     def segment(value: object) -> str:
-        return base64.urlsafe_b64encode(_json.dumps(value).encode()).rstrip(b"=").decode()
+        return (
+            base64.urlsafe_b64encode(_json.dumps(value).encode()).rstrip(b"=").decode()
+        )
 
     return f"{segment({'alg': 'RS256'})}.{segment({'sub': sub, 'exp': 4102444800})}.sig"
 
@@ -681,7 +696,7 @@ def test_token_mode_client_never_holds_admin_credential(
         host_header="localhost",
         allow_insecure_http=True,
     )
-    client = bash._default_client()
+    client = _real_client(bash)
     assert client._token_mode and client._token_path == token
     assert client._admin_path is None and client._claims is None
     assert client._host_header == "localhost"
@@ -696,7 +711,10 @@ def test_token_mode_client_never_holds_admin_credential(
         )._default_client()
     with pytest.raises(ValueError, match="token_file"):
         ProviderBash(
-            provider_url="http://127.0.0.1:8787", auth_url="x", entity=None, role="familiar"
+            provider_url="http://127.0.0.1:8787",
+            auth_url="x",
+            entity=None,
+            role="familiar",
         )
 
 
@@ -718,7 +736,9 @@ def test_token_mode_from_config_ignores_chorus_name(tmp_path: Path) -> None:
     assert config.provider_allow_insecure_http and config.provider_tls_verify
     bash = build_provider_bash(config)
     # The token's subject is the identity; the Chorus name is not imposed on it.
-    assert bash is not None and bash.entity is None and bash.token_file == token.resolve()
+    assert (
+        bash is not None and bash.entity is None and bash.token_file == token.resolve()
+    )
 
     no_identity = _entity_toml(
         tmp_path,
@@ -949,7 +969,7 @@ async def test_failed_chunk_cleans_up_and_leaves_target_intact(tmp_path: Path) -
             return ok("", stderr=reason, exit_code=77, denied=True, deny_reason=reason)
         return await original_run(command)
 
-    fake._run = flaky  # type: ignore[method-assign]
+    setattr(fake, "_run", flaky)
     with pytest.raises(ToolError, match="Safety review: flagged"):
         await exec_write(meta, WriteInput(file_path="keep.txt", content=content))
     assert (root / "keep.txt").read_text() == "original\n"
@@ -964,7 +984,9 @@ async def test_image_read_through_sandbox(tmp_path: Path) -> None:
     result = await exec_read(meta, ReadInput(file_path="pic.png"))
     block = result.content[0]
     assert isinstance(block, IRImageBlock)
+    assert isinstance(block.source, IRImageBase64Source)
     assert base64.b64decode(block.source.data) == png
+    assert block.blob_path is not None
     assert (tmp_path / "host" / block.blob_path).read_bytes() == png
 
 
